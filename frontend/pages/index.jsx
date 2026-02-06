@@ -567,8 +567,6 @@ export default function Login() {
             setMessage("Access unavailable: This account is deactivated. Please contact Tony Joseph (developer).");
           } else if (err.response?.data?.error === 'student_account_deactivated') {
             setMessage("student_account_deactivated"); // Special marker for custom rendering
-          } else if (err.response?.data?.error === 'subscription_inactive' || err.response?.data?.error === 'subscription_expired') {
-            setMessage(err.response?.data?.message || "Access unavailable: Subscription expired. Please contact Tony Joseph (developer) to renew.");
           } else {
             setMessage("Wrong username, ID and password");
           }

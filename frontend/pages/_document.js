@@ -15,7 +15,7 @@ export default function Document() {
         <meta name="mobile-web-app-capable" content="yes" />
         <meta name="apple-mobile-web-app-capable" content="yes" />
         <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-        <meta name="apple-mobile-web-app-title" content="TopPhysics" />
+        <meta name="apple-mobile-web-app-title" content="TopPhysics App" />
         <meta name="apple-touch-fullscreen" content="yes" />
         <meta property="og:title" content="TopPhysics, Eng. Mina Narouz" />
         <meta property="og:description" content="TopPhysics, Eng. Mina Narouz's students" />

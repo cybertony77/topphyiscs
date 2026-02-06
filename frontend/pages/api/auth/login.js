@@ -87,63 +87,6 @@ export default async function handler(req, res) {
       }
     }
 
-    // Check subscription status
-    const subscription = await db.collection('subscription').findOne({});
-    if (subscription) {
-      const now = new Date();
-      const expirationDate = subscription.date_of_expiration ? new Date(subscription.date_of_expiration) : null;
-      
-      // Compare full datetime (year, month, day, hour, minute, second) before deactivating
-      if (expirationDate && subscription.active) {
-        // Compare all datetime components to ensure accurate expiration check
-        const nowTime = now.getTime();
-        const expTime = expirationDate.getTime();
-        
-        // Only deactivate if current time has passed expiration time
-        if (nowTime >= expTime) {
-          console.log('⏰ Subscription expiration time reached, deactivating...');
-          await db.collection('subscription').updateOne(
-            {},
-            { 
-              $set: { 
-                active: false,
-                subscription_duration: null,
-                date_of_subscription: null,
-                date_of_expiration: null,
-                cost: null,
-                note: null
-              } 
-            }
-          );
-          subscription.active = false;
-        }
-      }
-
-      // If subscription is inactive, only allow developers and students
-      if (!subscription.active) {
-        if (assistant.role !== 'developer' && assistant.role !== 'student') {
-          return res.status(403).json({ 
-            error: 'subscription_inactive',
-            message: 'Access unavailable: Subscription expired. Please contact Tony Joseph (developer) to renew.' 
-          });
-        }
-      } else if (subscription.active && expirationDate) {
-        // If subscription is active, check if expiration date/time has passed
-        const nowTime = now.getTime();
-        const expTime = expirationDate.getTime();
-        
-        if (nowTime >= expTime) {
-          // Subscription expired, only allow developers and students
-          if (assistant.role !== 'developer' && assistant.role !== 'student') {
-            return res.status(403).json({ 
-              error: 'subscription_expired',
-              message: 'Access unavailable: Subscription expired. Please contact Tony Joseph (developer) to renew.' 
-            });
-          }
-        }
-        // If expiration time > current time, allow login
-      }
-    }
     
     const token = jwt.sign(
       { assistant_id: assistant.id, name: assistant.name, role: assistant.role },

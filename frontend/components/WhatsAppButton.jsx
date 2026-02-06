@@ -59,7 +59,7 @@ const WhatsAppButton = ({ student, onMessageSent, onScoreUpdate }) => {
       // Create the message using the specified format
       // Extract first name from full name
       const firstName = student.name ? student.name.split(' ')[0] : 'Student';
-      let whatsappMessage = `Follow up Message:
+      let whatsappMessage = `TopPhysics academy:
 
 Dear, ${firstName}'s Parent
 We want to inform you that we are in:
@@ -119,10 +119,9 @@ Please visit the following link to check ${firstName}'s grades and progress: ⬇
 Note :-
   • ${firstName}'s ID: ${student.id}
 
-We wish ${firstName} gets high scores 😊❤
+Thanks for choosing us 😊❤
 
-– ${systemName}`;
-
+– Eng. Mina Narouz`;
       // Create WhatsApp URL with the formatted message
       const whatsappUrl = `https://wa.me/${parentNumber}?text=${encodeURIComponent(whatsappMessage)}`;
       

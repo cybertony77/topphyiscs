@@ -1,6 +1,5 @@
 import { useEffect, useState, useRef, useMemo } from 'react';
 import Image from 'next/image';
-import { AVAILABLE_CENTERS } from '../../constants/centers';
 import GradeSelect from '../../components/GradeSelect';
 import CenterSelect from '../../components/CenterSelect';
 import AttendanceWeekSelect from '../../components/AttendanceWeekSelect';
@@ -141,9 +140,6 @@ export default function SessionInfo() {
       document.removeEventListener('focusin', handleDropdownOpen);
     };
   }, [openDropdown]);
-
-  // Get all possible centers for dropdown
-  const allCenters = AVAILABLE_CENTERS;
 
   // Filtering logic
   const handleFilterFormSubmit = (e) => {

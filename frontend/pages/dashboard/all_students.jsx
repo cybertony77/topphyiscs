@@ -1,7 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/router";
 import Image from 'next/image';
-import { AVAILABLE_CENTERS } from "../../constants/centers";
 import Title from "../../components/Title";
 import GradeSelect from "../../components/GradeSelect";
 import CenterSelect from "../../components/CenterSelect";

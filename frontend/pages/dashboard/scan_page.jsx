@@ -1,7 +1,6 @@
 import { useEffect, useState, useRef, useMemo } from "react";
 import { useRouter } from "next/router";
 import Image from 'next/image';
-import { AVAILABLE_CENTERS } from "../../constants/centers";
 import Title from "../../components/Title";
 import AttendanceWeekSelect from "../../components/AttendanceWeekSelect";
 import CenterSelect from "../../components/CenterSelect";

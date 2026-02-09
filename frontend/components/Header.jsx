@@ -10,7 +10,7 @@ export default function Header() {
   const { data: user } = useProfile();
   const { data: systemConfig } = useSystemConfig();
   const userRole = user?.role || '';
-  const systemName = systemConfig?.name || 'Demo Attendance System';
+  const systemName = systemConfig?.name || 'TopPhysics';
   
   const handleLogoClick = () => {
     if (userRole === 'student') {

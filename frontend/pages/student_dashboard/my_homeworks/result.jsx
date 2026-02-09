@@ -109,8 +109,24 @@ export default function HomeworkResult() {
             hw.questions.forEach((originalQ, questionIdx) => {
               // Match student answer by index: student_answers["0"] -> questions[0]
               const studentAnswerLetter = studentAnswers[questionIdx.toString()] || studentAnswers[questionIdx];
-              const studentAnswer = studentAnswerLetter ? studentAnswerLetter.toUpperCase() : null;
-              const correctAnswer = originalQ.correct_answer ? originalQ.correct_answer.toUpperCase() : null;
+              // Handle student answer - can be string or array [answer, text]
+              let studentAnswer = null;
+              if (studentAnswerLetter) {
+                if (Array.isArray(studentAnswerLetter)) {
+                  studentAnswer = studentAnswerLetter[0]?.toUpperCase() || null;
+                } else if (typeof studentAnswerLetter === 'string') {
+                  studentAnswer = studentAnswerLetter.toUpperCase();
+                }
+              }
+              // Handle correct answer - can be string or array [answer, text]
+              let correctAnswer = null;
+              if (originalQ.correct_answer) {
+                if (Array.isArray(originalQ.correct_answer)) {
+                  correctAnswer = originalQ.correct_answer[0]?.toUpperCase() || null;
+                } else if (typeof originalQ.correct_answer === 'string') {
+                  correctAnswer = originalQ.correct_answer.toUpperCase();
+                }
+              }
               const isCorrect = studentAnswer && correctAnswer && studentAnswer === correctAnswer;
 
               // Handle both 'question' and 'question_text' field names
@@ -318,63 +334,7 @@ export default function HomeworkResult() {
             })()}
           </div>
 
-          {/* Question Results - All Questions in One List */}
-          <div style={{
-            border: '2px solid #e9ecef',
-            borderRadius: '12px',
-            padding: '24px',
-            marginBottom: '24px'
-          }}>
-            <h3 style={{ margin: "0 0 24px 0", color: "#333", fontSize: "1.5rem" }}>
-              Question Results
-            </h3>
-            
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-              {results.questionResults.map((result, idx) => (
-                <div 
-                  key={idx}
-                  style={{
-                    padding: "16px",
-                    borderRadius: "8px",
-                    textAlign: "left",
-                    border: result.isCorrect ? "2px solid #28a745" : "2px solid #dc3545",
-                    backgroundColor: result.isCorrect ? "#f0fff4" : "#fee2e2",
-                    transition: 'all 0.2s ease'
-                  }}
-                  onMouseEnter={(e) => {
-                    e.currentTarget.style.transform = 'translateY(-2px)';
-                    e.currentTarget.style.boxShadow = '0 4px 12px rgba(0,0,0,0.1)';
-                  }}
-                  onMouseLeave={(e) => {
-                    e.currentTarget.style.transform = 'translateY(0)';
-                    e.currentTarget.style.boxShadow = 'none';
-                  }}
-                >
-                  <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: "8px" }}>
-                    <span style={{
-                      fontSize: "1.5rem",
-                      marginRight: "8px"
-                    }}>
-                      {result.isCorrect ? "✓" : "✗"}
-                    </span>
-                    <strong style={{ fontSize: "1.1rem", color: "#333" }}>
-                      Question {idx + 1}
-                    </strong>
-                    <span style={{ marginLeft: "8px", fontSize: "0.9rem" }}>
-                      <span style={{ color: result.isCorrect ? "#28a745" : "#dc3545", fontWeight: "600" }}>
-                        Your answer: {result.selectedAnswer}
-                      </span>
-                      {!result.isCorrect && (
-                        <span style={{ marginLeft: "12px", color: "#28a745", fontWeight: "600" }}>
-                          Correct answer: {result.correctAnswer}
-                        </span>
-                      )}
-                    </span>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
+          {/* Question Results - Hidden, only show results summary */}
 
           {/* Back Button */}
           <div style={{ display: 'flex', justifyContent: 'center' }}>

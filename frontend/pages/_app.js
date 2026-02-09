@@ -15,12 +15,29 @@ import CustomHeader from "../components/publicHeader";
 
 // PWA Service Worker Registration handled by next-pwa
 
+// Function to check if device is mobile/touch and should disable devtools blocker
+function shouldDisableDevtoolsBlocker() {
+  if (typeof window === 'undefined') {
+    return false;
+  }
+  
+  const isTouch =
+    'ontouchstart' in window ||
+    navigator.maxTouchPoints > 0;
+
+  const isMobileUA =
+    /Android|iPhone|iPad|iPod|Opera Mini|IEMobile/i.test(navigator.userAgent);
+
+  return isTouch && isMobileUA;
+}
+
 // DevTools Protection Component (blocks devtools on all pages except for developer role)
-function DevToolsProtection({ userRole }) {
+function DevToolsProtection({ userRole, devtoolsBlockEnabled }) {
   const router = useRouter();
   const [devToolsDetected, setDevToolsDetected] = useState(false);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
   const [timer, setTimer] = useState(15);
+  const [isMobile, setIsMobile] = useState(false);
 
   // Check if on public pages (pages that don't require authentication)
   const currentPath = typeof window !== 'undefined' ? window.location.pathname : '';
@@ -38,7 +55,27 @@ function DevToolsProtection({ userRole }) {
   // Check if user is developer
   const isDeveloper = userRole === 'developer';
 
+  // Check if mobile on mount
   useEffect(() => {
+    if (typeof window !== 'undefined') {
+      setIsMobile(shouldDisableDevtoolsBlocker());
+      if (shouldDisableDevtoolsBlocker()) {
+        console.log("Devtools blocker disabled on mobile");
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    // Skip protection if devtools blocking is disabled
+    if (!devtoolsBlockEnabled) {
+      return;
+    }
+    
+    // Skip protection on mobile devices
+    if (isMobile) {
+      return;
+    }
+    
     // Skip protection for developers
     if (isDeveloper) {
       return;
@@ -211,10 +248,20 @@ function DevToolsProtection({ userRole }) {
       window.removeEventListener('focus', handleFocus);
       window.removeEventListener('blur', handleBlur);
     };
-  }, [isDeveloper]);
+  }, [isDeveloper, devtoolsBlockEnabled, isMobile]);
 
   // Handle logout when devtools detected (only after 15 seconds if still open)
   useEffect(() => {
+    // Skip if devtools blocking is disabled
+    if (!devtoolsBlockEnabled) {
+      return;
+    }
+    
+    // Skip on mobile devices
+    if (isMobile) {
+      return;
+    }
+    
     // Skip for developers
     if (isDeveloper) {
       return;
@@ -375,8 +422,18 @@ function DevToolsProtection({ userRole }) {
       setTimer(15);
       setIsLoggingOut(false);
     }
-  }, [devToolsDetected, isLoggingOut, isDeveloper]);
+  }, [devToolsDetected, isLoggingOut, isDeveloper, devtoolsBlockEnabled, isMobile]);
 
+  // Skip all protection if devtools blocking is disabled
+  if (!devtoolsBlockEnabled) {
+    return null;
+  }
+  
+  // Skip all protection on mobile devices
+  if (isMobile) {
+    return null;
+  }
+  
   // Skip all protection for developers
   if (isDeveloper) {
     return null;
@@ -818,6 +875,7 @@ export default function App({ Component, pageProps }) {
   const [showRedirectToLogin, setShowRedirectToLogin] = useState(false);
   const [showExpiryWarning, setShowExpiryWarning] = useState(false);
   const [userRole, setUserRole] = useState(null);
+  const [devtoolsBlockEnabled, setDevtoolsBlockEnabled] = useState(true); // Default to true for security
 
   // Define public pages using useMemo to prevent recreation on every render
   const publicPages = useMemo(() => ["/", "/sign-up", "/contact_developer", "/contact_assistants", "/404", "/forgot_password", "/student_not_found", "/dashboard/student_info"], []);
@@ -844,6 +902,25 @@ export default function App({ Component, pageProps }) {
     "/subscription_dashboard/minutely",
     "/subscription_dashboard/cancel"
   ], []);
+
+  // Fetch DEVTOOLS_BLOCK configuration
+  useEffect(() => {
+    const fetchConfig = async () => {
+      try {
+        const response = await fetch('/api/config');
+        if (response.ok) {
+          const config = await response.json();
+          // Properly check if DEVTOOLS_BLOCK is true (boolean)
+          setDevtoolsBlockEnabled(config.DEVTOOLS_BLOCK === true);
+        }
+      } catch (error) {
+        console.error('Failed to fetch DEVTOOLS_BLOCK config:', error);
+        // Default to false if config can't be loaded (safer default)
+        setDevtoolsBlockEnabled(false);
+      }
+    };
+    fetchConfig();
+  }, []);
 
   useEffect(() => {
     const checkAuth = async () => {
@@ -1123,7 +1200,7 @@ export default function App({ Component, pageProps }) {
       <QueryClientProvider client={queryClient}>
         <ErrorBoundary>
           <MantineProvider>
-            <DevToolsProtection userRole={userRole} />
+            <DevToolsProtection userRole={userRole} devtoolsBlockEnabled={devtoolsBlockEnabled} />
             {router.pathname === "/dashboard/student_info" ? (
               <div
                 style={{
@@ -1157,7 +1234,7 @@ export default function App({ Component, pageProps }) {
       <QueryClientProvider client={queryClient}>
         <ErrorBoundary>
           <MantineProvider>
-            <DevToolsProtection userRole={userRole} />
+            <DevToolsProtection userRole={userRole} devtoolsBlockEnabled={devtoolsBlockEnabled} />
             <Component {...pageProps} />
             <ReactQueryDevtools initialIsOpen={false} />
           </MantineProvider>
@@ -1170,7 +1247,7 @@ export default function App({ Component, pageProps }) {
     <QueryClientProvider client={queryClient}>
       <ErrorBoundary>
         <MantineProvider>
-          <DevToolsProtection userRole={userRole} />
+          <DevToolsProtection userRole={userRole} devtoolsBlockEnabled={devtoolsBlockEnabled} />
           <div className="page-container" style={{ 
             display: 'flex', 
             flexDirection: 'column', 

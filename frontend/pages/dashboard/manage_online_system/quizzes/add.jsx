@@ -24,12 +24,14 @@ export default function AddQuiz() {
     deadline_date: '',
     timer_type: 'no_timer',
     timer: null,
+    shuffle_questions_and_answers: false,
     questions: [{
       question_text: '',
       question_picture: null,
       answers: ['A', 'B'],
       answer_texts: ['', ''], // Text for each answer option
-      correct_answer: ''
+      correct_answer: '',
+      question_explanation: '' // Explanation for the question (optional)
     }] || []
   });
   const [selectedGrade, setSelectedGrade] = useState('');
@@ -92,15 +94,25 @@ export default function AddQuiz() {
   const handleImageUpload = async (questionIndex, file) => {
     if (!file) return;
 
+    // Allowed image MIME types
+    const ALLOWED_MIME_TYPES = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/svg+xml', 'image/webp', 'image/x-icon', 'image/vnd.microsoft.icon'];
+    
     // Validate file type
-    if (!file.type.startsWith('image/')) {
-      setErrors(prev => ({ ...prev, [`question_${questionIndex}_image`]: '❌ Please select an image file' }));
+    if (!file.type || !ALLOWED_MIME_TYPES.includes(file.type)) {
+      setErrors(prev => ({ ...prev, [`question_${questionIndex}_image`]: '❌ Invalid file type. Only image formats (JPEG/JPG, PNG, GIF, SVG, WEBP, ICO) are allowed.' }));
       return;
     }
 
     // Validate file size (10 MB)
-    if (file.size > 10 * 1024 * 1024) {
+    const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
+    if (file.size > MAX_FILE_SIZE) {
       setErrors(prev => ({ ...prev, [`question_${questionIndex}_image`]: '❌ Sorry, Max image size is 10 MB, Please try another picture' }));
+      // Clear preview if exists
+      setImagePreviews(prev => {
+        const newPreviews = { ...prev };
+        delete newPreviews[questionIndex];
+        return newPreviews;
+      });
       return;
     }
 
@@ -154,6 +166,12 @@ export default function AddQuiz() {
         if (!errorMessage.startsWith('❌')) {
           errorMessage = `❌ ${errorMessage}`;
         }
+        // Check if it's a size error
+        if (errorMessage.toLowerCase().includes('max image size') || errorMessage.toLowerCase().includes('size is 10 mb') || errorMessage.toLowerCase().includes('too large')) {
+          errorMessage = '❌ Sorry, Max image size is 10 MB, Please try another picture';
+        }
+      } else if (err.response?.status === 413 || err.message?.includes('413') || err.message?.includes('PayloadTooLargeError')) {
+        errorMessage = '❌ Sorry, Max image size is 10 MB, Please try another picture';
       } else if (err.message?.includes('ERR_CONNECTION_RESET') || err.message?.includes('Network Error') || err.code === 'ECONNRESET') {
         errorMessage = '❌ Connection error. The image may be too large. Please try a smaller image (max 10 MB).';
       } else if (err.message) {
@@ -339,7 +357,8 @@ export default function AddQuiz() {
         question_picture: null,
         answers: ['A', 'B'],
         answer_texts: ['', ''],
-        correct_answer: ''
+        correct_answer: '',
+        question_explanation: ''
       }]
     }));
   };
@@ -414,8 +433,10 @@ export default function AddQuiz() {
       });
     }
 
-    // Validate deadline date if with deadline is selected
-    if (formData.deadline_type === 'with_deadline') {
+    // Validate deadline - deadline is now required
+    if (!formData.deadline_type || formData.deadline_type === '') {
+      newErrors.deadline_type = '❌ Deadline type is required';
+    } else if (formData.deadline_type === 'with_deadline') {
       if (!formData.deadline_date) {
         newErrors.deadline_date = '❌ Deadline date is required';
       } else {
@@ -426,6 +447,11 @@ export default function AddQuiz() {
           newErrors.deadline_date = '❌ Deadline date must be in the future';
         }
       }
+    }
+    
+    // Validate shuffle_questions_and_answers is required
+    if (formData.shuffle_questions_and_answers === undefined || formData.shuffle_questions_and_answers === null) {
+      newErrors.shuffle_questions_and_answers = '❌ Shuffle Questions and Answers is required';
     }
 
     if (Object.keys(newErrors).length > 0) {
@@ -472,6 +498,7 @@ export default function AddQuiz() {
       deadline_type: formData.deadline_type,
       deadline_date: formData.deadline_type === 'with_deadline' ? formData.deadline_date : null,
       timer: formData.timer_type === 'with_timer' ? parseInt(formData.timer) : null,
+      shuffle_questions_and_answers: formData.shuffle_questions_and_answers,
     };
 
     if (formData.questions && Array.isArray(formData.questions)) {
@@ -480,7 +507,8 @@ export default function AddQuiz() {
         question_picture: q.question_picture,
         answers: q.answers,
         answer_texts: q.answer_texts || [],
-        correct_answer: q.correct_answer
+        correct_answer: q.correct_answer,
+        question_explanation: q.question_explanation || ''
       }));
     }
 
@@ -589,7 +617,7 @@ export default function AddQuiz() {
                 {/* Deadline Radio */}
                 <div style={{ marginBottom: '20px' }}>
                   <label style={{ display: 'block', marginBottom: '12px', fontWeight: '600', textAlign: 'left' }}>
-                    Deadline
+                    Deadline <span style={{ color: 'red' }}>*</span>
                   </label>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
                     <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer', padding: '10px', borderRadius: '8px', border: formData.deadline_type === 'no_deadline' ? '2px solid #1FA8DC' : '2px solid #e9ecef', backgroundColor: formData.deadline_type === 'no_deadline' ? '#f0f8ff' : 'white' }}>
@@ -718,6 +746,37 @@ export default function AddQuiz() {
               </div>
             )}
 
+            {/* Shuffle Questions and Answers Radio */}
+            <div style={{ marginBottom: '20px' }}>
+              <label style={{ display: 'block', marginBottom: '12px', fontWeight: '600', textAlign: 'left' }}>
+                Shuffle Questions and Answers <span style={{ color: 'red' }}>*</span>
+              </label>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer', padding: '10px', borderRadius: '8px', border: formData.shuffle_questions_and_answers === false ? '2px solid #1FA8DC' : '2px solid #e9ecef', backgroundColor: formData.shuffle_questions_and_answers === false ? '#f0f8ff' : 'white' }}>
+                  <input
+                    type="radio"
+                    name="shuffle_questions_and_answers"
+                    value="false"
+                    checked={formData.shuffle_questions_and_answers === false}
+                    onChange={(e) => setFormData({ ...formData, shuffle_questions_and_answers: false })}
+                    style={{ marginRight: '10px', width: '18px', height: '18px', cursor: 'pointer' }}
+                  />
+                  <span style={{ fontWeight: '500' }}>No</span>
+                </label>
+                <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer', padding: '10px', borderRadius: '8px', border: formData.shuffle_questions_and_answers === true ? '2px solid #1FA8DC' : '2px solid #e9ecef', backgroundColor: formData.shuffle_questions_and_answers === true ? '#f0f8ff' : 'white' }}>
+                  <input
+                    type="radio"
+                    name="shuffle_questions_and_answers"
+                    value="true"
+                    checked={formData.shuffle_questions_and_answers === true}
+                    onChange={(e) => setFormData({ ...formData, shuffle_questions_and_answers: true })}
+                    style={{ marginRight: '10px', width: '18px', height: '18px', cursor: 'pointer' }}
+                  />
+                  <span style={{ fontWeight: '500' }}>Yes</span>
+                </label>
+              </div>
+            </div>
+
                 {/* Questions */}
                 {formData.questions && Array.isArray(formData.questions) && formData.questions.map((question, qIdx) => (
               <div key={qIdx} className="question-section" style={{ marginBottom: '32px', padding: '20px', border: '2px solid #e9ecef', borderRadius: '12px' }}>
@@ -740,7 +799,9 @@ export default function AddQuiz() {
                         fontWeight: '600',
                         display: 'flex',
                         alignItems: 'center',
-                        gap: '6px'
+                        justifyContent: 'center',
+                        gap: '6px',
+                        textAlign: 'center'
                       }}
                     >
                       <Image src="/trash2.svg" alt="Remove" width={18} height={18} style={{ display: 'inline-block' }} />
@@ -1022,11 +1083,12 @@ export default function AddQuiz() {
                             }}
                           />
                           
-                          <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                          <div className="answer-buttons-container" style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
                             {hasTrashButton && (
                               <button
                                 type="button"
                                 onClick={() => removeAnswer(qIdx, aIdx)}
+                                className="remove-option-btn"
                                 style={{
                                   padding: '8px 16px',
                                   backgroundColor: '#dc3545',
@@ -1038,17 +1100,20 @@ export default function AddQuiz() {
                                   fontWeight: '600',
                                   display: 'flex',
                                   alignItems: 'center',
-                                  gap: '6px'
+                                  justifyContent: 'center',
+                                  gap: '6px',
+                                  textAlign: 'center'
                                 }}
                               >
                                 <Image src="/trash2.svg" alt="Remove" width={18} height={18} style={{ display: 'inline-block' }} />
-                                Remove
+                                Remove Option
                               </button>
                             )}
                             {showAddButton && (
                               <button
                                 type="button"
                                 onClick={() => addAnswer(qIdx)}
+                                className="add-option-btn"
                                 style={{
                                   padding: '8px 16px',
                                   backgroundColor: '#28a745',
@@ -1060,7 +1125,9 @@ export default function AddQuiz() {
                                   fontWeight: '600',
                                   display: 'flex',
                                   alignItems: 'center',
-                                  gap: '6px'
+                                  justifyContent: 'center',
+                                  gap: '6px',
+                                  textAlign: 'center'
                                 }}
                               >
                                 <Image src="/plus.svg" alt="Add" width={18} height={18} style={{ display: 'inline-block' }} />
@@ -1122,14 +1189,37 @@ export default function AddQuiz() {
                   )}
                 </div>
 
+                {/* Question Explanation */}
+                <div style={{ marginBottom: '16px' }}>
+                  <label style={{ display: 'block', marginBottom: '8px', fontWeight: '600', textAlign: 'left' }}>
+                    Question Explanation
+                  </label>
+                  <textarea
+                    value={question.question_explanation || ''}
+                    onChange={(e) => handleQuestionChange(qIdx, 'question_explanation', e.target.value)}
+                    placeholder="Enter explanation for this question (optional)"
+                    rows={4}
+                    style={{
+                      width: '100%',
+                      padding: '12px 16px',
+                      border: '2px solid #e9ecef',
+                      borderRadius: '10px',
+                      fontSize: '1rem',
+                      fontFamily: 'inherit',
+                      resize: 'vertical',
+                      minHeight: '100px'
+                    }}
+                  />
+                </div>
               </div>
             ))}
 
                 {/* Add Question Button */}
-                <div style={{ marginBottom: '24px', display: 'flex', justifyContent: 'flex-end' }}>
+                <div className="add-question-container" style={{ marginBottom: '24px', display: 'flex', justifyContent: 'flex-end' }}>
                   <button
                     type="button"
                     onClick={addQuestion}
+                    className="add-question-btn"
                     style={{
                       padding: '12px 24px',
                       backgroundColor: '#28a745',
@@ -1142,7 +1232,8 @@ export default function AddQuiz() {
                       display: 'flex',
                       alignItems: 'center',
                       justifyContent: 'center',
-                      gap: '6px'
+                      gap: '6px',
+                      textAlign: 'center'
                     }}
                   >
                     <Image src="/plus.svg" alt="Add" width={20} height={20} style={{ display: 'inline-block' }} />
@@ -1184,7 +1275,11 @@ export default function AddQuiz() {
                   cursor: (createQuizMutation.isPending || Object.values(uploadingImages).some(val => val === true)) ? 'not-allowed' : 'pointer',
                   fontSize: '1rem',
                   fontWeight: '600',
-                  opacity: (createQuizMutation.isPending || Object.values(uploadingImages).some(val => val === true)) ? 0.7 : 1
+                  opacity: (createQuizMutation.isPending || Object.values(uploadingImages).some(val => val === true)) ? 0.7 : 1,
+                  textAlign: 'center',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center'
                 }}
               >
                 {createQuizMutation.isPending ? 'Saving...' : 'Save'}
@@ -1202,7 +1297,11 @@ export default function AddQuiz() {
                   cursor: createQuizMutation.isPending ? 'not-allowed' : 'pointer',
                   fontSize: '1rem',
                   fontWeight: '600',
-                  opacity: createQuizMutation.isPending ? 0.7 : 1
+                  opacity: createQuizMutation.isPending ? 0.7 : 1,
+                  textAlign: 'center',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center'
                 }}
               >
                 Cancel
@@ -1242,11 +1341,53 @@ export default function AddQuiz() {
           .submit-buttons button {
             width: 100%;
           }
-          .answer-input-row {
-            align-items: flex-end !important;
+          .answer-option-row {
+            flex-direction: column !important;
+            align-items: stretch !important;
+            gap: 8px !important;
           }
-          .answer-buttons {
-            margin-top: 0 !important;
+          .answer-option-row > div:first-child {
+            align-self: flex-start !important;
+          }
+          .answer-option-row input {
+            width: 100% !important;
+          }
+          .answer-buttons-container {
+            width: 100% !important;
+            display: flex !important;
+            gap: 8px !important;
+            flex-wrap: wrap !important;
+          }
+          .answer-buttons-container .add-option-btn,
+          .answer-buttons-container .remove-option-btn {
+            flex: 1 1 calc(50% - 4px) !important;
+            min-width: calc(50% - 4px) !important;
+            padding: 10px 12px !important;
+            font-size: 0.85rem !important;
+            justify-content: center !important;
+            text-align: center !important;
+          }
+          .add-question-container {
+            width: 100% !important;
+            justify-content: center !important;
+          }
+          .add-question-btn {
+            width: 100% !important;
+            padding: 12px 16px !important;
+            justify-content: center !important;
+            text-align: center !important;
+          }
+          .question-section > div:first-child {
+            flex-direction: column !important;
+            align-items: flex-start !important;
+            gap: 12px !important;
+          }
+          .question-section > div:first-child button {
+            width: 100% !important;
+            padding: 10px 16px !important;
+            margin-top: 8px !important;
+            justify-content: center !important;
+            text-align: center !important;
           }
         }
         @media (max-width: 480px) {
@@ -1281,6 +1422,21 @@ export default function AddQuiz() {
           }
           .correct-answer-radio span {
             font-size: 0.85rem;
+          }
+          .answer-buttons-container .add-option-btn,
+          .answer-buttons-container .remove-option-btn {
+            padding: 8px 10px !important;
+            font-size: 0.8rem !important;
+            flex: 1 1 100% !important;
+            min-width: 100% !important;
+          }
+          .add-question-btn {
+            padding: 10px 14px !important;
+            font-size: 0.9rem !important;
+          }
+          .question-section > div:first-child button {
+            padding: 8px 14px !important;
+            font-size: 0.85rem !important;
           }
         }
         @media (max-width: 360px) {

@@ -84,6 +84,7 @@ export default async function handler(req, res) {
     // Prepare homework result object
     // Ensure percentage is a number (strip % if present)
     const percentageNum = typeof percentage === 'string' ? percentage.replace('%', '') : percentage;
+    console.log('📥 Received student_answers in API:', JSON.stringify(student_answers, null, 2));
     const homeworkResult = {
       homework_id: homework_id,
       week: week !== null && week !== undefined ? parseInt(week) : null,
@@ -94,6 +95,7 @@ export default async function handler(req, res) {
       date_of_end: date_of_end || formatDate(new Date()),
       points_added: points_added !== undefined && points_added !== null ? points_added : null
     };
+    console.log('💾 Saving homeworkResult with student_answers:', JSON.stringify(homeworkResult.student_answers, null, 2));
 
     // Ensure online_homeworks array exists, then push the result
     // MongoDB $push will create the array if it doesn't exist, but we'll ensure it explicitly

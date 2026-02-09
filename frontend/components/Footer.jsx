@@ -3,7 +3,7 @@ import { useSystemConfig } from '../lib/api/system';
 export default function Footer() {
   const year = new Date().getFullYear();
   const { data: systemConfig } = useSystemConfig();
-  const systemName = systemConfig?.name || 'Demo Attendance System';
+  const systemName = systemConfig?.name || 'TopPhysics';
   
   return (
     <footer className="footer" style={{

@@ -17,7 +17,7 @@ export default function GenerateLink() {
   const [selectedStudent, setSelectedStudent] = useState(null);
   const [showWarning, setShowWarning] = useState(false);
 
-  // Get all students for search functionality
+  // Get all students for search functionality 
   const { data: allStudents } = useStudents({});
 
   const handleGenerate = (e) => {
@@ -699,7 +699,7 @@ export default function GenerateLink() {
                     borderBottom: "2px solid #1FA8DC",
                     backgroundColor: "#f8f9fa"
                   }}>
-                    Send to Parent 1
+                    Send to Parent
                   </th>
                 </tr>
               </thead>

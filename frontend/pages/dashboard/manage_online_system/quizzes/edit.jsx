@@ -125,6 +125,7 @@ export default function EditQuiz() {
         timer_type: quizData.timer === null || quizData.timer === undefined ? 'no_timer' : 'with_timer',
         timer: quizData.timer || null,
         shuffle_questions_and_answers: quizData.shuffle_questions_and_answers === true || quizData.shuffle_questions_and_answers === 'true' ? true : false,
+        show_details_after_submitting: quizData.show_details_after_submitting === true || quizData.show_details_after_submitting === 'true' ? true : false,
         questions: quizData.questions && Array.isArray(quizData.questions)
           ? quizData.questions.map(q => ({
               question_text: q.question_text || '',
@@ -605,6 +606,11 @@ export default function EditQuiz() {
       newErrors.shuffle_questions_and_answers = '❌ Shuffle Questions and Answers is required';
     }
 
+    // Validate show_details_after_submitting is required
+    if (formData.show_details_after_submitting === undefined || formData.show_details_after_submitting === null) {
+      newErrors.show_details_after_submitting = '❌ Show details after submitting is required';
+    }
+
     if (Object.keys(newErrors).length > 0) {
       setErrors(newErrors);
       return;
@@ -653,6 +659,7 @@ export default function EditQuiz() {
       deadline_date: formData.deadline_type === 'with_deadline' ? formData.deadline_date : null,
       timer: formData.timer_type === 'with_timer' ? parseInt(formData.timer) : null,
       shuffle_questions_and_answers: formData.shuffle_questions_and_answers,
+      show_details_after_submitting: formData.show_details_after_submitting,
     };
 
     if (formData.questions && Array.isArray(formData.questions)) {
@@ -995,6 +1002,37 @@ export default function EditQuiz() {
               </div>
             </div>
 
+                {/* Show details after submitting Radio */}
+                <div style={{ marginBottom: '20px' }}>
+                  <label style={{ display: 'block', marginBottom: '12px', fontWeight: '600', textAlign: 'left' }}>
+                    Show details after submitting <span style={{ color: 'red' }}>*</span>
+                  </label>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer', padding: '10px', borderRadius: '8px', border: formData.show_details_after_submitting === false ? '2px solid #1FA8DC' : '2px solid #e9ecef', backgroundColor: formData.show_details_after_submitting === false ? '#f0f8ff' : 'white' }}>
+                  <input
+                    type="radio"
+                    name="show_details_after_submitting"
+                    value="false"
+                    checked={formData.show_details_after_submitting === false}
+                    onChange={(e) => setFormData({ ...formData, show_details_after_submitting: false })}
+                    style={{ marginRight: '10px', width: '18px', height: '18px', cursor: 'pointer' }}
+                  />
+                  <span style={{ fontWeight: '500' }}>No</span>
+                </label>
+                <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer', padding: '10px', borderRadius: '8px', border: formData.show_details_after_submitting === true ? '2px solid #1FA8DC' : '2px solid #e9ecef', backgroundColor: formData.show_details_after_submitting === true ? '#f0f8ff' : 'white' }}>
+                  <input
+                    type="radio"
+                    name="show_details_after_submitting"
+                    value="true"
+                    checked={formData.show_details_after_submitting === true}
+                    onChange={(e) => setFormData({ ...formData, show_details_after_submitting: true })}
+                    style={{ marginRight: '10px', width: '18px', height: '18px', cursor: 'pointer' }}
+                  />
+                  <span style={{ fontWeight: '500' }}>Yes</span>
+                </label>
+              </div>
+            </div>
+
                 {/* Questions */}
                 {formData.questions && Array.isArray(formData.questions) && formData.questions.map((question, qIdx) => (
               <div key={qIdx} className="question-section" style={{ marginBottom: '32px', padding: '20px', border: '2px solid #e9ecef', borderRadius: '12px' }}>
@@ -1270,59 +1308,61 @@ export default function EditQuiz() {
                       const showAddButton = isLastAnswer && (aIdx === 1 || hasTrashButton);
                       
                       return (
-                        <div key={aIdx} className="answer-option-row" style={{ 
-                          display: 'flex', 
-                          gap: '12px', 
-                          alignItems: 'center',
-                          padding: '12px',
-                          border: '2px solid #e9ecef',
-                          borderRadius: '8px',
-                          backgroundColor: '#f8f9fa'
-                        }}>
-                          <div style={{ 
-                            minWidth: '32px',
-                            height: '32px',
-                            display: 'flex',
+                        <div key={aIdx} style={{ marginBottom: '12px' }}>
+                          <div className="answer-option-row" style={{ 
+                            display: 'flex', 
+                            gap: '12px', 
                             alignItems: 'center',
-                            justifyContent: 'center',
-                            backgroundColor: '#1FA8DC',
-                            color: 'white',
-                            borderRadius: '6px',
-                            fontSize: '1rem',
-                            fontWeight: '700'
+                            padding: '12px',
+                            border: '2px solid #e9ecef',
+                            borderRadius: '8px',
+                            backgroundColor: '#f8f9fa'
                           }}>
-                            {answerLetter}
+                            <div style={{ 
+                              minWidth: '32px',
+                              height: '32px',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              backgroundColor: '#1FA8DC',
+                              color: 'white',
+                              borderRadius: '6px',
+                              fontSize: '1rem',
+                              fontWeight: '700'
+                            }}>
+                              {answerLetter}
+                            </div>
+                            
+                            <input
+                              type="text"
+                              value={question.answer_texts && question.answer_texts[aIdx] ? question.answer_texts[aIdx] : ''}
+                              onChange={(e) => {
+                                const newAnswerTexts = [...(question.answer_texts || [])];
+                                newAnswerTexts[aIdx] = e.target.value;
+                                handleQuestionChange(qIdx, 'answer_texts', newAnswerTexts);
+                                
+                                // Sync correct_answer if this is the correct answer
+                                const currentCorrectAnswer = question.correct_answer;
+                                if (Array.isArray(currentCorrectAnswer) && currentCorrectAnswer[0] === answerLetter.toLowerCase()) {
+                                  // Update the text part
+                                  handleQuestionChange(qIdx, 'correct_answer', [answerLetter.toLowerCase(), e.target.value]);
+                                } else if (currentCorrectAnswer === answerLetter.toLowerCase() && e.target.value.trim() !== '') {
+                                  // Convert to array format if text is added
+                                  handleQuestionChange(qIdx, 'correct_answer', [answerLetter.toLowerCase(), e.target.value]);
+                                }
+                              }}
+                              placeholder={`Enter text for option ${answerLetter} (optional)`}
+                              style={{
+                                flex: 1,
+                                padding: '10px 14px',
+                                border: '2px solid #e9ecef',
+                                borderRadius: '8px',
+                                fontSize: '0.95rem'
+                              }}
+                            />
                           </div>
                           
-                          <input
-                            type="text"
-                            value={question.answer_texts && question.answer_texts[aIdx] ? question.answer_texts[aIdx] : ''}
-                            onChange={(e) => {
-                              const newAnswerTexts = [...(question.answer_texts || [])];
-                              newAnswerTexts[aIdx] = e.target.value;
-                              handleQuestionChange(qIdx, 'answer_texts', newAnswerTexts);
-                              
-                              // Sync correct_answer if this is the correct answer
-                              const currentCorrectAnswer = question.correct_answer;
-                              if (Array.isArray(currentCorrectAnswer) && currentCorrectAnswer[0] === answerLetter.toLowerCase()) {
-                                // Update the text part
-                                handleQuestionChange(qIdx, 'correct_answer', [answerLetter.toLowerCase(), e.target.value]);
-                              } else if (currentCorrectAnswer === answerLetter.toLowerCase() && e.target.value.trim() !== '') {
-                                // Convert to array format if text is added
-                                handleQuestionChange(qIdx, 'correct_answer', [answerLetter.toLowerCase(), e.target.value]);
-                              }
-                            }}
-                            placeholder={`Enter text for option ${answerLetter} (optional)`}
-                            style={{
-                              flex: 1,
-                              padding: '10px 14px',
-                              border: '2px solid #e9ecef',
-                              borderRadius: '8px',
-                              fontSize: '0.95rem'
-                            }}
-                          />
-                          
-                          <div className="answer-buttons-container" style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+                          <div className="answer-buttons-container" style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap', width: '100%', marginTop: '8px' }}>
                             {hasTrashButton && (
                               <button
                                 type="button"
@@ -1572,6 +1612,35 @@ export default function EditQuiz() {
           .form-container {
             padding: 16px !important;
           }
+          .answer-buttons-container {
+            flex-direction: row !important;
+            flex-wrap: wrap !important;
+            margin-top: 8px !important;
+          }
+          .answer-buttons-container button {
+            flex: 1 1 calc(50% - 4px) !important;
+            min-width: calc(50% - 4px) !important;
+            max-width: calc(50% - 4px) !important;
+          }
+          .add-question-container {
+            flex-direction: row !important;
+            flex-wrap: wrap !important;
+            justify-content: flex-end !important;
+          }
+          .add-question-container button {
+            flex: 1 1 calc(50% - 4px) !important;
+            min-width: calc(50% - 4px) !important;
+            max-width: calc(50% - 4px) !important;
+          }
+          .question-section > div:first-child {
+            flex-direction: column !important;
+            align-items: flex-start !important;
+            gap: 12px !important;
+          }
+          .question-section > div:first-child button {
+            width: 100% !important;
+            flex: 1 1 100% !important;
+          }
           .submit-buttons {
             flex-direction: column;
             gap: 10px;
@@ -1669,6 +1738,25 @@ export default function EditQuiz() {
           }
           .form-container {
             padding: 12px !important;
+          }
+          .answer-buttons-container {
+            flex-direction: row !important;
+            flex-wrap: wrap !important;
+          }
+          .answer-buttons-container button {
+            flex: 1 1 calc(50% - 4px) !important;
+            min-width: calc(50% - 4px) !important;
+            max-width: calc(50% - 4px) !important;
+          }
+          @media (max-width: 360px) {
+            .answer-buttons-container {
+              flex-direction: column !important;
+            }
+            .answer-buttons-container button {
+              flex: 1 1 100% !important;
+              width: 100% !important;
+              max-width: 100% !important;
+            }
           }
           .question-section {
             padding: 16px !important;

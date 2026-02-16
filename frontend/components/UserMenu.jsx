@@ -20,6 +20,7 @@ export default function UserMenu() {
   const { data: profilePictureUrl } = useProfilePicture();
   const { data: systemConfig } = useSystemConfig();
   const isScoringEnabled = systemConfig?.scoring_system === true || systemConfig?.scoring_system === 'true';
+  const isSubscriptionEnabled = systemConfig?.subscription === true || systemConfig?.subscription === 'true';
 
   // Fallback user object if data is not available yet
   const userData = user || { name: '', id: '', phone: '', role: '' };

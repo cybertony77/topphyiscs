@@ -35,6 +35,8 @@ export default function AddStudent() {
   const [showQRButton, setShowQRButton] = useState(false);
   const [error, setError] = useState("");
   const [copiedVac, setCopiedVac] = useState(false);
+  const [savedStudentPhone, setSavedStudentPhone] = useState("");
+  const [savedStudentName, setSavedStudentName] = useState("");
   const [openDropdown, setOpenDropdown] = useState(null); // 'grade', 'center', 'gender', or null
   const [genderDropdownOpen, setGenderDropdownOpen] = useState(false);
   const [idError, setIdError] = useState("");
@@ -250,6 +252,9 @@ export default function AddStudent() {
         setNewId(studentId.toString());
         setVacCode(vac || "");
         setShowQRButton(true); // Show QR button after successful submission
+        // Save phone and name before resetting form (needed for WhatsApp)
+        setSavedStudentPhone(form.phone || "");
+        setSavedStudentName(form.name || "");
         // Reset form fields after successful addition
         setForm({
           id: "",
@@ -306,6 +311,8 @@ export default function AddStudent() {
     setShowQRButton(false);
     setError("");
     setCopiedVac(false);
+    setSavedStudentPhone("");
+    setSavedStudentName("");
   };
 
   const handleCopyVac = async () => {
@@ -321,7 +328,10 @@ export default function AddStudent() {
   };
 
   const handleSendWhatsApp = () => {
-    if (!form.phone) {
+    const phoneToUse = savedStudentPhone || form.phone;
+    const nameToUse = savedStudentName || form.name;
+
+    if (!phoneToUse) {
       setError('Student phone number not available');
       return;
     }
@@ -332,7 +342,7 @@ export default function AddStudent() {
     }
 
     // Extract first name from full name
-    const firstName = form.name ? form.name.split(' ')[0] : 'Student';
+    const firstName = nameToUse ? nameToUse.split(' ')[0] : 'Student';
     
     // Get current domain from URL
     const domain = typeof window !== 'undefined' ? window.location.origin : '';
@@ -360,8 +370,8 @@ To complete your sign-up, click the link below:
 Best regards
  – ${systemName}`;
 
-    // Use phone number as stored in form (already includes country code from PhoneInput)
-    let phoneNumber = form.phone.replace(/[^0-9]/g, '');
+    // Use saved phone number (form is reset after success)
+    let phoneNumber = phoneToUse.replace(/[^0-9]/g, '');
     
     // Validate phone number exists
     if (!phoneNumber || phoneNumber.length < 3) {

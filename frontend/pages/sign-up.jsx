@@ -93,31 +93,56 @@ export default function SignUp() {
     setError('');
   };
 
-  const handleVACChange = (index, value) => {
-    // Check if pasted text (more than 1 character)
-    const sanitized = value.replace(/[^a-zA-Z0-9]/g, '');
-    
-    if (sanitized.length > 1) {
-      // User pasted multiple characters - distribute them
+  const handleVACChange = (e, index) => {
+    const rawValue = e.target.value;
+    const value = rawValue.replace(/[^a-zA-Z0-9]/g, '');
+
+    if (!value) {
       const newVac = [...form.vac];
-      for (let i = 0; i < sanitized.length && (index + i) < 7; i++) {
-        newVac[index + i] = sanitized[i];
-      }
+      newVac[index] = '';
       setForm({ ...form, vac: newVac });
-      setError('');
-      
-      // Focus on the next empty input or last input
-      const nextIndex = Math.min(index + sanitized.length, 6);
+      return;
+    }
+
+    const newVac = [...form.vac];
+
+    // 🔥 If full code pasted into first input
+    if (value.length >= 7 && index === 0) {
+      const chars = value.slice(0, 7).split('');
+      setForm({ ...form, vac: chars });
+
+      setTimeout(() => {
+        const lastInput = document.querySelector(`input[name="vac-6"]`);
+        if (lastInput) lastInput.focus();
+      }, 0);
+
+      return;
+    }
+
+    // 🔥 If multiple characters pasted (partial paste)
+    if (value.length > 1) {
+      for (let i = 0; i < value.length && index + i < 7; i++) {
+        newVac[index + i] = value[i];
+      }
+
+      setForm({ ...form, vac: newVac });
+
+      const nextIndex = Math.min(index + value.length, 6);
       setTimeout(() => {
         const nextInput = document.querySelector(`input[name="vac-${nextIndex}"]`);
         if (nextInput) nextInput.focus();
       }, 0);
-    } else {
-      // Single character input
-      const newVac = [...form.vac];
-      newVac[index] = sanitized.slice(0, 1);
-      setForm({ ...form, vac: newVac });
-      setError('');
+
+      return;
+    }
+
+    // Normal single character
+    newVac[index] = value;
+    setForm({ ...form, vac: newVac });
+
+    if (index < 6) {
+      const nextInput = document.querySelector(`input[name="vac-${index + 1}"]`);
+      if (nextInput) nextInput.focus();
     }
   };
 
@@ -862,9 +887,12 @@ export default function SignUp() {
                   name={`vac-${index}`}
                   className={`vac-input ${!vacChecking && vacCheck && !vacCheck.valid && form.id && form.vac.join('').length === 7 ? 'error-border' : ''}`}
                   type="text"
-                  maxLength="1"
+                  autoComplete="one-time-code"
+                  inputMode="text"
+                  autoCapitalize="characters"
+                  spellCheck={false}
                   value={char}
-                  onChange={(e) => handleVACChange(index, e.target.value)}
+                  onChange={(e) => handleVACChange(e, index)}
                   onKeyDown={(e) => handleKeyDown(e, index)}
                   onPaste={(e) => handleVACPaste(e, index)}
                   onFocus={(e) => {

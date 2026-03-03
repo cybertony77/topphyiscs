@@ -73,10 +73,15 @@ export default async function handler(req, res) {
         // This handles case differences: "2nd secondary" matches "2nd Secondary"
         const allQuizzes = await db.collection('quizzes').find({}).toArray();
         
-        // Filter quizzes by normalized grade
+        // Filter quizzes by normalized grade and exclude deactivated quizzes
         console.log('🔍 Filtering quizzes. Student normalized grade:', normalizedStudentGrade);
         console.log('🔍 Total quizzes before filter:', allQuizzes.length);
         const filteredQuizzes = allQuizzes.filter(quiz => {
+          // Exclude deactivated quizzes
+          const effectiveState = quiz.state || quiz.account_state || 'Activated';
+          if (effectiveState === 'Deactivated') {
+            return false;
+          }
           if (!quiz.grade) {
             console.log('⚠️ Quiz has no grade:', quiz._id);
             return false;
@@ -117,6 +122,7 @@ export default async function handler(req, res) {
           timer: quiz.timer,
           shuffle_questions_and_answers: quiz.shuffle_questions_and_answers || false,
           show_details_after_submitting: quiz.show_details_after_submitting || false,
+          state: quiz.state || 'Activated', // Ensure state field is always present
           questions: (quiz.questions || []).map(q => ({
             question_text: q.question_text || '',
             question_picture: q.question_picture || null,

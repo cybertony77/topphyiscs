@@ -5,6 +5,7 @@ import AttendanceWeekSelect from '../../../../components/AttendanceWeekSelect';
 import GradeSelect from '../../../../components/GradeSelect';
 import OnlineSessionPaymentStateSelect from '../../../../components/OnlineSessionPaymentStateSelect';
 import VideoInput from '../../../../components/VideoInput';
+import AccountStateSelect from '../../../../components/AccountStateSelect';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import apiClient from '../../../../lib/axios';
 import Image from 'next/image';
@@ -52,6 +53,7 @@ export default function EditHomeworkVideo() {
   const [selectedWeek, setSelectedWeek] = useState('');
   const [weekDropdownOpen, setWeekDropdownOpen] = useState(false);
   const [paymentState, setPaymentState] = useState('paid');
+  const [accountState, setAccountState] = useState('Activated');
   const [errors, setErrors] = useState({});
   const [isLoadingSession, setIsLoadingSession] = useState(true);
   const errorTimeoutRef = useRef(null);
@@ -128,6 +130,7 @@ export default function EditHomeworkVideo() {
       setSelectedWeek(selectedSession.week ? weekNumberToString(selectedSession.week) : '');
       setSelectedGrade(selectedSession.grade || '');
       setPaymentState(selectedSession.payment_state || 'paid');
+      setAccountState(selectedSession.state || selectedSession.account_state || 'Activated');
       setIsLoadingSession(false);
     }
   }, [selectedSession, isLoadingSession]);
@@ -353,7 +356,8 @@ export default function EditHomeworkVideo() {
       week: weekNumber,
       videos: finalVideoData,
       description: formData.description.trim() || null,
-      payment_state: paymentState
+      payment_state: paymentState,
+      state: accountState && accountState !== '' ? accountState : 'Activated',
     });
   };
 

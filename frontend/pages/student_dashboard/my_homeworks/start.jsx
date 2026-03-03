@@ -22,7 +22,7 @@ export default function HomeworkStart() {
   const warningShownRef = useRef(false);
   const isSubmittingRef = useRef(false); // Prevent duplicate submissions
   const startTimeRef = useRef(null); // Store start time as timestamp (milliseconds)
-  const shuffleMappingRef = useRef(null); // Store shuffle mapping: { questionOrder: [], answerOrder: {} }
+  const shuffleMappingRef = useRef(null);
   const { data: profile } = useProfile();
 
   // Format date as MM/DD/YYYY at hour:minute:second AM/PM
@@ -488,16 +488,14 @@ export default function HomeworkStart() {
                 : null;
             }
             
-            // Check if answer_texts have actual content (not all empty strings)
+            // Check if correct - need to map shuffled answer back to original
+            let isCorrect = false;
+            
+            // Only use text mapping if answer_texts have meaningful content
+            // If answer_texts are all empty, treat as if there are no answer_texts (just compare by letter)
             const hasMeaningfulAnswerTexts = originalQ && originalQ.answer_texts && Array.isArray(originalQ.answer_texts) && 
               originalQ.answer_texts.length > 0 && 
               originalQ.answer_texts.some(text => text && text.trim() !== '');
-            
-            // Only use text comparison if answer_texts have meaningful content AND correctAnswerText exists and is not empty
-            const shouldCheckByText = hasMeaningfulAnswerTexts && correctAnswerText && correctAnswerText.trim() !== '';
-            
-            // Check if correct - need to map shuffled answer back to original
-            let isCorrect = false;
             
             if (hasMeaningfulAnswerTexts && shuffleMapping && shuffleMapping.textOrder && shuffleMapping.textOrder[shuffledIdx] && questionItem && questionItem.answer_texts && Array.isArray(questionItem.answer_texts) && originalQ && originalQ.answer_texts && Array.isArray(originalQ.answer_texts)) {
               // Answers were shuffled - map student's selected answer back to original
@@ -516,6 +514,9 @@ export default function HomeworkStart() {
                     const originalAnswerLetter = originalQ.answers[originalTextIdx]?.toLowerCase() || null;
                     const originalAnswerText = originalQ.answer_texts && originalQ.answer_texts[originalTextIdx] ? originalQ.answer_texts[originalTextIdx] : null;
                     
+                    // Only use text comparison if answer_texts have meaningful content AND correctAnswerText exists and is not empty
+                    const shouldCheckByText = hasMeaningfulAnswerTexts && correctAnswerText && correctAnswerText.trim() !== '';
+                    
                     // Check if this matches the correct answer
                     if (shouldCheckByText) {
                       // If answer_texts have meaningful content and correct answer has text, check both letter and text
@@ -530,6 +531,9 @@ export default function HomeworkStart() {
               }
             } else {
               // No shuffling - direct comparison
+              // Only use text comparison if answer_texts have meaningful content AND correctAnswerText exists and is not empty
+              const shouldCheckByText = hasMeaningfulAnswerTexts && correctAnswerText && correctAnswerText.trim() !== '';
+              
               if (shouldCheckByText) {
                 // If answer_texts have meaningful content and correct answer has text, check both letter and text
                 // Get the text from originalQ.answer_texts if selectedAnswerText is not set

@@ -2,7 +2,8 @@ import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/router";
 import Title from '../../../../components/Title';
 import AttendanceWeekSelect from '../../../../components/AttendanceWeekSelect';
-import GradeSelect from '../../../../components/GradeSelect';
+import GradeSelect from '../../../../components\GradeSelect';
+import AccountStateSelect from '../../../../components/AccountStateSelect';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import apiClient from '../../../../lib/axios';
 import Image from 'next/image';
@@ -32,6 +33,7 @@ export default function EditQuiz() {
     timer_type: 'no_timer',
     timer: null,
     shuffle_questions_and_answers: false,
+    show_details_after_submitting: false,
     questions: [{
       question_text: '',
       question_picture: null,
@@ -52,6 +54,7 @@ export default function EditQuiz() {
   const [loadingImages, setLoadingImages] = useState({});
   const [dragOverIndex, setDragOverIndex] = useState(null);
   const errorTimeoutRef = useRef(null);
+  const [accountState, setAccountState] = useState('Activated');
 
   // Auto-hide errors after 6 seconds
   useEffect(() => {
@@ -144,6 +147,7 @@ export default function EditQuiz() {
               question_explanation: ''
             }]
       });
+      setAccountState(quizData.state || quizData.account_state || 'Activated');
       setDataLoaded(true);
       dataLoadedRef.current = true; // Mark as loaded in ref
 
@@ -371,63 +375,30 @@ export default function EditQuiz() {
   const handleQuestionChange = (questionIndex, field, value) => {
     setFormData(prev => {
       const newQuestions = [...(prev.questions || [])];
-      const currentQuestion = newQuestions[questionIndex];
-      
-      // If answer_texts are being updated, sync correct_answer
       if (field === 'answer_texts' && Array.isArray(value)) {
-        const newAnswerTexts = value;
-        const currentCorrectAnswer = currentQuestion.correct_answer;
-        
-        // If correct_answer is an array [letter, text], update the text part
-        if (Array.isArray(currentCorrectAnswer)) {
-          const correctLetter = currentCorrectAnswer[0];
-          const correctLetterIdx = currentQuestion.answers.indexOf(correctLetter.toUpperCase());
-          if (correctLetterIdx !== -1 && newAnswerTexts[correctLetterIdx] !== undefined) {
-            // Update the text part of correct_answer
-            currentQuestion.correct_answer = [correctLetter, newAnswerTexts[correctLetterIdx]];
-          }
-        } else if (currentCorrectAnswer) {
-          // If correct_answer is a string, check if we should convert to array format
-          const correctLetterIdx = currentQuestion.answers.indexOf(currentCorrectAnswer.toUpperCase());
-          if (correctLetterIdx !== -1 && newAnswerTexts[correctLetterIdx] && newAnswerTexts[correctLetterIdx].trim() !== '') {
-            // Convert to array format if text exists
-            currentQuestion.correct_answer = [currentCorrectAnswer.toLowerCase(), newAnswerTexts[correctLetterIdx]];
-          }
-        }
-        
+        newQuestions[questionIndex] = {
+          ...newQuestions[questionIndex],
+          answer_texts: value
+        };
+      } else {
+        newQuestions[questionIndex] = {
+          ...newQuestions[questionIndex],
+          [field]: value
+        };
+      }
+      // Sync answer_texts with answers if answer_texts is being updated
+      if (field === 'answer_texts' && Array.isArray(value)) {
         // Ensure answer_texts array matches answers array length
-        const currentAnswers = currentQuestion.answers || ['A', 'B'];
-        if (newAnswerTexts.length !== currentAnswers.length) {
-          const adjustedAnswerTexts = [...newAnswerTexts];
+        const currentAnswers = newQuestions[questionIndex].answers || ['A', 'B'];
+        if (value.length !== currentAnswers.length) {
+          const adjustedAnswerTexts = [...value];
           while (adjustedAnswerTexts.length < currentAnswers.length) {
             adjustedAnswerTexts.push('');
           }
           adjustedAnswerTexts.splice(currentAnswers.length);
-          currentQuestion.answer_texts = adjustedAnswerTexts;
-        } else {
-          currentQuestion.answer_texts = newAnswerTexts;
-        }
-      } else {
-        // If correct_answer is being set, format it properly based on answer_texts
-        if (field === 'correct_answer') {
-          const answerTexts = currentQuestion.answer_texts || [];
-          const rawLetter = Array.isArray(value) ? value[0] : value;
-          const answerLetter = (typeof rawLetter === 'string' ? rawLetter : String(rawLetter || '')).toLowerCase();
-          const answerLetterIdx = currentQuestion.answers.indexOf(answerLetter.toUpperCase());
-          
-          if (answerLetterIdx !== -1 && answerTexts[answerLetterIdx] && answerTexts[answerLetterIdx].trim() !== '') {
-            // Store as [letter, text] if text exists
-            currentQuestion.correct_answer = [answerLetter, answerTexts[answerLetterIdx]];
-          } else {
-            // Store as just letter if no text
-            currentQuestion.correct_answer = answerLetter;
-          }
-        } else {
-          currentQuestion[field] = value;
+          newQuestions[questionIndex].answer_texts = adjustedAnswerTexts;
         }
       }
-      
-      newQuestions[questionIndex] = currentQuestion;
       return { ...prev, questions: newQuestions };
     });
     setErrors(prev => {
@@ -586,10 +557,8 @@ export default function EditQuiz() {
       });
     }
 
-    // Validate deadline - deadline is now required
-    if (!formData.deadline_type || formData.deadline_type === '') {
-      newErrors.deadline_type = '❌ Deadline type is required';
-    } else if (formData.deadline_type === 'with_deadline') {
+    // Validate deadline date if with deadline is selected
+    if (formData.deadline_type === 'with_deadline') {
       if (!formData.deadline_date) {
         newErrors.deadline_date = '❌ Deadline date is required';
       } else {
@@ -662,6 +631,9 @@ export default function EditQuiz() {
       shuffle_questions_and_answers: formData.shuffle_questions_and_answers,
       show_details_after_submitting: formData.show_details_after_submitting,
     };
+
+    // Attach state (Activated/Deactivated)
+    submitData.state = accountState && accountState !== '' ? accountState : 'Activated';
 
     if (formData.questions && Array.isArray(formData.questions)) {
       submitData.questions = formData.questions.map(q => ({
@@ -812,6 +784,16 @@ export default function EditQuiz() {
               )}
             </div>
 
+            {/* Quiz State */}
+            <div style={{ marginBottom: '20px' }}>
+              <AccountStateSelect
+                value={accountState}
+                onChange={setAccountState}
+                label="Quiz State"
+                placeholder="Select State"
+              />
+            </div>
+
             {/* Lesson Name */}
             <div style={{ marginBottom: '20px' }}>
               <label style={{ display: 'block', marginBottom: '8px', fontWeight: '600', textAlign: 'left' }}>
@@ -843,7 +825,7 @@ export default function EditQuiz() {
                 {/* Deadline Radio */}
                 <div style={{ marginBottom: '20px' }}>
                   <label style={{ display: 'block', marginBottom: '12px', fontWeight: '600', textAlign: 'left' }}>
-                    Deadline <span style={{ color: 'red' }}>*</span>
+                    Deadline
                   </label>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
                     <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer', padding: '10px', borderRadius: '8px', border: formData.deadline_type === 'no_deadline' ? '2px solid #1FA8DC' : '2px solid #e9ecef', backgroundColor: formData.deadline_type === 'no_deadline' ? '#f0f8ff' : 'white' }}>
@@ -1056,9 +1038,7 @@ export default function EditQuiz() {
                         fontWeight: '600',
                         display: 'flex',
                         alignItems: 'center',
-                        justifyContent: 'center',
-                        gap: '6px',
-                        textAlign: 'center'
+                        gap: '6px'
                       }}
                     >
                       <Image src="/trash2.svg" alt="Remove" width={18} height={18} style={{ display: 'inline-block' }} />
@@ -1368,7 +1348,6 @@ export default function EditQuiz() {
                               <button
                                 type="button"
                                 onClick={() => removeAnswer(qIdx, aIdx)}
-                                className="remove-option-btn"
                                 style={{
                                   padding: '8px 16px',
                                   backgroundColor: '#dc3545',
@@ -1380,20 +1359,17 @@ export default function EditQuiz() {
                                   fontWeight: '600',
                                   display: 'flex',
                                   alignItems: 'center',
-                                  justifyContent: 'center',
-                                  gap: '6px',
-                                  textAlign: 'center'
+                                  gap: '6px'
                                 }}
                               >
                                 <Image src="/trash2.svg" alt="Remove" width={18} height={18} style={{ display: 'inline-block' }} />
-                                Remove Option
+                                Remove
                               </button>
                             )}
                             {showAddButton && (
                               <button
                                 type="button"
                                 onClick={() => addAnswer(qIdx)}
-                                className="add-option-btn"
                                 style={{
                                   padding: '8px 16px',
                                   backgroundColor: '#28a745',
@@ -1405,9 +1381,7 @@ export default function EditQuiz() {
                                   fontWeight: '600',
                                   display: 'flex',
                                   alignItems: 'center',
-                                  justifyContent: 'center',
-                                  gap: '6px',
-                                  textAlign: 'center'
+                                  gap: '6px'
                                 }}
                               >
                                 <Image src="/plus.svg" alt="Add" width={18} height={18} style={{ display: 'inline-block' }} />
@@ -1496,11 +1470,10 @@ export default function EditQuiz() {
             ))}
 
                 {/* Add Question Button */}
-                <div className="add-question-container" style={{ marginBottom: '24px', display: 'flex', justifyContent: 'flex-end' }}>
+                <div style={{ marginBottom: '24px', display: 'flex', justifyContent: 'flex-end' }}>
                   <button
                     type="button"
                     onClick={addQuestion}
-                    className="add-question-btn"
                     style={{
                       padding: '12px 24px',
                       backgroundColor: '#28a745',
@@ -1513,8 +1486,7 @@ export default function EditQuiz() {
                       display: 'flex',
                       alignItems: 'center',
                       justifyContent: 'center',
-                      gap: '6px',
-                      textAlign: 'center'
+                      gap: '6px'
                     }}
                   >
                     <Image src="/plus.svg" alt="Add" width={20} height={20} style={{ display: 'inline-block' }} />
@@ -1554,11 +1526,7 @@ export default function EditQuiz() {
                   cursor: (updateQuizMutation.isPending || Object.values(uploadingImages).some(val => val === true)) ? 'not-allowed' : 'pointer',
                   fontSize: '1rem',
                   fontWeight: '600',
-                  opacity: (updateQuizMutation.isPending || Object.values(uploadingImages).some(val => val === true)) ? 0.7 : 1,
-                  textAlign: 'center',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center'
+                  opacity: (updateQuizMutation.isPending || Object.values(uploadingImages).some(val => val === true)) ? 0.7 : 1
                 }}
               >
                 {updateQuizMutation.isPending ? 'Saving...' : 'Save'}
@@ -1576,11 +1544,7 @@ export default function EditQuiz() {
                   cursor: updateQuizMutation.isPending ? 'not-allowed' : 'pointer',
                   fontSize: '1rem',
                   fontWeight: '600',
-                  opacity: updateQuizMutation.isPending ? 0.7 : 1,
-                  textAlign: 'center',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center'
+                  opacity: updateQuizMutation.isPending ? 0.7 : 1
                 }}
               >
                 Cancel
@@ -1613,35 +1577,6 @@ export default function EditQuiz() {
           .form-container {
             padding: 16px !important;
           }
-          .answer-buttons-container {
-            flex-direction: row !important;
-            flex-wrap: wrap !important;
-            margin-top: 8px !important;
-          }
-          .answer-buttons-container button {
-            flex: 1 1 calc(50% - 4px) !important;
-            min-width: calc(50% - 4px) !important;
-            max-width: calc(50% - 4px) !important;
-          }
-          .add-question-container {
-            flex-direction: row !important;
-            flex-wrap: wrap !important;
-            justify-content: flex-end !important;
-          }
-          .add-question-container button {
-            flex: 1 1 calc(50% - 4px) !important;
-            min-width: calc(50% - 4px) !important;
-            max-width: calc(50% - 4px) !important;
-          }
-          .question-section > div:first-child {
-            flex-direction: column !important;
-            align-items: flex-start !important;
-            gap: 12px !important;
-          }
-          .question-section > div:first-child button {
-            width: 100% !important;
-            flex: 1 1 100% !important;
-          }
           .submit-buttons {
             flex-direction: column;
             gap: 10px;
@@ -1660,42 +1595,15 @@ export default function EditQuiz() {
           .answer-option-row input {
             width: 100% !important;
           }
-          .answer-buttons-container {
+          .answer-option-row > div:last-child {
             width: 100% !important;
             display: flex !important;
             gap: 8px !important;
-            flex-wrap: wrap !important;
           }
-          .answer-buttons-container .add-option-btn,
-          .answer-buttons-container .remove-option-btn {
-            flex: 1 1 calc(50% - 4px) !important;
-            min-width: calc(50% - 4px) !important;
+          .answer-option-row > div:last-child button {
+            flex: 1 !important;
             padding: 10px 12px !important;
             font-size: 0.85rem !important;
-            justify-content: center !important;
-            text-align: center !important;
-          }
-          .add-question-container {
-            width: 100% !important;
-            justify-content: center !important;
-          }
-          .add-question-btn {
-            width: 100% !important;
-            padding: 12px 16px !important;
-            justify-content: center !important;
-            text-align: center !important;
-          }
-          .question-section > div:first-child {
-            flex-direction: column !important;
-            align-items: flex-start !important;
-            gap: 12px !important;
-          }
-          .question-section > div:first-child button {
-            width: 100% !important;
-            padding: 10px 16px !important;
-            margin-top: 8px !important;
-            justify-content: center !important;
-            text-align: center !important;
           }
           .answer-input-row {
             align-items: flex-end !important;
@@ -1708,20 +1616,25 @@ export default function EditQuiz() {
           .answer-input-row input {
             width: 100% !important;
           }
-          .answer-buttons-container .add-option-btn,
-          .answer-buttons-container .remove-option-btn {
-            padding: 8px 10px !important;
-            font-size: 0.8rem !important;
-            flex: 1 1 100% !important;
-            min-width: 100% !important;
+          .answer-buttons {
+            margin-top: 0 !important;
+            width: 100% !important;
+            display: flex !important;
+            gap: 8px !important;
           }
-          .add-question-btn {
-            padding: 10px 14px !important;
-            font-size: 0.9rem !important;
-          }
-          .question-section > div:first-child button {
-            padding: 8px 14px !important;
+          .answer-buttons button {
+            flex: 1 !important;
+            padding: 10px 12px !important;
             font-size: 0.85rem !important;
+          }
+          button[onclick*="addQuestion"] {
+            width: 100% !important;
+            padding: 12px 16px !important;
+          }
+          button[onclick*="removeQuestion"] {
+            width: 100% !important;
+            padding: 10px 16px !important;
+            margin-top: 8px !important;
           }
           .question-section > div:first-child {
             flex-direction: column !important;
@@ -1739,25 +1652,6 @@ export default function EditQuiz() {
           }
           .form-container {
             padding: 12px !important;
-          }
-          .answer-buttons-container {
-            flex-direction: row !important;
-            flex-wrap: wrap !important;
-          }
-          .answer-buttons-container button {
-            flex: 1 1 calc(50% - 4px) !important;
-            min-width: calc(50% - 4px) !important;
-            max-width: calc(50% - 4px) !important;
-          }
-          @media (max-width: 360px) {
-            .answer-buttons-container {
-              flex-direction: column !important;
-            }
-            .answer-buttons-container button {
-              flex: 1 1 100% !important;
-              width: 100% !important;
-              max-width: 100% !important;
-            }
           }
           .question-section {
             padding: 16px !important;
@@ -1781,18 +1675,19 @@ export default function EditQuiz() {
           .correct-answer-radio span {
             font-size: 0.85rem;
           }
-          .answer-buttons-container .add-option-btn,
-          .answer-buttons-container .remove-option-btn {
+          .answer-option-row > div:last-child button {
             padding: 8px 10px !important;
             font-size: 0.8rem !important;
-            flex: 1 1 100% !important;
-            min-width: 100% !important;
           }
-          .add-question-btn {
+          .answer-buttons button {
+            padding: 8px 10px !important;
+            font-size: 0.8rem !important;
+          }
+          button[onclick*="addQuestion"] {
             padding: 10px 14px !important;
             font-size: 0.9rem !important;
           }
-          .question-section > div:first-child button {
+          button[onclick*="removeQuestion"] {
             padding: 8px 14px !important;
             font-size: 0.85rem !important;
           }

@@ -65,12 +65,22 @@ export default function HomeworkResult() {
         // Get homework and saved result from database
         const response = await apiClient.get(`/api/students/${profile.id}/homework-details?homework_id=${id}`);
         
-        if (response && response.data && response.data.success) {
+        // Handle both success and no-result cases
+        if (response && response.data) {
           const hw = response.data.homework;
           const savedResult = response.data.result;
+          const hasResult = response.data.hasResult;
           
-          if (!hw || !savedResult) {
-            console.error('Missing homework or result data:', { hw: !!hw, savedResult: !!savedResult });
+          // If no result found, redirect to homework list
+          if (!hasResult || !savedResult) {
+            console.log('No homework result found, redirecting...');
+            setIsLoading(false);
+            router.push('/student_dashboard/my_homeworks');
+            return;
+          }
+          
+          if (!hw) {
+            console.error('Missing homework data');
             setIsLoading(false);
             router.push('/student_dashboard/my_homeworks');
             return;

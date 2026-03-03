@@ -210,10 +210,12 @@ export default function MyQuizzes() {
     return `week ${String(weekNumber).padStart(2, '0')}`;
   };
 
-  // Get available weeks from quizzes (only weeks that exist in the data)
+  // Get available weeks from quizzes (only weeks that exist in the data and are Activated)
   const getAvailableWeeks = () => {
     const weekSet = new Set();
     quizzes.forEach(quiz => {
+      const effectiveState = quiz.state || quiz.account_state || 'Activated';
+      if (effectiveState === 'Deactivated') return;
       if (quiz.week !== undefined && quiz.week !== null) {
         weekSet.add(weekNumberToString(quiz.week));
       }
@@ -229,6 +231,11 @@ export default function MyQuizzes() {
 
   // Filter quizzes based on search and filters
   const filteredQuizzes = quizzes.filter(quiz => {
+    // Hide deactivated quizzes
+    const effectiveState = quiz.state || quiz.account_state || 'Activated';
+    if (effectiveState === 'Deactivated') {
+      return false;
+    }
     // Search filter (by lesson name - case-insensitive)
     if (searchTerm.trim()) {
       const lessonName = quiz.lesson_name || '';
@@ -290,6 +297,24 @@ export default function MyQuizzes() {
   });
 
   const chartData = performanceData?.chartData || [];
+
+  // Only show chart lessons that have at least one Activated quiz
+  const activeLessons = new Set(
+    quizzes
+      .filter(quiz => (quiz.state || quiz.account_state || 'Activated') === 'Activated' && quiz.lesson)
+      .map(quiz => quiz.lesson)
+  );
+
+  const filteredChartData = Array.isArray(chartData)
+    ? chartData.filter(item => {
+        const label = (item.week || '').toString().toLowerCase();
+        if (!label) return false;
+        if (activeLessons.size === 0) return true;
+        return Array.from(activeLessons).some(lesson =>
+          label.includes(String(lesson).toLowerCase())
+        );
+      })
+    : [];
 
   // Refetch chart data when returning to this page
   useEffect(() => {
@@ -442,8 +467,8 @@ export default function MyQuizzes() {
   // Check deadlines and update student weeks if needed
   useEffect(() => {
     if (!profile?.id || quizzes.length === 0) return;
-    // Wait for studentWeeks to be loaded at least once before checking deadlines
-    if (!weeksLoaded) return;
+    // Allow the check to proceed even if weeksLoaded is false - we'll treat studentWeeks as empty array
+    // The API will create the week if it doesn't exist
 
     const checkDeadlines = async () => {
       for (const quiz of quizzes) {
@@ -459,22 +484,62 @@ export default function MyQuizzes() {
             const weekNum = typeof quiz.week === 'number' ? quiz.week : parseInt(quiz.week, 10);
             if (!isNaN(weekNum)) {
               // Check current week data to see if we need to update
-              const weekData = studentWeeks.find(w => {
+              let weekData = studentWeeks.find(w => {
                 const wWeek = typeof w.week === 'number' ? w.week : parseInt(w.week, 10);
                 return !isNaN(wWeek) && wWeek === weekNum;
               });
+              
+              // Ensure week exists - if not, create it with default schema
+              if (!weekData) {
+                try {
+                  // Create week with default schema by calling the quiz_degree API
+                  // The API will create the week if it doesn't exist
+                  await apiClient.post(`/api/students/${profile.id}/quiz_degree`, {
+                    week: weekNum,
+                    quizDegree: null
+                  });
+                  // Refresh student data to get the newly created week
+                  const studentResponse = await apiClient.get(`/api/students/${profile.id}`);
+                  if (studentResponse.data && Array.isArray(studentResponse.data.weeks)) {
+                    setStudentWeeks(studentResponse.data.weeks);
+                    weekData = studentResponse.data.weeks.find(w => {
+                      const wWeek = typeof w.week === 'number' ? w.week : parseInt(w.week, 10);
+                      return !isNaN(wWeek) && wWeek === weekNum;
+                    });
+                  }
+                } catch (createErr) {
+                  console.error(`Error creating week ${weekNum}:`, createErr);
+                  continue; // Skip this quiz if we can't create the week
+                }
+              }
+              
+              // Protected values that should never be overwritten
+              // Protected: "Didn't Attend The Quiz", "No Quiz", and any score text (e.g. "8 / 10")
+              const protectedQuizDegreeValues = ["Didn't Attend The Quiz", "No Quiz"];
+              const isScoreText = (value) => {
+                if (!value || typeof value !== 'string') return false;
+                // Check if it's a score format like "8 / 10" or contains numbers
+                return /\d+\s*\/\s*\d+/.test(value) || /^\d+$/.test(value.trim());
+              };
+              
+              // Check if quizDegree is protected or score text - if so, skip this quiz
+              if (weekData && weekData.quizDegree !== null && weekData.quizDegree !== undefined) {
+                if (protectedQuizDegreeValues.includes(weekData.quizDegree) || 
+                    isScoreText(weekData.quizDegree)) {
+                  // Skip - protected value or score, don't override
+                  continue;
+                }
+              }
               
               // Create unique key for this quiz deadline check
               const deadlineKey = `quiz_${quiz._id}_week_${weekNum}`;
               
               // Only update and apply scoring if:
               // 1. We haven't already applied penalty for this quiz (tracked in ref)
-              // 2. quizDegree is NOT already "Didn't Attend The Quiz"
+              // 2. quizDegree is strictly null (not undefined, not protected values, not score text)
               const shouldApplyDeadlinePenalty = !deadlinePenaltiesAppliedRef.current.has(deadlineKey) &&
                                                  (!weekData || 
-                                                  weekData.quizDegree === null || 
-                                                  weekData.quizDegree === undefined ||
-                                                  weekData.quizDegree !== "Didn't Attend The Quiz");
+                                                  weekData.quizDegree === null);
               
               if (shouldApplyDeadlinePenalty) {
                 try {

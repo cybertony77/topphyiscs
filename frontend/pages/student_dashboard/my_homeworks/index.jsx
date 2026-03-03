@@ -210,10 +210,12 @@ export default function MyHomeworks() {
     return `week ${String(weekNumber).padStart(2, '0')}`;
   };
 
-  // Get available weeks from homeworks (only weeks that exist in the data)
+  // Get available weeks from homeworks (only weeks that exist in the data and are Activated)
   const getAvailableWeeks = () => {
     const weekSet = new Set();
     homeworks.forEach(homework => {
+      const effectiveState = homework.state || homework.account_state || 'Activated';
+      if (effectiveState === 'Deactivated') return;
       if (homework.week !== undefined && homework.week !== null) {
         weekSet.add(weekNumberToString(homework.week));
       }
@@ -229,6 +231,11 @@ export default function MyHomeworks() {
 
   // Filter homeworks based on search and filters
   const filteredHomeworks = homeworks.filter(homework => {
+    // Hide deactivated homeworks
+    const effectiveState = homework.state || homework.account_state || 'Activated';
+    if (effectiveState === 'Deactivated') {
+      return false;
+    }
     // Search filter (by lesson name - case-insensitive)
     if (searchTerm.trim()) {
       const lessonName = homework.lesson_name || '';
@@ -290,6 +297,24 @@ export default function MyHomeworks() {
   });
 
   const chartData = performanceData?.chartData || [];
+
+  // Only show chart lessons that have at least one Activated homework
+  const activeLessons = new Set(
+    homeworks
+      .filter(hw => (hw.state || hw.account_state || 'Activated') === 'Activated' && hw.lesson)
+      .map(hw => hw.lesson)
+  );
+
+  const filteredChartData = Array.isArray(chartData)
+    ? chartData.filter(item => {
+        const label = (item.week || '').toString().toLowerCase();
+        if (!label) return false;
+        if (activeLessons.size === 0) return true;
+        return Array.from(activeLessons).some(lesson =>
+          label.includes(String(lesson).toLowerCase())
+        );
+      })
+    : [];
 
   // Refetch chart data when returning to this page
   useEffect(() => {
@@ -478,8 +503,8 @@ export default function MyHomeworks() {
   // Check deadlines and update student weeks if needed
   useEffect(() => {
     if (!profile?.id || homeworks.length === 0) return;
-    // Wait for studentWeeks to be loaded at least once before checking deadlines
-    if (!weeksLoaded) return;
+    // Allow the check to proceed even if weeksLoaded is false - we'll treat studentWeeks as empty array
+    // The API will create the week if it doesn't exist
 
     const checkDeadlines = async () => {
       for (const homework of homeworks) {
@@ -495,10 +520,34 @@ export default function MyHomeworks() {
             const weekNum = typeof homework.week === 'number' ? homework.week : parseInt(homework.week, 10);
             if (!isNaN(weekNum)) {
               // Check current week data to see if we need to update
-              const weekData = studentWeeks.find(w => {
+              let weekData = studentWeeks.find(w => {
                 const wWeek = typeof w.week === 'number' ? w.week : parseInt(w.week, 10);
                 return !isNaN(wWeek) && wWeek === weekNum;
               });
+              
+              // Ensure week exists - if not, create it with default schema
+              if (!weekData) {
+                try {
+                  // Create week with default schema by calling the hw API
+                  // The API will create the week if it doesn't exist
+                  await apiClient.post(`/api/students/${profile.id}/hw`, {
+                    week: weekNum,
+                    hwDone: false
+                  });
+                  // Refresh student data to get the newly created week
+                  const studentResponse = await apiClient.get(`/api/students/${profile.id}`);
+                  if (studentResponse.data && Array.isArray(studentResponse.data.weeks)) {
+                    setStudentWeeks(studentResponse.data.weeks);
+                    weekData = studentResponse.data.weeks.find(w => {
+                      const wWeek = typeof w.week === 'number' ? w.week : parseInt(w.week, 10);
+                      return !isNaN(wWeek) && wWeek === weekNum;
+                    });
+                  }
+                } catch (createErr) {
+                  console.error(`Error creating week ${weekNum}:`, createErr);
+                  continue; // Skip this homework if we can't create the week
+                }
+              }
               
               // Protected values that should never be overwritten
               const protectedHwDoneValues = [true, "Not Completed", "No Homework"];
@@ -883,34 +932,36 @@ export default function MyHomeworks() {
                       if (completedHomeworks.has(homework._id)) {
                         return (
                           <>
-                            <button
-                              onClick={() => router.push(`/student_dashboard/my_homeworks/details?id=${homework._id}`)}
-                              style={{
-                                padding: '8px 16px',
-                                backgroundColor: '#1FA8DC',
-                                color: 'white',
-                                border: 'none',
-                                borderRadius: '8px',
-                                cursor: 'pointer',
-                                fontSize: '0.9rem',
-                                fontWeight: '600',
-                                transition: 'all 0.2s ease',
-                                display: 'flex',
-                                alignItems: 'center',
-                                gap: '8px'
-                              }}
-                              onMouseEnter={(e) => {
-                                e.target.style.backgroundColor = '#0d5a7a';
-                                e.target.style.transform = 'translateY(-1px)';
-                              }}
-                              onMouseLeave={(e) => {
-                                e.target.style.backgroundColor = '#1FA8DC';
-                                e.target.style.transform = 'translateY(0)';
-                              }}
-                            >
-                              <Image src="/details.svg" alt="Details" width={18} height={18} />
-                              Details
-                            </button>
+                            {(homework.show_details_after_submitting === true || homework.show_details_after_submitting === 'true') && (
+                              <button
+                                onClick={() => router.push(`/student_dashboard/my_homeworks/details?id=${homework._id}`)}
+                                style={{
+                                  padding: '8px 16px',
+                                  backgroundColor: '#1FA8DC',
+                                  color: 'white',
+                                  border: 'none',
+                                  borderRadius: '8px',
+                                  cursor: 'pointer',
+                                  fontSize: '0.9rem',
+                                  fontWeight: '600',
+                                  transition: 'all 0.2s ease',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  gap: '8px'
+                                }}
+                                onMouseEnter={(e) => {
+                                  e.target.style.backgroundColor = '#0d5a7a';
+                                  e.target.style.transform = 'translateY(-1px)';
+                                }}
+                                onMouseLeave={(e) => {
+                                  e.target.style.backgroundColor = '#1FA8DC';
+                                  e.target.style.transform = 'translateY(0)';
+                                }}
+                              >
+                                <Image src="/details.svg" alt="Details" width={18} height={18} />
+                                Details
+                              </button>
+                            )}
                             <button
                               style={{
                                 padding: '8px 16px',

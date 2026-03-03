@@ -3,6 +3,7 @@ import { useRouter } from "next/router";
 import Title from '../../../../components/Title';
 import AttendanceWeekSelect from '../../../../components/AttendanceWeekSelect';
 import GradeSelect from '../../../../components/GradeSelect';
+import AccountStateSelect from '../../../../components/AccountStateSelect';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import apiClient from '../../../../lib/axios';
 import Image from 'next/image';
@@ -29,7 +30,6 @@ export default function AddHomework() {
     timer_type: 'no_timer',
     timer: null,
     shuffle_questions_and_answers: false,
-    show_details_after_submitting: false,
     questions: [{
       question_text: '',
       question_picture: null,
@@ -49,6 +49,7 @@ export default function AddHomework() {
   const [imagePreviews, setImagePreviews] = useState({});
   const [dragOverIndex, setDragOverIndex] = useState(null);
   const errorTimeoutRef = useRef(null);
+  const [accountState, setAccountState] = useState('Activated');
 
   // Fetch all homeworks for duplicate validation
   const { data: homeworksData } = useQuery({
@@ -341,8 +342,8 @@ export default function AddHomework() {
       questions: [...prev.questions, {
         question_text: '',
         question_picture: null,
-        answers: ['A', 'B'],
-        answer_texts: ['', ''],
+        answers: ['A', 'B', 'C', 'D'],
+        answer_texts: ['', '', '', ''],
         correct_answer: '',
         question_explanation: ''
       }]
@@ -407,22 +408,12 @@ export default function AddHomework() {
         newErrors.to_page = '❌ To page must be greater than or equal to from page';
       }
     } else if (formData.homework_type === 'questions') {
-    // Validate timer if with timer is selected
-    if (formData.timer_type === 'with_timer') {
-      if (!formData.timer || parseInt(formData.timer) < 1) {
-        newErrors.timer = '❌ Timer must be at least 1 minute';
+      // Validate timer if with timer is selected
+      if (formData.timer_type === 'with_timer') {
+        if (!formData.timer || parseInt(formData.timer) < 1) {
+          newErrors.timer = '❌ Timer must be at least 1 minute';
+        }
       }
-    }
-    
-    // Validate shuffle_questions_and_answers is required
-    if (formData.shuffle_questions_and_answers === undefined || formData.shuffle_questions_and_answers === null) {
-      newErrors.shuffle_questions_and_answers = '❌ Shuffle Questions and Answers is required';
-    }
-
-    // Validate show_details_after_submitting is required
-    if (formData.show_details_after_submitting === undefined || formData.show_details_after_submitting === null) {
-      newErrors.show_details_after_submitting = '❌ Show details after submitting is required';
-    }
       // Validate questions
       formData.questions.forEach((q, qIdx) => {
         // Each question must have at least question text OR image (or both)
@@ -454,6 +445,16 @@ export default function AddHomework() {
           newErrors.deadline_date = '❌ Deadline date must be in the future';
         }
       }
+    }
+    
+    // Validate shuffle_questions_and_answers is required
+    if (formData.shuffle_questions_and_answers === undefined || formData.shuffle_questions_and_answers === null) {
+      newErrors.shuffle_questions_and_answers = '❌ Shuffle Questions and Answers is required';
+    }
+
+    // Validate show_details_after_submitting is required
+    if (formData.show_details_after_submitting === undefined || formData.show_details_after_submitting === null) {
+      newErrors.show_details_after_submitting = '❌ Show details after submitting is required';
     }
 
     if (Object.keys(newErrors).length > 0) {
@@ -503,6 +504,9 @@ export default function AddHomework() {
       shuffle_questions_and_answers: formData.homework_type === 'questions' ? formData.shuffle_questions_and_answers : false,
       show_details_after_submitting: formData.homework_type === 'questions' ? formData.show_details_after_submitting : false,
     };
+
+    // Attach state (Activated/Deactivated)
+    submitData.state = accountState && accountState !== '' ? accountState : 'Activated';
 
     if (formData.homework_type === 'pages_from_book') {
       submitData.book_name = formData.book_name.trim();
@@ -593,6 +597,16 @@ export default function AddHomework() {
               )}
             </div>
 
+            {/* Homework State */}
+            <div style={{ marginBottom: '20px' }}>
+              <AccountStateSelect
+                value={accountState}
+                onChange={setAccountState}
+                label="Homework State"
+                placeholder="Select State"
+              />
+            </div>
+
             {/* Lesson Name */}
             <div style={{ marginBottom: '20px' }}>
               <label style={{ display: 'block', marginBottom: '8px', fontWeight: '600', textAlign: 'left' }}>
@@ -655,14 +669,14 @@ export default function AddHomework() {
                     setFormData({ 
                       ...formData, 
                       homework_type: 'pages_from_book',
-                      questions: [{
-                        question_text: '',
-                        question_picture: null,
-                        answers: ['A', 'B'],
-                        answer_texts: ['', ''],
-                        correct_answer: '',
-                        question_explanation: ''
-                      }],
+    questions: [{
+      question_text: '',
+      question_picture: null,
+      answers: ['A', 'B', 'C', 'D'],
+      answer_texts: ['', '', '', ''],
+      correct_answer: '',
+      question_explanation: ''
+    }],
                       timer_type: 'no_timer',
                       timer: null
                     });
@@ -1534,15 +1548,15 @@ export default function AddHomework() {
           .submit-buttons button {
             width: 100%;
           }
-          .answer-input-row {
-            align-items: flex-end !important;
+          .answer-option-row {
             flex-direction: column !important;
+            align-items: stretch !important;
             gap: 8px !important;
           }
-          .answer-input-row > div:first-child {
-            width: 100% !important;
+          .answer-option-row > div:first-child {
+            align-self: flex-start !important;
           }
-          .answer-input-row input {
+          .answer-option-row input {
             width: 100% !important;
           }
           .answer-buttons-container {
@@ -1570,17 +1584,17 @@ export default function AddHomework() {
             justify-content: center !important;
             text-align: center !important;
           }
+          .question-section > div:first-child {
+            flex-direction: column !important;
+            align-items: flex-start !important;
+            gap: 12px !important;
+          }
           .question-section > div:first-child button {
             width: 100% !important;
             padding: 10px 16px !important;
             margin-top: 8px !important;
             justify-content: center !important;
             text-align: center !important;
-          }
-          .question-section > div:first-child {
-            flex-direction: column !important;
-            align-items: flex-start !important;
-            gap: 12px !important;
           }
         }
         @media (max-width: 480px) {
@@ -1615,21 +1629,6 @@ export default function AddHomework() {
           }
           .correct-answer-radio span {
             font-size: 0.85rem;
-          }
-          .answer-buttons-container .add-option-btn,
-          .answer-buttons-container .remove-option-btn {
-            padding: 8px 10px !important;
-            font-size: 0.8rem !important;
-            flex: 1 1 100% !important;
-            min-width: 100% !important;
-          }
-          .add-question-btn {
-            padding: 10px 14px !important;
-            font-size: 0.9rem !important;
-          }
-          .question-section > div:first-child button {
-            padding: 8px 14px !important;
-            font-size: 0.85rem !important;
           }
         }
         @media (max-width: 360px) {

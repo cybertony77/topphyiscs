@@ -3,6 +3,7 @@ import { useRouter } from "next/router";
 import Title from '../../../../components/Title';
 import AttendanceWeekSelect from '../../../../components/AttendanceWeekSelect';
 import GradeSelect from '../../../../components/GradeSelect';
+import AccountStateSelect from '../../../../components/AccountStateSelect';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import apiClient from '../../../../lib/axios';
 import Image from 'next/image';
@@ -25,12 +26,11 @@ export default function AddQuiz() {
     timer_type: 'no_timer',
     timer: null,
     shuffle_questions_and_answers: false,
-    show_details_after_submitting: false,
     questions: [{
       question_text: '',
       question_picture: null,
-      answers: ['A', 'B'],
-      answer_texts: ['', ''], // Text for each answer option
+      answers: ['A', 'B', 'C', 'D'],
+      answer_texts: ['', '', '', ''], // Text for each answer option
       correct_answer: '',
       question_explanation: '' // Explanation for the question (optional)
     }] || []
@@ -44,6 +44,7 @@ export default function AddQuiz() {
   const [imagePreviews, setImagePreviews] = useState({});
   const [dragOverIndex, setDragOverIndex] = useState(null);
   const errorTimeoutRef = useRef(null);
+  const [accountState, setAccountState] = useState('Activated');
 
   // Fetch all quizzes for duplicate validation
   const { data: quizzesData } = useQuery({
@@ -434,10 +435,8 @@ export default function AddQuiz() {
       });
     }
 
-    // Validate deadline - deadline is now required
-    if (!formData.deadline_type || formData.deadline_type === '') {
-      newErrors.deadline_type = '❌ Deadline type is required';
-    } else if (formData.deadline_type === 'with_deadline') {
+    // Validate deadline date if with deadline is selected
+    if (formData.deadline_type === 'with_deadline') {
       if (!formData.deadline_date) {
         newErrors.deadline_date = '❌ Deadline date is required';
       } else {
@@ -507,6 +506,9 @@ export default function AddQuiz() {
       shuffle_questions_and_answers: formData.shuffle_questions_and_answers,
       show_details_after_submitting: formData.show_details_after_submitting,
     };
+
+    // Attach state (Activated/Deactivated)
+    submitData.state = accountState && accountState !== '' ? accountState : 'Activated';
 
     if (formData.questions && Array.isArray(formData.questions)) {
       submitData.questions = formData.questions.map(q => ({
@@ -593,6 +595,16 @@ export default function AddQuiz() {
               )}
             </div>
 
+            {/* Quiz State */}
+            <div style={{ marginBottom: '20px' }}>
+              <AccountStateSelect
+                value={accountState}
+                onChange={setAccountState}
+                label="Quiz State"
+                placeholder="Select State"
+              />
+            </div>
+
             {/* Lesson Name */}
             <div style={{ marginBottom: '20px' }}>
               <label style={{ display: 'block', marginBottom: '8px', fontWeight: '600', textAlign: 'left' }}>
@@ -624,7 +636,7 @@ export default function AddQuiz() {
                 {/* Deadline Radio */}
                 <div style={{ marginBottom: '20px' }}>
                   <label style={{ display: 'block', marginBottom: '12px', fontWeight: '600', textAlign: 'left' }}>
-                    Deadline <span style={{ color: 'red' }}>*</span>
+                    Deadline
                   </label>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
                     <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer', padding: '10px', borderRadius: '8px', border: formData.deadline_type === 'no_deadline' ? '2px solid #1FA8DC' : '2px solid #e9ecef', backgroundColor: formData.deadline_type === 'no_deadline' ? '#f0f8ff' : 'white' }}>
@@ -837,9 +849,7 @@ export default function AddQuiz() {
                         fontWeight: '600',
                         display: 'flex',
                         alignItems: 'center',
-                        justifyContent: 'center',
-                        gap: '6px',
-                        textAlign: 'center'
+                        gap: '6px'
                       }}
                     >
                       <Image src="/trash2.svg" alt="Remove" width={18} height={18} style={{ display: 'inline-block' }} />
@@ -1128,7 +1138,6 @@ export default function AddQuiz() {
                               <button
                                 type="button"
                                 onClick={() => removeAnswer(qIdx, aIdx)}
-                                className="remove-option-btn"
                                 style={{
                                   padding: '8px 16px',
                                   backgroundColor: '#dc3545',
@@ -1140,20 +1149,17 @@ export default function AddQuiz() {
                                   fontWeight: '600',
                                   display: 'flex',
                                   alignItems: 'center',
-                                  justifyContent: 'center',
-                                  gap: '6px',
-                                  textAlign: 'center'
+                                  gap: '6px'
                                 }}
                               >
                                 <Image src="/trash2.svg" alt="Remove" width={18} height={18} style={{ display: 'inline-block' }} />
-                                Remove Option
+                                Remove
                               </button>
                             )}
                             {showAddButton && (
                               <button
                                 type="button"
                                 onClick={() => addAnswer(qIdx)}
-                                className="add-option-btn"
                                 style={{
                                   padding: '8px 16px',
                                   backgroundColor: '#28a745',
@@ -1165,9 +1171,7 @@ export default function AddQuiz() {
                                   fontWeight: '600',
                                   display: 'flex',
                                   alignItems: 'center',
-                                  justifyContent: 'center',
-                                  gap: '6px',
-                                  textAlign: 'center'
+                                  gap: '6px'
                                 }}
                               >
                                 <Image src="/plus.svg" alt="Add" width={18} height={18} style={{ display: 'inline-block' }} />
@@ -1255,11 +1259,10 @@ export default function AddQuiz() {
             ))}
 
                 {/* Add Question Button */}
-                <div className="add-question-container" style={{ marginBottom: '24px', display: 'flex', justifyContent: 'flex-end' }}>
+                <div style={{ marginBottom: '24px', display: 'flex', justifyContent: 'flex-end' }}>
                   <button
                     type="button"
                     onClick={addQuestion}
-                    className="add-question-btn"
                     style={{
                       padding: '12px 24px',
                       backgroundColor: '#28a745',
@@ -1272,8 +1275,7 @@ export default function AddQuiz() {
                       display: 'flex',
                       alignItems: 'center',
                       justifyContent: 'center',
-                      gap: '6px',
-                      textAlign: 'center'
+                      gap: '6px'
                     }}
                   >
                     <Image src="/plus.svg" alt="Add" width={20} height={20} style={{ display: 'inline-block' }} />
@@ -1315,11 +1317,7 @@ export default function AddQuiz() {
                   cursor: (createQuizMutation.isPending || Object.values(uploadingImages).some(val => val === true)) ? 'not-allowed' : 'pointer',
                   fontSize: '1rem',
                   fontWeight: '600',
-                  opacity: (createQuizMutation.isPending || Object.values(uploadingImages).some(val => val === true)) ? 0.7 : 1,
-                  textAlign: 'center',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center'
+                  opacity: (createQuizMutation.isPending || Object.values(uploadingImages).some(val => val === true)) ? 0.7 : 1
                 }}
               >
                 {createQuizMutation.isPending ? 'Saving...' : 'Save'}
@@ -1337,11 +1335,7 @@ export default function AddQuiz() {
                   cursor: createQuizMutation.isPending ? 'not-allowed' : 'pointer',
                   fontSize: '1rem',
                   fontWeight: '600',
-                  opacity: createQuizMutation.isPending ? 0.7 : 1,
-                  textAlign: 'center',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center'
+                  opacity: createQuizMutation.isPending ? 0.7 : 1
                 }}
               >
                 Cancel
@@ -1374,35 +1368,6 @@ export default function AddQuiz() {
           .form-container {
             padding: 16px !important;
           }
-          .answer-buttons-container {
-            flex-direction: row !important;
-            flex-wrap: wrap !important;
-            margin-top: 8px !important;
-          }
-          .answer-buttons-container button {
-            flex: 1 1 calc(50% - 4px) !important;
-            min-width: calc(50% - 4px) !important;
-            max-width: calc(50% - 4px) !important;
-          }
-          .add-question-container {
-            flex-direction: row !important;
-            flex-wrap: wrap !important;
-            justify-content: flex-end !important;
-          }
-          .add-question-container button {
-            flex: 1 1 calc(50% - 4px) !important;
-            min-width: calc(50% - 4px) !important;
-            max-width: calc(50% - 4px) !important;
-          }
-          .question-section > div:first-child {
-            flex-direction: column !important;
-            align-items: flex-start !important;
-            gap: 12px !important;
-          }
-          .question-section > div:first-child button {
-            width: 100% !important;
-            flex: 1 1 100% !important;
-          }
           .submit-buttons {
             flex-direction: column;
             gap: 10px;
@@ -1410,45 +1375,11 @@ export default function AddQuiz() {
           .submit-buttons button {
             width: 100%;
           }
-          .answer-option-row input {
-            width: 100% !important;
+          .answer-input-row {
+            align-items: flex-end !important;
           }
-          .answer-buttons-container {
-            width: 100% !important;
-            display: flex !important;
-            gap: 8px !important;
-            flex-wrap: wrap !important;
-          }
-          .answer-buttons-container .add-option-btn,
-          .answer-buttons-container .remove-option-btn {
-            flex: 1 1 calc(50% - 4px) !important;
-            min-width: calc(50% - 4px) !important;
-            padding: 10px 12px !important;
-            font-size: 0.85rem !important;
-            justify-content: center !important;
-            text-align: center !important;
-          }
-          .add-question-container {
-            width: 100% !important;
-            justify-content: center !important;
-          }
-          .add-question-btn {
-            width: 100% !important;
-            padding: 12px 16px !important;
-            justify-content: center !important;
-            text-align: center !important;
-          }
-          .question-section > div:first-child {
-            flex-direction: column !important;
-            align-items: flex-start !important;
-            gap: 12px !important;
-          }
-          .question-section > div:first-child button {
-            width: 100% !important;
-            padding: 10px 16px !important;
-            margin-top: 8px !important;
-            justify-content: center !important;
-            text-align: center !important;
+          .answer-buttons {
+            margin-top: 0 !important;
           }
         }
         @media (max-width: 480px) {
@@ -1461,25 +1392,6 @@ export default function AddQuiz() {
           }
           .form-container {
             padding: 12px !important;
-          }
-          .answer-buttons-container {
-            flex-direction: row !important;
-            flex-wrap: wrap !important;
-          }
-          .answer-buttons-container button {
-            flex: 1 1 calc(50% - 4px) !important;
-            min-width: calc(50% - 4px) !important;
-            max-width: calc(50% - 4px) !important;
-          }
-          @media (max-width: 360px) {
-            .answer-buttons-container {
-              flex-direction: column !important;
-            }
-            .answer-buttons-container button {
-              flex: 1 1 100% !important;
-              width: 100% !important;
-              max-width: 100% !important;
-            }
           }
           .question-section {
             padding: 16px !important;
@@ -1502,21 +1414,6 @@ export default function AddQuiz() {
           }
           .correct-answer-radio span {
             font-size: 0.85rem;
-          }
-          .answer-buttons-container .add-option-btn,
-          .answer-buttons-container .remove-option-btn {
-            padding: 8px 10px !important;
-            font-size: 0.8rem !important;
-            flex: 1 1 100% !important;
-            min-width: 100% !important;
-          }
-          .add-question-btn {
-            padding: 10px 14px !important;
-            font-size: 0.9rem !important;
-          }
-          .question-section > div:first-child button {
-            padding: 8px 14px !important;
-            font-size: 0.85rem !important;
           }
         }
         @media (max-width: 360px) {

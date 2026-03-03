@@ -463,19 +463,15 @@ export default function QuizStart() {
                 : null;
             }
             
-            // Check if answer_texts have actual content (not all empty strings)
-            const hasMeaningfulAnswerTexts = originalQ && originalQ.answer_texts && Array.isArray(originalQ.answer_texts) && 
-              originalQ.answer_texts.length > 0 && 
-              originalQ.answer_texts.some(text => text && text.trim() !== '');
-            
-            // Only use text comparison if answer_texts have meaningful content AND correctAnswerText exists and is not empty
-            const shouldCheckByText = hasMeaningfulAnswerTexts && correctAnswerText && correctAnswerText.trim() !== '';
-            
             // Check if correct - need to map shuffled answer back to original
             let isCorrect = false;
             
             // Only use text mapping if answer_texts have meaningful content
             // If answer_texts are all empty, treat as if there are no answer_texts (just compare by letter)
+            const hasMeaningfulAnswerTexts = originalQ && originalQ.answer_texts && Array.isArray(originalQ.answer_texts) && 
+              originalQ.answer_texts.length > 0 && 
+              originalQ.answer_texts.some(text => text && text.trim() !== '');
+            
             if (hasMeaningfulAnswerTexts && shuffleMapping && shuffleMapping.textOrder && shuffleMapping.textOrder[shuffledIdx] && questionItem && questionItem.answer_texts && Array.isArray(questionItem.answer_texts) && originalQ && originalQ.answer_texts && Array.isArray(originalQ.answer_texts)) {
               // Answers were shuffled - map student's selected answer back to original
               const textMapping = shuffleMapping.textOrder[shuffledIdx];
@@ -493,6 +489,9 @@ export default function QuizStart() {
                     const originalAnswerLetter = originalQ.answers[originalTextIdx]?.toLowerCase() || null;
                     const originalAnswerText = originalQ.answer_texts && originalQ.answer_texts[originalTextIdx] ? originalQ.answer_texts[originalTextIdx] : null;
                     
+                    // Only use text comparison if answer_texts have meaningful content AND correctAnswerText exists and is not empty
+                    const shouldCheckByText = hasMeaningfulAnswerTexts && correctAnswerText && correctAnswerText.trim() !== '';
+                    
                     // Check if this matches the correct answer
                     if (shouldCheckByText) {
                       // If answer_texts have meaningful content and correct answer has text, check both letter and text
@@ -507,6 +506,9 @@ export default function QuizStart() {
               }
             } else {
               // No shuffling - direct comparison
+              // Only use text comparison if answer_texts have meaningful content AND correctAnswerText exists and is not empty
+              const shouldCheckByText = hasMeaningfulAnswerTexts && correctAnswerText && correctAnswerText.trim() !== '';
+              
               if (shouldCheckByText) {
                 // If answer_texts have meaningful content and correct answer has text, check both letter and text
                 // Get the text from originalQ.answer_texts if selectedAnswerText is not set
@@ -710,7 +712,6 @@ export default function QuizStart() {
 
       // Save result to database (no questions_order needed - use quiz_id to fetch questions)
       // Now pointsAdded is calculated and can be included
-      console.log('📤 Sending student_answers to API:', JSON.stringify(studentAnswersObj, null, 2));
       const saveResponse = await apiClient.post(`/api/students/${profile.id}/quiz-result`, {
         quiz_id: fullQuiz._id.toString(),
         week: fullQuiz.week !== undefined && fullQuiz.week !== null ? fullQuiz.week : null,

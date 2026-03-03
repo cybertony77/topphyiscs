@@ -181,7 +181,7 @@ export default function OnlineSessions() {
   const videoContainerRef = useRef(null);
   const videoStartTimeRef = useRef(null); // Track when video was opened
   const isClosingVideoRef = useRef(false); // Prevent multiple close calls
-  const r2CompletedRef = useRef(false);
+  const r2CompletedRef = useRef(false); // Track if R2 video was completed (>= 90%)
   const [vvcPopupOpen, setVvcPopupOpen] = useState(false);
   const [vvc, setVvc] = useState('');
   const [vvcError, setVvcError] = useState('');
@@ -224,10 +224,12 @@ export default function OnlineSessions() {
     return `week ${String(weekNumber).padStart(2, '0')}`;
   };
 
-  // Get available weeks from sessions (only weeks that exist in the data)
+  // Get available weeks from sessions (only weeks that exist in the data and are Activated)
   const getAvailableWeeks = () => {
     const weekSet = new Set();
     sessions.forEach(session => {
+      const effectiveState = session.state || session.account_state || 'Activated';
+      if (effectiveState === 'Deactivated') return;
       if (session.week !== undefined && session.week !== null) {
         weekSet.add(weekNumberToString(session.week));
       }
@@ -243,6 +245,11 @@ export default function OnlineSessions() {
 
   // Filter sessions based on search and filters
   const filteredSessions = sessions.filter(session => {
+    // Hide deactivated sessions
+    const effectiveState = session.state || session.account_state || 'Activated';
+    if (effectiveState === 'Deactivated') {
+      return false;
+    }
     // Search filter (by lesson name - case-insensitive)
     if (searchTerm.trim()) {
       const lessonName = session.name || '';
@@ -431,6 +438,7 @@ export default function OnlineSessions() {
     setVvcError('');
   };
 
+  // Handle R2 video completion (>= 90% watched)
   const handleR2VideoComplete = useCallback(async (videoId, percent) => {
     r2CompletedRef.current = true;
     console.log(`[ONLINE SESSIONS] R2 video ${videoId} completed at ${Math.round(percent)}%`);

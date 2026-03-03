@@ -230,6 +230,11 @@ export default function AddOnlineSession() {
       newErrors.paymentState = '❌ Video Payment State is required';
     }
 
+    // Validate account state
+    if (!accountState || accountState.trim() === '') {
+      newErrors.accountState = '❌ Account State is required';
+    }
+
     // Validate name
     if (!formData.name.trim()) {
       newErrors.name = '❌ Name is required';
@@ -398,7 +403,14 @@ export default function AddOnlineSession() {
                 onChange={setAccountState}
                 label="Video State"
                 placeholder="Select State"
+                required={true}
+                error={errors.accountState}
               />
+              {errors.accountState && (
+                <div style={{ color: '#dc3545', fontSize: '0.875rem', marginTop: '4px' }}>
+                  {errors.accountState}
+                </div>
+              )}
             </div>
 
             {/* Video Payment State Radio */}

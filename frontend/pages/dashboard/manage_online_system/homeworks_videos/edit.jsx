@@ -280,6 +280,11 @@ export default function EditHomeworkVideo() {
       newErrors.name = '❌ Name is required';
     }
 
+    // Validate account state
+    if (!accountState || accountState.trim() === '') {
+      newErrors.accountState = '❌ Account State is required';
+    }
+
     const validVideos = formData.videos.filter(video => {
       return (video.r2_key && video.r2_key.trim()) || (video.youtube_url && video.youtube_url.trim());
     });

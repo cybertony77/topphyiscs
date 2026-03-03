@@ -292,6 +292,11 @@ export default function EditOnlineSession() {
       newErrors.name = '❌ Name is required';
     }
 
+    // Validate account state
+    if (!accountState || accountState.trim() === '') {
+      newErrors.accountState = '❌ Account State is required';
+    }
+
     // Validate videos - at least one must have either youtube_url or r2_key
     const validVideos = formData.videos.filter(video => {
       return (video.youtube_url && video.youtube_url.trim()) || (video.r2_key && video.r2_key.trim());

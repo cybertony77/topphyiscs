@@ -65,18 +65,42 @@ export default async function handler(req, res) {
     const allGroups = await db.collection('join_whatsapp_group').find({}).toArray();
 
     // Filter groups that match the student (case-insensitive comparison)
-    // If center exists in group, it must match student's center; if not, only match by grade and gender
+    // Match by course (or "All"), courseType (if exists), center, and gender
+    const studentCourse = (student.course || '').trim();
+    const studentCourseType = (student.courseType || '').trim();
+    const studentCenter = (student.main_center || '').trim();
+    const studentGender = (student.gender || '').trim();
+    
     const matchingGroups = allGroups.filter(group => {
-      const gradeMatch = (group.grade || '').toLowerCase().trim() === (student.grade || '').toLowerCase().trim();
-      const groupCenter = (group.center || '').trim();
-      const studentCenter = (student.main_center || '').trim();
-      
-      // If group has a center, it must match student's center
-      // If group has no center (empty), it matches any student
-      const centerMatch = groupCenter === '' || groupCenter.toLowerCase() === studentCenter.toLowerCase();
-      const genderMatch = group.gender === 'Both' || (group.gender || '').toLowerCase().trim() === (student.gender || '').toLowerCase().trim();
+      // Only Activated groups are visible to students (missing state = Activated for older records)
+      const groupState = (group.group_state || 'Activated').trim().toLowerCase();
+      if (groupState !== 'activated') return false;
 
-      return gradeMatch && centerMatch && genderMatch;
+      const groupCourse = (group.course || '').trim();
+      const groupCourseType = (group.courseType || '').trim();
+      const groupCenter = (group.center || '').trim();
+      const groupGender = (group.gender || '').trim();
+      
+      // Course match: group course is "All" or matches student's course
+      const courseMatch = groupCourse.toLowerCase() === 'all' || 
+                         groupCourse.toLowerCase() === studentCourse.toLowerCase();
+      
+      // CourseType match: if group has courseType, it must match student's courseType
+      // If group has no courseType, it matches any student
+      const courseTypeMatch = !groupCourseType || 
+                             groupCourseType === '' || 
+                             groupCourseType.toLowerCase() === studentCourseType.toLowerCase();
+      
+      // Center match: if group has a center, it must match student's center
+      // If group has no center (empty), it matches any student
+      const centerMatch = groupCenter === '' || 
+                         groupCenter.toLowerCase() === studentCenter.toLowerCase();
+      
+      // Gender match: group gender is "Both" or matches student's gender
+      const genderMatch = groupGender.toLowerCase() === 'both' || 
+                         groupGender.toLowerCase() === studentGender.toLowerCase();
+
+      return courseMatch && courseTypeMatch && centerMatch && genderMatch;
     });
 
     return res.status(200).json({
@@ -85,7 +109,8 @@ export default async function handler(req, res) {
         _id: group._id.toString(),
         title: group.title,
         link: group.link,
-        grade: group.grade,
+        course: group.course,
+        courseType: group.courseType,
         center: group.center,
         gender: group.gender
       }))

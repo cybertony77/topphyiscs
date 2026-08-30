@@ -3,15 +3,22 @@ import { useRouter } from "next/router";
 import Title from '../../../../components/Title';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import apiClient from '../../../../lib/axios';
-import { useSystemConfig } from '../../../../lib/api/system';
+import { downloadFileUrl } from '../../../../lib/downloadFileUrl';
+import { useSystemConfig , useNationalSystem, getCourseFieldLabels} from '../../../../lib/api/system';
 import Image from 'next/image';
-import GradeSelect from '../../../../components/GradeSelect';
-import AttendanceWeekSelect from '../../../../components/AttendanceWeekSelect';
+import dynamic from 'next/dynamic';
+import CourseSelect from '../../../../components/CourseSelect';
+import CourseTypeSelect from '../../../../components/CourseTypeSelect';
+import CenterSelect from '../../../../components/CenterSelect';
+import AttendanceLessonSelect from '../../../../components/AttendancelessonSelect';
 import TimerSelect from '../../../../components/TimerSelect';
 import AccountStateSelect from '../../../../components/AccountStateSelect';
 import { TextInput, ActionIcon, useMantineTheme } from '@mantine/core';
 import { IconSearch, IconArrowRight } from '@tabler/icons-react';
 import QuizAnalyticsChart from '../../../../components/QuizAnalyticsChart';
+import AnalyticsModal from '../../../../components/AnalyticsModal';
+import { formatDeadlineCardLabel } from '../../../../lib/deadlineTimeEgypt';
+const PdfViewerModal = dynamic(() => import('../../../../components/PdfViewerModal'), { ssr: false });
 
 function InputWithButton(props) {
   const theme = useMantineTheme();
@@ -33,11 +40,15 @@ function InputWithButton(props) {
 }
 
 export default function Quizzes() {
+  const isNational = useNationalSystem();
+  const courseLabels = getCourseFieldLabels(isNational);
   const router = useRouter();
   const queryClient = useQueryClient();
   const { data: systemConfig } = useSystemConfig();
   const isQuizzesEnabled = systemConfig?.quizzes === true || systemConfig?.quizzes === 'true';
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
+  const [notePopup, setNotePopup] = useState(null);
+  const [pdfViewer, setPdfViewer] = useState({ isOpen: false, url: '', name: '' });
   
   // Redirect if feature is disabled
   useEffect(() => {
@@ -59,12 +70,16 @@ export default function Quizzes() {
   // Search and filter states
   const [searchInput, setSearchInput] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
-  const [filterGrade, setFilterGrade] = useState('');
-  const [filterWeek, setFilterWeek] = useState('');
+  const [filterCourse, setFilterCourse] = useState('');
+  const [filterCourseType, setFilterCourseType] = useState('');
+  const [filterCenter, setFilterCenter] = useState('');
+  const [filterLesson, setFilterLesson] = useState('');
   const [filterTimer, setFilterTimer] = useState('');
-  const [filterState, setFilterState] = useState('');
-  const [filterGradeDropdownOpen, setFilterGradeDropdownOpen] = useState(false);
-  const [filterWeekDropdownOpen, setFilterWeekDropdownOpen] = useState(false);
+  const [filterAccountState, setFilterAccountState] = useState('');
+  const [filterCourseDropdownOpen, setFilterCourseDropdownOpen] = useState(false);
+  const [filterCourseTypeDropdownOpen, setFilterCourseTypeDropdownOpen] = useState(false);
+  const [filterCenterDropdownOpen, setFilterCenterDropdownOpen] = useState(false);
+  const [filterLessonDropdownOpen, setFilterLessonDropdownOpen] = useState(false);
   const [filterTimerDropdownOpen, setFilterTimerDropdownOpen] = useState(false);
 
   // Fetch quizzes
@@ -83,22 +98,8 @@ export default function Quizzes() {
 
   const quizzes = quizzesData?.quizzes || [];
 
-  // Extract week number from week string (e.g., "week 01" -> 1)
-  const extractWeekNumber = (weekString) => {
-    if (!weekString) return null;
-    const match = weekString.match(/week\s*(\d+)/i);
-    return match ? parseInt(match[1], 10) : null;
-  };
-
   // Filter quizzes based on search and filters
   const filteredQuizzes = quizzes.filter(quiz => {
-    // State filter
-    if (filterState) {
-      const itemState = quiz.state || quiz.account_state || 'Activated';
-      if (itemState !== filterState) {
-        return false;
-      }
-    }
     // Search filter (contains, case-insensitive)
     if (searchTerm.trim()) {
       const lessonName = quiz.lesson_name || '';
@@ -107,17 +108,34 @@ export default function Quizzes() {
       }
     }
 
-    // Grade filter
-    if (filterGrade) {
-      if (quiz.grade !== filterGrade) {
+    // Course filter
+    if (filterCourse) {
+      if (quiz.course !== filterCourse) {
         return false;
       }
     }
 
-    // Week filter
-    if (filterWeek) {
-      const weekNumber = extractWeekNumber(filterWeek);
-      if (quiz.week !== weekNumber) {
+    // CourseType filter
+    if (filterCourseType) {
+      const quizCourseType = (quiz.courseType || '').trim();
+      const filterCourseTypeTrimmed = filterCourseType.trim();
+      if (quizCourseType.toLowerCase() !== filterCourseTypeTrimmed.toLowerCase()) {
+        return false;
+      }
+    }
+
+    // Center filter
+    if (filterCenter) {
+      const qCenter = (quiz.center || '').trim();
+      const filterCenterTrimmed = filterCenter.trim();
+      if (qCenter.toLowerCase() !== filterCenterTrimmed.toLowerCase()) {
+        return false;
+      }
+    }
+
+    // Lesson filter
+    if (filterLesson) {
+      if (quiz.lesson !== filterLesson) {
         return false;
       }
     }
@@ -132,6 +150,14 @@ export default function Quizzes() {
         if (quiz.timer && quiz.timer !== 0 && quiz.timer !== null) {
           return false;
         }
+      }
+    }
+
+    // Account state filter
+    if (filterAccountState) {
+      const state = quiz.state || quiz.account_state || 'Activated';
+      if (state !== filterAccountState) {
+        return false;
       }
     }
 
@@ -274,12 +300,6 @@ export default function Quizzes() {
                 100% { transform: rotate(360deg); }
               }
             `}</style>
-            <style jsx global>{`
-              @keyframes spin {
-                0% { transform: rotate(0deg); }
-                100% { transform: rotate(360deg); }
-              }
-            `}</style>
           </div>
         </div>
       </div>
@@ -327,51 +347,85 @@ export default function Quizzes() {
           }}>
             <div className="filter-group" style={{ flex: 1, minWidth: 180 }}>
               <label className="filter-label" style={{ display: 'block', marginBottom: '8px', fontWeight: 600, color: '#495057', fontSize: '0.95rem' }}>
-                Filter by Grade
+                {courseLabels.filterByCourse}
               </label>
-              <GradeSelect
-                selectedGrade={filterGrade}
-                onGradeChange={(grade) => {
-                  setFilterGrade(grade);
+              <CourseSelect
+                selectedGrade={filterCourse}
+                onGradeChange={(course) => {
+                  setFilterCourse(course);
                 }}
-                isOpen={filterGradeDropdownOpen}
+                isOpen={filterCourseDropdownOpen}
                 onToggle={() => {
-                  setFilterGradeDropdownOpen(!filterGradeDropdownOpen);
-                  setFilterWeekDropdownOpen(false);
+                  setFilterCourseDropdownOpen(!filterCourseDropdownOpen);
+                  setFilterCourseTypeDropdownOpen(false);
+                  setFilterCenterDropdownOpen(false);
+                  setFilterLessonDropdownOpen(false);
                   setFilterTimerDropdownOpen(false);
                 }}
-                onClose={() => setFilterGradeDropdownOpen(false)}
+                onClose={() => setFilterCourseDropdownOpen(false)}
+                showAllOption={true}
+              />
+            </div>
+            {courseLabels.showCourseType && (
+<div className="filter-group" style={{ flex: 1, minWidth: 180 }}>
+              <label className="filter-label" style={{ display: 'block', marginBottom: '8px', fontWeight: 600, color: '#495057', fontSize: '0.95rem' }}>
+                Filter by Course Type
+              </label>
+              <CourseTypeSelect
+                selectedCourseType={filterCourseType}
+                onCourseTypeChange={(courseType) => {
+                  setFilterCourseType(courseType);
+                }}
+                isOpen={filterCourseTypeDropdownOpen}
+                onToggle={() => {
+                  setFilterCourseTypeDropdownOpen(!filterCourseTypeDropdownOpen);
+                  setFilterCourseDropdownOpen(false);
+                  setFilterCenterDropdownOpen(false);
+                  setFilterLessonDropdownOpen(false);
+                  setFilterTimerDropdownOpen(false);
+                }}
+                onClose={() => setFilterCourseTypeDropdownOpen(false)}
+              />
+            </div>
+)}
+            <div className="filter-group" style={{ flex: 1, minWidth: 180 }}>
+              <label className="filter-label" style={{ display: 'block', marginBottom: '8px', fontWeight: 600, color: '#495057', fontSize: '0.95rem' }}>
+                Filter by Center
+              </label>
+              <CenterSelect
+                selectedCenter={filterCenter}
+                onCenterChange={setFilterCenter}
+                required={false}
+                isOpen={filterCenterDropdownOpen}
+                onToggle={() => {
+                  setFilterCenterDropdownOpen(!filterCenterDropdownOpen);
+                  setFilterCourseDropdownOpen(false);
+                  setFilterCourseTypeDropdownOpen(false);
+                  setFilterLessonDropdownOpen(false);
+                  setFilterTimerDropdownOpen(false);
+                }}
+                onClose={() => setFilterCenterDropdownOpen(false)}
               />
             </div>
             <div className="filter-group" style={{ flex: 1, minWidth: 180 }}>
               <label className="filter-label" style={{ display: 'block', marginBottom: '8px', fontWeight: 600, color: '#495057', fontSize: '0.95rem' }}>
-                Filter by Quiz State
+                Filter by Lesson
               </label>
-              <AccountStateSelect
-                label="Quiz State"
-                value={filterState || null}
-                onChange={(value) => setFilterState(value || '')}
-                placeholder="Select Quiz State"
-                style={{ marginBottom: 0, hideLabel: true }}
-              />
-            </div>
-            <div className="filter-group" style={{ flex: 1, minWidth: 180 }}>
-              <label className="filter-label" style={{ display: 'block', marginBottom: '8px', fontWeight: 600, color: '#495057', fontSize: '0.95rem' }}>
-                Filter by Week
-              </label>
-              <AttendanceWeekSelect
-                selectedWeek={filterWeek}
-                onWeekChange={(week) => {
-                  setFilterWeek(week);
+              <AttendanceLessonSelect
+                selectedLesson={filterLesson}
+                onLessonChange={(lesson) => {
+                  setFilterLesson(lesson);
                 }}
-                isOpen={filterWeekDropdownOpen}
+                isOpen={filterLessonDropdownOpen}
                 onToggle={() => {
-                  setFilterWeekDropdownOpen(!filterWeekDropdownOpen);
-                  setFilterGradeDropdownOpen(false);
+                  setFilterLessonDropdownOpen(!filterLessonDropdownOpen);
+                  setFilterCourseDropdownOpen(false);
+                  setFilterCourseTypeDropdownOpen(false);
+                  setFilterCenterDropdownOpen(false);
                   setFilterTimerDropdownOpen(false);
                 }}
-                onClose={() => setFilterWeekDropdownOpen(false)}
-                placeholder="Select Week"
+                onClose={() => setFilterLessonDropdownOpen(false)}
+                placeholder="Select Lesson"
               />
             </div>
             <div className="filter-group" style={{ flex: 1, minWidth: 180 }}>
@@ -388,10 +442,26 @@ export default function Quizzes() {
                 isOpen={filterTimerDropdownOpen}
                 onToggle={() => {
                   setFilterTimerDropdownOpen(!filterTimerDropdownOpen);
-                  setFilterGradeDropdownOpen(false);
-                  setFilterWeekDropdownOpen(false);
+                  setFilterCourseDropdownOpen(false);
+                  setFilterCourseTypeDropdownOpen(false);
+                  setFilterCenterDropdownOpen(false);
+                  setFilterLessonDropdownOpen(false);
                 }}
                 onClose={() => setFilterTimerDropdownOpen(false)}
+              />
+            </div>
+            <div className="filter-group" style={{ flex: 1, minWidth: 180 }}>
+              <label className="filter-label" style={{ display: 'block', marginBottom: '8px', fontWeight: 600, color: '#495057', fontSize: '0.95rem' }}>
+                Filter by Quiz State
+              </label>
+              <AccountStateSelect
+                label="Quiz State"
+                value={filterAccountState || null}
+                onChange={(state) => {
+                  setFilterAccountState(state || '');
+                }}
+                placeholder="Select Quiz State"
+                style={{ marginBottom: 0, hideLabel: true }}
               />
             </div>
           </div>
@@ -430,17 +500,13 @@ export default function Quizzes() {
           </div>
 
           {/* Quizzes List */}
-              {filteredQuizzes.length === 0 ? (
+          {filteredQuizzes.length === 0 ? (
             <div style={{ textAlign: 'center', padding: '40px', color: '#6c757d' }}>
               {quizzes.length === 0 ? '❌ No quizzes found. Click "Add Quiz" to create one.' : '❌ No quizzes match your filters.'}
             </div>
-              ) : (
+          ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-              {filteredQuizzes.map((quiz) => {
-                const itemState = quiz.state || quiz.account_state || 'Activated';
-                const isActivated = itemState === 'Activated';
-                const stateColor = isActivated ? '#28a745' : '#dc3545';
-                return (
+              {filteredQuizzes.map((quiz) => (
                 <div
                   key={quiz._id}
                   className="quiz-item"
@@ -449,8 +515,16 @@ export default function Quizzes() {
                     borderRadius: '12px',
                     padding: '20px',
                     display: 'flex',
-                    justifyContent: 'space-between',
                     alignItems: 'center',
+                    alignContent: 'flex-start',
+                    justifyContent: 'flex-start',
+                    gap: '16px',
+                    flexWrap: 'wrap',
+                    width: '100%',
+                    maxWidth: '100%',
+                    boxSizing: 'border-box',
+                    minWidth: 0,
+                    height: 'auto',
                     transition: 'all 0.2s ease'
                   }}
                   onMouseEnter={(e) => {
@@ -462,10 +536,31 @@ export default function Quizzes() {
                     e.currentTarget.style.boxShadow = 'none';
                   }}
                 >
-                  <div style={{ flex: 1 }}>
-                    <div style={{ fontSize: '1.2rem', fontWeight: '600', marginBottom: '8px' }}>
-                      {[quiz.grade, quiz.week !== undefined && quiz.week !== null ? `Week ${quiz.week}` : null, quiz.lesson_name].filter(Boolean).join(' • ')}
+                  <div className="item-info" style={{ flex: '1 1 260px', minWidth: 0, maxWidth: '100%' }}>
+                    <div style={{ fontSize: '1.2rem', fontWeight: '600', marginBottom: '8px', wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
+                      {[quiz.course, !isNational && quiz.courseType, quiz.center, quiz.lesson, quiz.lesson_name].filter(Boolean).join(' • ')}
                     </div>
+                    {quiz.quiz_type === 'pdf' ? (
+                      <div style={{ padding: '12px 16px', backgroundColor: '#ffffff', border: '2px solid #e9ecef', borderRadius: '8px', fontSize: '0.95rem', color: '#495057', textAlign: 'left', display: 'inline-block', maxWidth: '100%' }}>
+                        <div style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', flexWrap: 'nowrap', maxWidth: '100%' }}>
+                          {(() => {
+                            const itemState = quiz.state || quiz.account_state || 'Activated';
+                            const stateColor = itemState === 'Activated' ? '#28a745' : '#dc3545';
+                            return (
+                              <>
+                                <span style={{ color: stateColor, fontWeight: '600', flexShrink: 0 }}>
+                                  {itemState}
+                                </span>
+                                <span style={{ flexShrink: 0 }}>•</span>
+                                <span style={{ fontWeight: '600', minWidth: 0 }}>
+                                  {`File Name : ${quiz.pdf_file_name || 'file'}.pdf`}
+                                </span>
+                              </>
+                            );
+                          })()}
+                        </div>
+                      </div>
+                    ) : (
                     <div style={{
                       padding: '12px 16px',
                       backgroundColor: '#ffffff',
@@ -478,8 +573,18 @@ export default function Quizzes() {
                       maxWidth: '350px'
                     }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-                        <span style={{ color: stateColor, fontWeight: 600 }}>{itemState}</span>
-                        <span>•</span>
+                        {(() => {
+                          const itemState = quiz.state || quiz.account_state || 'Activated';
+                          const stateColor = itemState === 'Activated' ? '#28a745' : '#dc3545';
+                          return (
+                            <>
+                              <span style={{ color: stateColor, fontWeight: '600' }}>
+                                {itemState}
+                              </span>
+                              <span>•</span>
+                            </>
+                          );
+                        })()}
                         <span>{quiz.questions?.length || 0} Question{quiz.questions?.length !== 1 ? 's' : ''}</span>
                         <span>•</span>
                         <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
@@ -490,93 +595,62 @@ export default function Quizzes() {
                         <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
                           <Image src="/clock.svg" alt="Deadline" width={18} height={18} />
                           {quiz.deadline_type === 'with_deadline' && quiz.deadline_date
-                            ? (() => {
-                                try {
-                                  // Parse date in local timezone to avoid timezone shift
-                                  let deadline;
-                                  if (typeof quiz.deadline_date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(quiz.deadline_date)) {
-                                    const [year, month, day] = quiz.deadline_date.split('-').map(Number);
-                                    deadline = new Date(year, month - 1, day);
-                                  } else {
-                                    deadline = new Date(quiz.deadline_date);
-                                  }
-                                  return `With deadline date : ${deadline.toLocaleDateString('en-US', { year: 'numeric', month: '2-digit', day: '2-digit' })}`;
-                                } catch (e) {
-                                  return `With deadline date : ${quiz.deadline_date}`;
-                                }
-                              })()
+                            ? formatDeadlineCardLabel(quiz.deadline_date, quiz.deadline_time)
                             : 'With no deadline date'}
                         </span>
                       </div>
                     </div>
+                    )}
                   </div>
-                  <div className="quiz-buttons" style={{ display: 'flex', gap: '12px' }}>
-                    <button
-                      onClick={() => openAnalytics(quiz)}
-                      style={{
-                        padding: '8px 16px',
-                        backgroundColor: '#1FA8DC',
-                        color: 'white',
-                        border: 'none',
-                        borderRadius: '8px',
-                        cursor: 'pointer',
-                        fontSize: '0.9rem',
-                        fontWeight: '600',
-                        transition: 'all 0.2s ease',
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        gap: '6px'
-                      }}
-                    >
+                  <div className="quiz-buttons" style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', flex: '0 1 auto', maxWidth: '100%', marginLeft: 'auto', justifyContent: 'flex-end' }}>
+                    {quiz.quiz_type !== 'pdf' && (
+                    <button onClick={() => openAnalytics(quiz)} className="qz-action-btn"
+                      style={{ padding: '8px 16px', backgroundColor: '#1FA8DC', color: 'white', border: 'none', borderRadius: '8px', cursor: 'pointer', fontSize: '0.9rem', fontWeight: '600', transition: 'all 0.2s ease', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}>
                       <Image src="/chart2.svg" alt="Analytics" width={18} height={18} style={{ display: 'inline-block' }} />
                       Analytics
                     </button>
-                    <button
-                      onClick={() => router.push(`/dashboard/manage_online_system/quizzes/edit?id=${quiz._id}`)}
-                      style={{
-                        padding: '8px 16px',
-                        backgroundColor: '#28a745',
-                        color: 'white',
-                        border: 'none',
-                        borderRadius: '8px',
-                        cursor: 'pointer',
-                        fontSize: '0.9rem',
-                        fontWeight: '600',
-                        transition: 'all 0.2s ease',
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        gap: '6px'
-                      }}
-                    >
+                    )}
+                    {quiz.quiz_type === 'pdf' && quiz.pdf_url && (
+                      <button onClick={(e) => { e.stopPropagation(); downloadFileUrl(quiz.pdf_url, `${quiz.pdf_file_name || 'file'}.pdf`).catch((err) => alert(err.message || 'Download failed')); }} className="qz-action-btn"
+                        style={{ padding: '8px 16px', backgroundColor: '#32b750', color: 'white', border: 'none', borderRadius: '8px', cursor: 'pointer', fontSize: '0.9rem', fontWeight: '600', transition: 'all 0.2s ease', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}>
+                        <Image src="/pdf.svg" alt="PDF" width={18} height={18} style={{ display: 'inline-block' }} />
+                        Download PDF
+                      </button>
+                    )}
+                    {quiz.quiz_type === 'pdf' && quiz.pdf_url && (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setPdfViewer({ isOpen: true, url: quiz.pdf_url, name: `${quiz.pdf_file_name || 'file'}.pdf` });
+                        }}
+                        className="qz-action-btn"
+                        style={{ padding: '8px 16px', backgroundColor: '#0d6efd', color: 'white', border: 'none', borderRadius: '8px', cursor: 'pointer', fontSize: '0.9rem', fontWeight: '600', transition: 'all 0.2s ease', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}
+                      >
+                        <Image src="/external-link.svg" alt="Open PDF" width={18} height={18} style={{ display: 'inline-block' }} />
+                        Open PDF
+                      </button>
+                    )}
+                    {quiz.comment && (
+                      <button onClick={(e) => { e.stopPropagation(); setNotePopup(quiz.comment); }} className="qz-action-btn"
+                        style={{ padding: '8px 16px', backgroundColor: '#1FA8DC', color: 'white', border: 'none', borderRadius: '8px', cursor: 'pointer', fontSize: '0.9rem', fontWeight: '600', transition: 'all 0.2s ease', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}>
+                        <Image src="/notes4.svg" alt="Notes" width={18} height={18} style={{ display: 'inline-block' }} />
+                        Notes
+                      </button>
+                    )}
+                    <button onClick={() => router.push(`/dashboard/manage_online_system/quizzes/edit?id=${quiz._id}`)} className="qz-action-btn"
+                      style={{ padding: '8px 16px', backgroundColor: '#28a745', color: 'white', border: 'none', borderRadius: '8px', cursor: 'pointer', fontSize: '0.9rem', fontWeight: '600', transition: 'all 0.2s ease', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}>
                       <Image src="/edit.svg" alt="Edit" width={18} height={18} style={{ display: 'inline-block' }} />
                       Edit
                     </button>
-                    <button
-                      onClick={() => openConfirmDeleteModal(quiz)}
-                      style={{
-                        padding: '8px 16px',
-                        backgroundColor: '#dc3545',
-                        color: 'white',
-                        border: 'none',
-                        borderRadius: '8px',
-                        cursor: 'pointer',
-                        fontSize: '0.9rem',
-                        fontWeight: '600',
-                        transition: 'all 0.2s ease',
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        gap: '6px'
-                      }}
+                    <button onClick={() => openConfirmDeleteModal(quiz)} className="qz-action-btn"
+                      style={{ padding: '8px 16px', backgroundColor: '#dc3545', color: 'white', border: 'none', borderRadius: '8px', cursor: 'pointer', fontSize: '0.9rem', fontWeight: '600', transition: 'all 0.2s ease', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}
                     >
                       <Image src="/trash2.svg" alt="Delete" width={18} height={18} style={{ display: 'inline-block' }} />
                       Delete
                     </button>
                   </div>
                 </div>
-              );})}
+              ))}
             </div>
           )}
 
@@ -599,102 +673,17 @@ export default function Quizzes() {
           )}
         </div>
 
-        {/* Analytics Modal */}
-        {analyticsOpen && (
-          <div 
-            className="analytics-modal-overlay"
-              onClick={(e) => {
-                if (e.target === e.currentTarget) {
-                  closeAnalytics();
-                }
-              }}
-            >
-              <div
-                className="analytics-modal-content"
-                onClick={(e) => e.stopPropagation()}
-              >
-                {/* Close Button */}
-                <button 
-                  className="analytics-close-btn" 
-                  onClick={closeAnalytics} 
-                  aria-label="Close"
-                >
-                  <Image src="/close-cross.svg" alt="Close" width={35} height={35} />
-                </button>
-
-              <div className="analytics-header">
-                <h2 style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '12px' }}>
-                  <Image src="/chart2.svg" alt="Analytics" width={32} height={32} />
-                  Quiz Analytics
-                </h2>
-                {selectedQuizForAnalytics && (
-                  <p className="analytics-subtitle">
-                    {selectedQuizForAnalytics.grade} • Week {selectedQuizForAnalytics.week} • {selectedQuizForAnalytics.lesson_name}
-                  </p>
-                )}
-              </div>
-            
-              {analyticsLoading ? (
-                <div style={{ textAlign: 'center', padding: '60px 20px' }}>
-                  <div style={{
-                    width: "50px",
-                    height: "50px",
-                    border: "4px solid rgba(31, 168, 220, 0.2)",
-                    borderTop: "4px solid #1FA8DC",
-                    borderRadius: "50%",
-                    margin: "0 auto 20px",
-                    animation: "spin 1s linear infinite"
-                  }} />
-                  <p style={{ color: "#6c757d", fontSize: "1rem" }}>Loading analytics...</p>
-                </div>
-              ) : analyticsData?.analytics ? (
-                <div style={{ marginBottom: '-25px' }}>
-                  <QuizAnalyticsChart analyticsData={analyticsData.analytics} />
-                </div>
-              ) : (
-                <div style={{ textAlign: 'center', padding: '60px 20px', color: '#6c757d' }}>
-                  No analytics data available
-                </div>
-              )}
-
-              {/* Statistics Grid - At the End */}
-              {analyticsData?.analytics && !analyticsLoading && (
-                <div className="analytics-stats-grid">
-                  <div className="analytics-stat-item">
-                    <div className="analytics-stat-value" style={{ color: '#a71e2a' }}>
-                      {analyticsData.analytics.notAnswered}
-                    </div>
-                    <div className="analytics-stat-label">Not Answered</div>
-                  </div>
-                  <div className="analytics-stat-item">
-                    <div className="analytics-stat-value" style={{ color: '#dc3545' }}>
-                      {analyticsData.analytics.lessThan50}
-                    </div>
-                    <div className="analytics-stat-label">&lt; 50%</div>
-                  </div>
-                  <div className="analytics-stat-item">
-                    <div className="analytics-stat-value" style={{ color: '#17a2b8' }}>
-                      {analyticsData.analytics.between50And100}
-                    </div>
-                    <div className="analytics-stat-label">50-99%</div>
-                  </div>
-                  <div className="analytics-stat-item">
-                    <div className="analytics-stat-value" style={{ color: '#28a745' }}>
-                      {analyticsData.analytics.exactly100}
-                    </div>
-                    <div className="analytics-stat-label">100%</div>
-                  </div>
-                  <div className="analytics-stat-item">
-                    <div className="analytics-stat-value" style={{ color: '#212529' }}>
-                      {analyticsData.analytics.totalStudents}
-                    </div>
-                    <div className="analytics-stat-label">Total Students</div>
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-        )}
+        <AnalyticsModal
+          open={analyticsOpen}
+          onClose={closeAnalytics}
+          title="Quiz Analytics"
+          subtitle={selectedQuizForAnalytics
+            ? [selectedQuizForAnalytics.course, selectedQuizForAnalytics.courseType, selectedQuizForAnalytics.center, selectedQuizForAnalytics.lesson, selectedQuizForAnalytics.lesson_name].filter(Boolean).join(' • ')
+            : ''}
+          analyticsData={analyticsData}
+          analyticsLoading={analyticsLoading}
+          ChartComponent={QuizAnalyticsChart}
+        />
 
         {/* Confirmation Modal */}
         {confirmDeleteOpen && (
@@ -775,7 +764,6 @@ export default function Quizzes() {
             </div>
           </div>
         )}
-      </div>
 
       <style jsx>{`
         .analytics-modal-overlay {
@@ -1022,15 +1010,58 @@ export default function Quizzes() {
           }
           .quiz-item {
             flex-direction: column !important;
-            align-items: flex-start !important;
-            gap: 16px;
+            align-items: stretch !important;
+            align-content: flex-start !important;
+            justify-content: flex-start !important;
+            gap: 12px !important;
+            padding: 16px !important;
+            height: auto !important;
+          }
+          .quiz-item .item-info {
+            flex: 0 0 auto !important;
+            width: 100%;
+            max-width: 100%;
           }
           .quiz-buttons {
             width: 100%;
+            flex: 0 0 auto !important;
             flex-direction: column;
+            margin-top: 0 !important;
+            margin-left: 0 !important;
           }
-          .quiz-buttons button {
+          .quiz-buttons button,
+          .quiz-buttons a,
+          .quiz-buttons .qz-action-btn {
             width: 100%;
+            flex: 0 0 auto;
+            min-width: 0;
+          }
+        }
+        @media (max-width: 992px) {
+          .quiz-item {
+            flex-direction: column !important;
+            align-items: stretch !important;
+            align-content: flex-start !important;
+            justify-content: flex-start !important;
+            gap: 12px !important;
+            height: auto !important;
+          }
+          .quiz-item .item-info {
+            flex: 0 0 auto !important;
+            width: 100%;
+          }
+          .quiz-buttons {
+            width: 100%;
+            flex: 0 0 auto !important;
+            justify-content: flex-start !important;
+            margin-top: 0 !important;
+            margin-left: 0 !important;
+          }
+          .quiz-buttons button,
+          .quiz-buttons a,
+          .quiz-buttons .qz-action-btn {
+            flex: 1 1 calc(50% - 6px);
+            min-width: 140px;
           }
         }
         @media (min-width: 769px) and (max-width: 1024px) {
@@ -1122,6 +1153,34 @@ export default function Quizzes() {
           }
         }
       `}</style>
+
+      {notePopup && (
+        <div onClick={() => setNotePopup(null)} style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(6px)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999, padding: '16px' }}>
+          <div onClick={(e) => e.stopPropagation()} style={{ background: 'linear-gradient(145deg, #ffffff 0%, #f8f9fa 100%)', borderRadius: '20px', padding: '0', maxWidth: '500px', width: '100%', position: 'relative', boxShadow: '0 25px 60px rgba(0,0,0,0.3)', overflow: 'hidden', maxHeight: '80vh', display: 'flex', flexDirection: 'column' }}>
+            <div style={{ background: 'linear-gradient(135deg, #1FA8DC 0%, #17a2b8 100%)', padding: '20px 24px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <Image src="/notes4.svg" alt="Notes" width={22} height={22} style={{ filter: 'brightness(0) invert(1)' }} />
+                <h3 style={{ margin: 0, fontSize: '1.2rem', color: 'white', fontWeight: '700' }}>Note</h3>
+              </div>
+              <button onClick={() => setNotePopup(null)} style={{ background: '#dc3545', color: 'white', border: 'none', borderRadius: '50%', width: '32px', height: '32px', cursor: 'pointer', fontSize: '18px', fontWeight: '700', display: 'flex', alignItems: 'center', justifyContent: 'center', transition: 'all 0.2s', padding: 0, lineHeight: 1 }}
+                onMouseEnter={(e) => { e.currentTarget.style.background = '#c82333'; e.currentTarget.style.transform = 'scale(1.1)'; }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = '#dc3545'; e.currentTarget.style.transform = 'scale(1)'; }}
+                onMouseDown={(e) => e.currentTarget.style.transform = 'scale(0.95)'}
+                onMouseUp={(e) => e.currentTarget.style.transform = 'scale(1.1)'}>✕</button>
+            </div>
+            <div style={{ padding: '24px', overflowY: 'auto', flex: 1 }}>
+              <div style={{ fontSize: '1rem', lineHeight: '1.8', color: '#495057', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{notePopup}</div>
+            </div>
+          </div>
+        </div>
+      )}
+      <PdfViewerModal
+        isOpen={pdfViewer.isOpen}
+        fileUrl={pdfViewer.url}
+        fileName={pdfViewer.name}
+        onClose={() => setPdfViewer({ isOpen: false, url: '', name: '' })}
+      />
+      </div>
     </div>
   );
 }

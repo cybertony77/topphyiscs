@@ -58,18 +58,23 @@ export default async function handler(req, res) {
       });
     } else if (req.method === 'POST') {
       // Create new WhatsApp group
-      const { title, grade, center, gender, link } = req.body;
+      const { title, course, courseType, center, gender, link, group_state } = req.body;
 
-      if (!title || !grade || !gender || !link) {
-        return res.status(400).json({ error: 'Title, Grade, Gender, and Link are required' });
+      if (!title || !course || !gender || !link) {
+        return res.status(400).json({ error: 'Title, Course, Gender, and Link are required' });
       }
+
+      const normalizedState =
+        group_state === 'Deactivated' ? 'Deactivated' : 'Activated';
 
       const newGroup = {
         title: title.trim(),
-        grade: grade.trim(),
+        course: course.trim(),
+        courseType: courseType ? courseType.trim() : null,
         center: (center || '').trim(),
         gender: gender.trim(),
         link: link.trim(),
+        group_state: normalizedState,
         createdAt: new Date(),
         updatedAt: new Date()
       };
@@ -85,14 +90,14 @@ export default async function handler(req, res) {
       });
     } else if (req.method === 'PUT') {
       // Update WhatsApp group
-      const { id, title, grade, center, gender, link } = req.body;
+      const { id, title, course, courseType, center, gender, link, group_state } = req.body;
 
       if (!id) {
         return res.status(400).json({ error: 'Group ID is required' });
       }
 
-      if (!title || !grade || !gender || !link) {
-        return res.status(400).json({ error: 'Title, Grade, Gender, and Link are required' });
+      if (!title || !course || !gender || !link) {
+        return res.status(400).json({ error: 'Title, Course, Gender, and Link are required' });
       }
 
       let query;
@@ -102,12 +107,17 @@ export default async function handler(req, res) {
         query = { _id: id };
       }
 
+      const normalizedState =
+        group_state === 'Deactivated' ? 'Deactivated' : 'Activated';
+
       const updateData = {
         title: title.trim(),
-        grade: grade.trim(),
+        course: course.trim(),
+        courseType: courseType ? courseType.trim() : null,
         center: (center || '').trim(),
         gender: gender.trim(),
         link: link.trim(),
+        group_state: normalizedState,
         updatedAt: new Date()
       };
 

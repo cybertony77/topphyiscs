@@ -1,114 +1,95 @@
-import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
-import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
-import fs from 'fs';
 import path from 'path';
+import { PutObjectCommand } from '@aws-sdk/client-s3';
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+import {
+  assertR2Config,
+  createR2S3ClientForPutPresign,
+  ensureR2CorsForBrowserUploads,
+  getR2Config,
+} from '../../../lib/r2Server';
 
-// Load environment variables from env.config
-function loadEnvConfig() {
-  try {
-    const envPath = path.join(process.cwd(), '..', 'env.config');
-    const envContent = fs.readFileSync(envPath, 'utf8');
-    const envVars = {};
-    
-    envContent.split('\n').forEach(line => {
-      const trimmed = line.trim();
-      if (trimmed && !trimmed.startsWith('#')) {
-        const index = trimmed.indexOf('=');
-        if (index !== -1) {
-          const key = trimmed.substring(0, index).trim();
-          let value = trimmed.substring(index + 1).trim();
-          value = value.replace(/^"|"$/g, '');
-          envVars[key] = value;
-        }
-      }
-    });
-    
-    return envVars;
-  } catch (error) {
-    console.log('Could not read env.config, using process.env as fallback');
-    return {};
-  }
-}
+/** 6h TTL so slow / multi-GB uploads do not expire mid-transfer */
+const PRESIGN_PUT_EXPIRES_SEC = 6 * 60 * 60; // 6 hours
 
 export default async function handler(req, res) {
+  const origin = req.headers.origin;
+  if (origin) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+  } else {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+  }
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+
+  if (req.method === 'OPTIONS') {
+    return res.status(204).end();
+  }
+
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
   try {
-    const envConfig = loadEnvConfig();
+    const cfg = getR2Config();
+    assertR2Config(cfg);
 
-    const accountId = envConfig.CLOUDFLARE_ACCOUNT_ID || process.env.CLOUDFLARE_ACCOUNT_ID;
-    const accessKeyId = envConfig.R2_ACCESS_KEY_ID || process.env.R2_ACCESS_KEY_ID;
-    const secretAccessKey = envConfig.R2_SECRET_ACCESS_KEY || process.env.R2_SECRET_ACCESS_KEY;
-    const bucketName = envConfig.R2_BUCKET_NAME || process.env.R2_BUCKET_NAME;
+    const corsSetup = await ensureR2CorsForBrowserUploads(cfg, req.headers.origin || '');
 
-    if (!accountId || !accessKeyId || !secretAccessKey || !bucketName) {
-      return res.status(500).json({ error: 'R2 configuration is missing' });
+    const { fileName, contentType, prefix: prefixRaw } = req.body;
+
+    if (!fileName) {
+      return res.status(400).json({ error: 'fileName is required' });
     }
 
-    const { fileName, contentType } = req.body;
+    const ALLOWED_PREFIXES = new Set([
+      'videos',
+      'pdfs/material',
+      'pdfs/HW-PDFs',
+      'pdfs/Quizs-PDFs',
+      'pdfs/MockExams-PDFs',
+    ]);
+    const prefix =
+      typeof prefixRaw === 'string' && ALLOWED_PREFIXES.has(prefixRaw.trim())
+        ? prefixRaw.trim()
+        : 'videos';
 
-    if (!fileName || !contentType) {
-      return res.status(400).json({ error: 'fileName and contentType are required' });
-    }
-
-    // Generate a unique key for the file
     const timestamp = Date.now();
     const randomStr = Math.random().toString(36).substring(2, 10);
-    const sanitizedName = fileName.replace(/[^a-zA-Z0-9._-]/g, '_');
-    const key = `videos/${timestamp}_${randomStr}_${sanitizedName}`;
+    const baseName = path.basename(String(fileName).replace(/\\/g, '/'));
+    const sanitizedName = baseName.replace(/[^a-zA-Z0-9._-]/g, '_') || 'upload.bin';
+    const key = `${prefix}/${timestamp}_${randomStr}_${sanitizedName}`;
 
-    const s3Client = new S3Client({
-      region: 'auto',
-      endpoint: `https://${accountId}.r2.cloudflarestorage.com`,
-      credentials: {
-        accessKeyId,
-        secretAccessKey,
-      },
-      forcePathStyle: true,
-    });
+    const contentTypeHeader =
+      typeof contentType === 'string' && contentType.trim() !== ''
+        ? contentType.trim()
+        : 'application/octet-stream';
 
-    // AWS SDK v3.989+ automatically adds CRC32 checksum query params to presigned URLs.
-    // The SDK computes the checksum for an empty body, but the browser sends the real file,
-    // causing R2 to reject the upload with ERR_CONNECTION_ABORTED.
-    // This middleware removes checksum params BEFORE signing, so the signature stays valid
-    // and the final URL is clean.
-    s3Client.middlewareStack.add(
-      (next) => async (args) => {
-        if (args.request?.query) {
-          delete args.request.query['x-amz-checksum-crc32'];
-          delete args.request.query['x-amz-sdk-checksum-algorithm'];
-        }
-        if (args.request?.headers) {
-          delete args.request.headers['x-amz-checksum-crc32'];
-          delete args.request.headers['x-amz-sdk-checksum-algorithm'];
-        }
-        return next(args);
-      },
-      {
-        step: 'build',
-        name: 'removeChecksumForR2',
-        priority: 'low',
-      }
-    );
+    const s3Client = createR2S3ClientForPutPresign(cfg);
 
     const command = new PutObjectCommand({
-      Bucket: bucketName,
+      Bucket: cfg.bucketName,
       Key: key,
+      ContentType: contentTypeHeader,
     });
 
-    // Generate presigned URL valid for 1 hour
     const signedUrl = await getSignedUrl(s3Client, command, {
-      expiresIn: 3600,
+      expiresIn: PRESIGN_PUT_EXPIRES_SEC,
     });
 
     res.json({
       signedUrl,
       key,
+      contentType: contentTypeHeader,
+      expiresIn: PRESIGN_PUT_EXPIRES_SEC,
+      corsSetup,
     });
   } catch (error) {
     console.error('R2 signed URL error:', error);
-    res.status(500).json({ error: 'Failed to generate signed URL', details: error.message });
+    const status = error.statusCode || 500;
+    res.status(status).json({
+      error: status === 400 ? error.message : 'Failed to generate signed URL',
+      details: error.message,
+    });
   }
 }

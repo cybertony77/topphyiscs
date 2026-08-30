@@ -21,7 +21,8 @@ const HomeworkVideoPaymentStateSelect = ({
     { value: '', label: '✕ Clear selection', color: '#dc3545', isClear: true },
     { value: 'paid', label: 'Paid', color: '#000000' },
     { value: 'free', label: 'Free', color: '#000000' },
-    { value: 'free_if_attended', label: 'Free if attended the session', color: '#000000' }
+    { value: 'free_if_homework_done', label: 'Free if submitted this lesson homework', color: '#000000' },
+    { value: 'free_if_attended', label: 'Free if attended the session', color: '#000000' },
   ];
 
   const selectedOption = options.find(opt => opt.value === value);
@@ -91,7 +92,9 @@ const HomeworkVideoPaymentStateSelect = ({
             justifyContent: 'space-between',
             alignItems: 'center',
             fontSize: '1rem',
-            color: selectedOption ? '#000000' : '#adb5bd',
+            color: selectedOption ? '#1FA8DC' : '#adb5bd',
+            backgroundColor: selectedOption ? '#f0f8ff' : '#ffffff',
+            fontWeight: selectedOption ? '600' : '400',
             transition: 'all 0.3s ease',
             boxShadow: isOpen ? '0 0 0 3px rgba(31, 168, 220, 0.1)' : 'none'
           }}

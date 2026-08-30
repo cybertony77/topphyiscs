@@ -3,30 +3,51 @@ import { useRouter } from "next/router";
 import Image from 'next/image';
 import BackToDashboard from "../../components/BackToDashboard";
 import CenterSelect from "../../components/CenterSelect";
+import CourseSelect from '../../components/CourseSelect';
 import GradeSelect from '../../components/GradeSelect';
+import CourseTypeSelect from '../../components/CourseTypeSelect';
 import AccountStateSelect from '../../components/AccountStateSelect';
 import GenderSelect from '../../components/GenderSelect';
 import Title from '../../components/Title';
-import { useCreateStudent } from '../../lib/api/students';
+import { useCreateStudent, useCheckStudentPhone } from '../../lib/api/students';
+import { useNationalSystem, useSystemConfig, getCourseFieldLabels } from '../../lib/api/system';
 import PhoneInput from 'react-phone-input-2';
 import 'react-phone-input-2/lib/style.css';
 import { formatPhoneForDB, validateEgyptPhone, handleEgyptPhoneKeyDown } from '../../lib/phoneUtils';
 
+const ADD_STUDENT_PREFERENCES_KEY = 'add_student_preferences';
+
+function isPhoneEmptyOrCountryCode(value) {
+  const digits = String(value || '').replace(/[^0-9]/g, '');
+  return !digits || digits === '20';
+}
 
 export default function AddStudent() {
+  const { isLoading: systemConfigLoading } = useSystemConfig();
+  const isNational = useNationalSystem();
+  const courseLabels = getCourseFieldLabels(isNational);
   const containerRef = useRef(null);
+  const preferencesReadyRef = useRef(false);
   const [form, setForm] = useState({
     id: "",
     name: "",
     age: "",
     gender: "",
     grade: "",
+    course: "",
+    courseType: "",
     school: "",
-    phone: "",
-    parentsPhone: "",
+    phone: "20",
+    parentsPhone: "20",
     main_center: "",
     comment: "",
     account_state: "Activated", // Default to Activated
+    payment: {
+      numberOfSessions: 0,
+      cost: 0,
+      paymentComment: null,
+      date: null
+    }
   });
   const [success, setSuccess] = useState(false);
   const [successMessage, setSuccessMessage] = useState(""); // Separate state for success message text
@@ -35,8 +56,8 @@ export default function AddStudent() {
   const [showQRButton, setShowQRButton] = useState(false);
   const [error, setError] = useState("");
   const [copiedVac, setCopiedVac] = useState(false);
-  const [savedStudentPhone, setSavedStudentPhone] = useState("");
-  const [savedStudentName, setSavedStudentName] = useState("");
+  const [savedStudentName, setSavedStudentName] = useState(""); // Preserved after form reset for WhatsApp
+  const [savedStudentPhone, setSavedStudentPhone] = useState(""); // Preserved after form reset for WhatsApp
   const [openDropdown, setOpenDropdown] = useState(null); // 'grade', 'center', 'gender', or null
   const [genderDropdownOpen, setGenderDropdownOpen] = useState(false);
   const [idError, setIdError] = useState("");
@@ -44,7 +65,7 @@ export default function AddStudent() {
   const [idValid, setIdValid] = useState(false);
   const [withPhysicalCard, setWithPhysicalCard] = useState(true); // Default to true for backward compatibility
   const [configLoading, setConfigLoading] = useState(true);
-  const [systemName, setSystemName] = useState('TopPhysics');
+  const [systemName, setSystemName] = useState('Mr. Amgad El-Alfy Math Academy');
   const [studentSignupVideo, setStudentSignupVideo] = useState('');
   // Fetch config on mount
   useEffect(() => {
@@ -54,7 +75,7 @@ export default function AddStudent() {
         if (response.ok) {
           const config = await response.json();
           setWithPhysicalCard(config.WITH_PHISICAL_CARD);
-          setSystemName(config.SYSTEM_NAME || 'TopPhysics');
+          setSystemName(config.SYSTEM_NAME || 'Mr. Amgad El-Alfy Math Academy');
           setStudentSignupVideo(config.STUDENT_SIGNUP_VIDEO || '');
         }
       } catch (error) {
@@ -67,6 +88,61 @@ export default function AddStudent() {
     };
     fetchConfig();
   }, []);
+
+  // Restore the selectors that are useful when adding several students in one visit.
+  useEffect(() => {
+    if (systemConfigLoading) return;
+
+    let savedPreferences = {};
+    try {
+      const raw = sessionStorage.getItem(ADD_STUDENT_PREFERENCES_KEY);
+      const parsed = raw ? JSON.parse(raw) : null;
+      if (parsed && typeof parsed === 'object') {
+        savedPreferences = parsed;
+      }
+    } catch {
+      // Ignore invalid or unavailable session storage.
+    }
+
+    setForm((previousForm) => ({
+      ...previousForm,
+      main_center: isNational ? '' : (savedPreferences.main_center || ''),
+      course: isNational
+        ? (savedPreferences.grade || '')
+        : (savedPreferences.course || ''),
+      courseType: isNational ? '' : (savedPreferences.courseType || ''),
+    }));
+    preferencesReadyRef.current = true;
+  }, [isNational, systemConfigLoading]);
+
+  // Store only the selectors relevant to the current system mode.
+  useEffect(() => {
+    if (systemConfigLoading || !preferencesReadyRef.current) return;
+
+    const preferences = isNational
+      ? { grade: form.course || '' }
+      : {
+          main_center: form.main_center || '',
+          course: form.course || '',
+          courseType: form.courseType || '',
+        };
+
+    try {
+      sessionStorage.setItem(
+        ADD_STUDENT_PREFERENCES_KEY,
+        JSON.stringify(preferences)
+      );
+    } catch {
+      // Ignore unavailable session storage.
+    }
+  }, [
+    form.course,
+    form.courseType,
+    form.main_center,
+    isNational,
+    systemConfigLoading,
+  ]);
+
   useEffect(() => {
     if (error) {
       const timer = setTimeout(() => setError(""), 5000);
@@ -134,6 +210,10 @@ export default function AddStudent() {
   
   // React Query hook for creating students
   const createStudentMutation = useCreateStudent();
+  const phoneCheck = useCheckStudentPhone(form.phone, null, { enabled: isNational });
+  const phoneReady = formatPhoneForDB(form.phone).length >= 11;
+  const phoneTaken = isNational && phoneReady && !phoneCheck.isLoading && phoneCheck.data?.exists === true;
+  const phoneAvailable = isNational && phoneReady && !phoneCheck.isLoading && phoneCheck.data?.exists === false;
 
   // Check if student ID is available
   const checkStudentId = async (id) => {
@@ -170,18 +250,60 @@ export default function AddStudent() {
 
   const handleChange = (e) => {
     // Reset QR button if user starts entering new data (when form was previously empty)
-    if (showQRButton && !form.name && !form.age && !form.grade && !form.school && !form.phone && !form.parentsPhone && !form.main_center) {
+    if (
+      showQRButton &&
+      !form.name &&
+      !form.age &&
+      !form.grade &&
+      !form.school &&
+      isPhoneEmptyOrCountryCode(form.phone) &&
+      isPhoneEmptyOrCountryCode(form.parentsPhone)
+    ) {
       setShowQRButton(false);
       setNewId("");
     }
     setForm({ ...form, [e.target.name]: e.target.value });
   };
 
+  const isPhoneFilled = (phone) => {
+    const formatted = formatPhoneForDB(phone);
+    return Boolean(formatted && formatted.length > 2);
+  };
+
+  const areRequiredFieldsFilled = () => {
+    if (configLoading) return false;
+    if (withPhysicalCard && !form.id?.trim()) return false;
+    if (!form.name?.trim()) return false;
+    if (!form.gender?.trim()) return false;
+    if (!isNational && !form.grade?.trim()) return false;
+    if (!form.course?.trim()) return false;
+    if (!isNational && !form.courseType?.trim()) return false;
+    if (isNational && !form.school?.trim()) return false;
+    if (!isPhoneFilled(form.phone) || !isPhoneFilled(form.parentsPhone)) return false;
+    if (!form.main_center?.trim()) return false;
+    if (!form.account_state?.trim()) return false;
+    return true;
+  };
+
+  const canSubmit =
+    areRequiredFieldsFilled() &&
+    !createStudentMutation.isPending &&
+    !phoneTaken &&
+    !(isNational && phoneReady && phoneCheck.isLoading);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError("");
     setSuccess(false);
+
+    if (isNational && phoneTaken) {
+      setError("This phone number is already used, please use another one");
+      return;
+    }
+    if (isNational && phoneReady && (phoneCheck.isLoading || !phoneCheck.data)) {
+      setError("Please wait while we check the phone number");
+      return;
+    }
     
     // Validate custom ID only if WITH_PHISICAL_CARD is true
     if (withPhysicalCard) {
@@ -223,19 +345,61 @@ export default function AddStudent() {
       return;
     }
     
-    // Map parentsPhone to parents_phone for backend
+    // Validate grade (required) — skipped for national system
+    if (!isNational && (!form.grade || form.grade.trim() === '')) {
+      setError("Please select a grade");
+      return;
+    }
+
+    // Validate course (required)
+    if (!form.course || form.course.trim() === '') {
+      setError(isNational ? "Please select a grade" : "Please select a course");
+      return;
+    }
+    
+    // Validate courseType (required) — skipped for national system
+    if (!isNational && (!form.courseType || form.courseType.trim() === '')) {
+      setError("Please select a course type");
+      return;
+    }
+    
+    // Map parentsPhone to parents_phone for backend - preserve leading zeros by storing as strings
     const payload = { ...form, parents_phone: parentPhone };
-    // Handle age - set to null if empty, otherwise convert to number
-    payload.age = form.age && form.age.trim() !== '' ? Number(form.age) : null;
-    payload.phone = studentPhone; // Save with country code
-    let gradeClean = payload.grade.toLowerCase().replace(/\./g, '');
-    payload.grade = gradeClean;
+    payload.phone = studentPhone; // Keep as string to preserve leading zeros exactly
+
+    if (isNational) {
+      payload.grade = null;
+      payload.courseType = null;
+    }
+    
+    // Course is now separate from grade
+    // course: EST/SAT/ACT (from CourseSelect) — labeled Grade when national
+    // courseType: basics/advanced (from CourseTypeSelect) — hidden when national
+    // grade: required field (like "Grade 10") — hidden when national
+    
     // Optional main_comment: send as main_comment field
     const mc = form.comment && form.comment.trim() !== '' ? form.comment.trim() : null;
     payload.main_comment = mc;
-    // Score is automatically set to 10 in the API, no need to send it
     delete payload.comment;
     delete payload.parentsPhone;
+    
+    // Initialize lessons as empty object, not weeks array
+    payload.lessons = {};
+    
+    // Initialize online arrays
+    payload.online_sessions = [];
+    payload.online_homeworks = [];
+    payload.online_quizzes = [];
+    
+    // Ensure payment object is properly structured
+    if (!payload.payment) {
+      payload.payment = {
+        numberOfSessions: 0,
+        cost: 0,
+        paymentComment: null,
+        date: null
+      };
+    }
     
     // Only include ID in payload if WITH_PHISICAL_CARD is true
     // If false, the API will auto-generate the ID
@@ -251,26 +415,35 @@ export default function AddStudent() {
         setSuccessMessage(`✅ Student added successfully! ID: ${studentId}`);
         setNewId(studentId.toString());
         setVacCode(vac || "");
-        setShowQRButton(true); // Show QR button after successful submission
-        // Save phone and name before resetting form (needed for WhatsApp)
-        setSavedStudentPhone(form.phone || "");
-        setSavedStudentName(form.name || "");
-        // Reset form fields after successful addition
+        setShowQRButton(true);
+        // Save name & phone for WhatsApp before resetting the form
+        setSavedStudentName(form.name);
+        setSavedStudentPhone(form.phone);
+        // Reset the form
         setForm({
           id: "",
           name: "",
           age: "",
           gender: "",
           grade: "",
+          course: form.course,
+          courseType: isNational ? "" : form.courseType,
           school: "",
-          phone: "",
-          parentsPhone: "",
-          main_center: "",
+          phone: "20",
+          parentsPhone: "20",
+          main_center: isNational ? "" : form.main_center,
           comment: "",
           account_state: "Activated",
+          payment: {
+            numberOfSessions: 0,
+            cost: 0,
+            paymentComment: null,
+            date: null
+          }
         });
         setIdError("");
         setIdValid(false);
+        setIdChecking(false);
       },
       onError: (err) => {
         setError(err.response?.data?.error || err.message);
@@ -297,22 +470,30 @@ export default function AddStudent() {
       age: "",
       gender: "",
       grade: "",
+      course: form.course,
+      courseType: isNational ? "" : form.courseType,
       school: "",
-      phone: "",
-      parentsPhone: "",
-      main_center: "",
+      phone: "20",
+      parentsPhone: "20",
+      main_center: isNational ? "" : form.main_center,
       comment: "",
-      account_state: "Activated", // Reset to default
+      account_state: "Activated",
+      payment: {
+        numberOfSessions: 0,
+        cost: 0,
+        paymentComment: null,
+        date: null
+      }
     });
     setSuccess(false);
-    setSuccessMessage(""); // Clear success message
+    setSuccessMessage("");
     setNewId("");
     setVacCode("");
     setShowQRButton(false);
     setError("");
     setCopiedVac(false);
-    setSavedStudentPhone("");
     setSavedStudentName("");
+    setSavedStudentPhone("");
   };
 
   const handleCopyVac = async () => {
@@ -370,7 +551,7 @@ To complete your sign-up, click the link below:
 Best regards
  – ${systemName}`;
 
-    // Use saved phone number (form is reset after success)
+    // Use saved phone number (already includes country code from PhoneInput)
     let phoneNumber = phoneToUse.replace(/[^0-9]/g, '');
     
     // Validate phone number exists
@@ -454,13 +635,53 @@ Best regards
             background: white;
             box-shadow: 0 0 0 3px rgba(135, 206, 235, 0.1);
           }
+          :global(.react-tel-input .form-control),
+          :global(.phone-input) {
+            border: 2px solid #e9ecef !important;
+            border-radius: 10px !important;
+            background: #ffffff !important;
+            color: #000000 !important;
+            box-shadow: none !important;
+          }
+          :global(.react-tel-input .flag-dropdown),
+          :global(.react-tel-input .flag-dropdown:hover),
+          :global(.react-tel-input .flag-dropdown:focus),
+          :global(.react-tel-input .flag-dropdown.open),
+          :global(.react-tel-input .selected-flag),
+          :global(.react-tel-input .selected-flag:hover),
+          :global(.react-tel-input .selected-flag:focus),
+          :global(.react-tel-input .selected-flag:focus-visible),
+          :global(.phone-flag-btn),
+          :global(.phone-flag-btn:hover),
+          :global(.phone-flag-btn:focus),
+          :global(.phone-flag-btn:focus-visible),
+          :global(.phone-flag-btn.open) {
+            background: transparent !important;
+            background-color: transparent !important;
+            border: none !important;
+            outline: none !important;
+            box-shadow: none !important;
+          }
+          :global(.react-tel-input .form-control:focus),
+          :global(.phone-input:focus) {
+            outline: none !important;
+            border-color: #87CEEB !important;
+            background: white !important;
+            box-shadow: 0 0 0 3px rgba(135, 206, 235, 0.1) !important;
+          }
+          :global(.react-tel-input:has(.flag-dropdown.open) .form-control),
+          :global(.react-tel-input:has(.flag-dropdown.open) .form-control:focus) {
+            border-color: #e9ecef !important;
+            box-shadow: none !important;
+            background: #ffffff !important;
+          }
           .form-input::placeholder {
             color: #adb5bd;
           }
           .submit-btn {
             width: 100%;
             padding: 16px;
-            background: linear-gradient(135deg, #87CEEB 0%, #B0E0E6 100%);
+            background: linear-gradient(135deg, #15b0ef 0%, #15d0e7 100%);
             color: white;
             border: none;
             border-radius: 10px;
@@ -468,12 +689,21 @@ Best regards
             font-weight: 600;
             cursor: pointer;
             transition: all 0.3s ease;
-            box-shadow: 0 4px 16px rgba(135, 206, 235, 0.3);
+            box-shadow: 0 4px 16px rgba(21, 176, 239, 0.35);
             margin-top: 8px;
           }
-          .submit-btn:hover {
+          .submit-btn:hover:not(:disabled) {
             transform: translateY(-2px);
-            box-shadow: 0 6px 20px rgba(135, 206, 235, 0.4);
+            box-shadow: 0 6px 20px rgba(21, 176, 239, 0.45);
+          }
+          .submit-btn:disabled {
+            background: linear-gradient(135deg, #87ceeb 0%, #b0e0e6 100%);
+            color: rgba(255, 255, 255, 0.9);
+            opacity: 1;
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+            filter: none;
           }
           .id-feedback {
             margin-top: 8px;
@@ -496,6 +726,15 @@ Best regards
             background: #d4edda;
             color: #155724;
             border: 1px solid #c3e6cb;
+          }
+          .error-border {
+            border-color: #dc3545 !important;
+            box-shadow: 0 0 0 3px rgba(220, 53, 69, 0.1) !important;
+          }
+          :global(.phone-error .form-control),
+          :global(.phone-input.error-border) {
+            border-color: #dc3545 !important;
+            box-shadow: 0 0 0 3px rgba(220, 53, 69, 0.1) !important;
           }
           .error-border {
             border-color: #dc3545 !important;
@@ -598,7 +837,7 @@ Best regards
             box-shadow: 0 4px 15px rgba(255, 107, 107, 0.4);
           }
           .whatsapp-vac-btn {
-            background: linear-gradient(135deg, #25D366 0%, #128C7E 100%);
+            background: rgb(37, 211, 102);
             color: white;
             border: none;
             border-radius: 12px;
@@ -607,7 +846,7 @@ Best regards
             font-size: 1rem;
             cursor: pointer;
             transition: all 0.3s ease;
-            box-shadow: 0 6px 20px rgba(37, 211, 102, 0.4);
+            box-shadow: 0 6px 20px rgba(37, 211, 102, 0.35);
             display: flex;
             align-items: center;
             justify-content: center;
@@ -617,8 +856,7 @@ Best regards
           }
           .whatsapp-vac-btn:hover {
             transform: translateY(-3px);
-            box-shadow: 0 8px 25px rgba(37, 211, 102, 0.5);
-            background: linear-gradient(135deg, #20c85a 0%, #0f7a6b 100%);
+            box-shadow: 0 8px 25px rgba(37, 211, 102, 0.45);
           }
           .whatsapp-vac-btn:active {
             transform: translateY(-1px);
@@ -706,26 +944,51 @@ Best regards
                 onClose={() => setGenderDropdownOpen(false)}
               />
             </div>
+            {courseLabels.showGradeField && (
             <div className="form-group">
               <label>Grade <span style={{color: 'red'}}>*</span></label>
-              <GradeSelect 
-                selectedGrade={form.grade} 
-                onGradeChange={(grade) => handleChange({ target: { name: 'grade', value: grade } })} 
-                required 
+              <GradeSelect
+                selectedGrade={form.grade}
+                onGradeChange={(grade) => handleChange({ target: { name: 'grade', value: grade } })}
                 isOpen={openDropdown === 'grade'}
                 onToggle={() => setOpenDropdown(openDropdown === 'grade' ? null : 'grade')}
                 onClose={() => setOpenDropdown(null)}
               />
             </div>
+            )}
             <div className="form-group">
-              <label>School <span style={{color: 'red'}}>*</span></label>
+              <label>{courseLabels.course} <span style={{color: 'red'}}>*</span></label>
+              <CourseSelect 
+                selectedGrade={form.course} 
+                onGradeChange={(course) => handleChange({ target: { name: 'course', value: course } })} 
+                required 
+                isOpen={openDropdown === 'course'}
+                onToggle={() => setOpenDropdown(openDropdown === 'course' ? null : 'course')}
+                onClose={() => setOpenDropdown(null)}
+              />
+            </div>
+            {courseLabels.showCourseType && (
+            <div className="form-group">
+              <label>Course Type <span style={{color: 'red'}}>*</span></label>
+              <CourseTypeSelect 
+                selectedCourseType={form.courseType} 
+                onCourseTypeChange={(courseType) => handleChange({ target: { name: 'courseType', value: courseType } })} 
+                required 
+                isOpen={openDropdown === 'courseType'}
+                onToggle={() => setOpenDropdown(openDropdown === 'courseType' ? null : 'courseType')}
+                onClose={() => setOpenDropdown(null)}
+              />
+            </div>
+            )}
+            <div className="form-group">
+              <label>School {isNational && <span style={{color: 'red'}}>*</span>}</label>
               <input
                 className="form-input"
                 name="school"
                 placeholder="Enter student's school"
                 value={form.school}
                 onChange={handleChange}
-                required
+                required={isNational}
                 autocomplete="off"
               />
             </div>
@@ -740,12 +1003,31 @@ Best regards
                   setForm({ ...form, phone: validation.value });
                 }}
                 onKeyDown={(e) => handleEgyptPhoneKeyDown(e, form.phone)}
-                containerClass="phone-container"
-                inputClass="phone-input"
+                containerClass={`phone-container ${phoneTaken ? 'phone-error' : ''}`}
+                inputClass={`phone-input ${phoneTaken ? 'error-border' : ''}`}
                 buttonClass="phone-flag-btn"
                 dropdownClass="phone-dropdown"
                 placeholder="Enter Phone Number"
               />
+              {phoneReady && (
+                <div>
+                  {phoneCheck.isLoading && (
+                    <div className="id-feedback checking">
+                      🔍 Checking availability...
+                    </div>
+                  )}
+                  {phoneTaken && (
+                    <div className="id-feedback taken">
+                      ❌ This phone number is already used, use another one
+                    </div>
+                  )}
+                  {phoneAvailable && (
+                    <div className="id-feedback available">
+                      ✅ This phone number is available
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
             <div className="form-group">
               <label>Parent's Phone (Whatsapp) <span style={{color: 'red'}}>*</span></label>
@@ -782,7 +1064,7 @@ Best regards
               required={true}
             />
           <div className="form-group">
-            <label>Main Comment (Optional)</label>
+            <label>Hidden Comment (Optional)</label>
             <textarea
               className="form-input"
               name="comment"
@@ -795,8 +1077,10 @@ Best regards
           </div>
             <button 
               type="submit" 
-              disabled={createStudentMutation.isPending || configLoading || (withPhysicalCard && (idChecking || (idError && !idValid)))} 
+              disabled={!canSubmit}
               className="submit-btn"
+              title={canSubmit ? 'Add student' : 'Fill all required fields to enable'}
+              aria-disabled={!canSubmit}
             >
               {createStudentMutation.isPending ? "Adding..." : "Add Student"}
             </button>
@@ -886,6 +1170,7 @@ Best regards
                   {copiedVac ? 'Copied!' : 'Copy VAC Code'}
                 </button>
                 <button
+                  type="button"
                   onClick={handleSendWhatsApp}
                   className="whatsapp-vac-btn"
                   title="Send VAC code via WhatsApp"

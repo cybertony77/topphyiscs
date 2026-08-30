@@ -96,7 +96,7 @@ export default async function handler(req, res) {
       const db = client.db(DB_NAME);
 
       // Check if pagination parameters are provided
-      const { page, limit, search, sortBy, sortOrder, viewed, code_state, payment_state } = req.query;
+      const { page, limit, search, sortBy, sortOrder, viewed, code_state, payment_state, code_lesson } = req.query;
       const hasPagination = page || limit;
 
       if (hasPagination) {
@@ -133,6 +133,18 @@ export default async function handler(req, res) {
         // Filter: payment_state
         if (payment_state && payment_state !== '') {
           vvcQueryFilter.payment_state = payment_state;
+        }
+
+        // Filter: code_lesson
+        if (code_lesson && code_lesson !== '') {
+          if (code_lesson === 'All') {
+            // Filter for codes with code_lesson = 'All'
+            vvcQueryFilter.code_lesson = 'All';
+          } else {
+            // Use case-insensitive "contains" match for code_lesson to be more tolerant
+            const safeLesson = code_lesson.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            vvcQueryFilter.code_lesson = { $regex: safeLesson, $options: 'i' };
+          }
         }
 
         // Get total count for pagination
@@ -236,7 +248,7 @@ export default async function handler(req, res) {
         return res.status(403).json({ error: 'Forbidden: Access denied' });
       }
 
-      const { number_of_codes, code_settings, number_of_views, deadline_date, code_state } = req.body;
+      const { number_of_codes, code_settings, number_of_views, number_of_days, deadline_date, code_state, code_lesson } = req.body;
 
       // Validation
       const codesCount = number_of_codes ? parseInt(number_of_codes) : 1;
@@ -244,13 +256,18 @@ export default async function handler(req, res) {
         return res.status(400).json({ error: 'Number of codes must be between 1 and 50' });
       }
 
-      if (!code_settings || !['number_of_views', 'deadline_date'].includes(code_settings)) {
-        return res.status(400).json({ error: 'Code settings must be number_of_views or deadline_date' });
+      if (!code_settings || !['number_of_views', 'number_of_days', 'deadline_date'].includes(code_settings)) {
+        return res.status(400).json({ error: 'Code settings must be number_of_views, number_of_days, or deadline_date' });
       }
 
       if (code_settings === 'number_of_views') {
         if (!number_of_views || number_of_views < 1) {
           return res.status(400).json({ error: 'Number of views must be at least 1' });
+        }
+      } else if (code_settings === 'number_of_days') {
+        const days = Number(number_of_days);
+        if (number_of_days === '' || number_of_days === null || number_of_days === undefined || Number.isNaN(days) || days < 0) {
+          return res.status(400).json({ error: 'Number of days must be a number greater than or equal to 0' });
         }
       } else if (code_settings === 'deadline_date') {
         if (!deadline_date) {
@@ -288,6 +305,7 @@ export default async function handler(req, res) {
         const vvcData = {
           VVC: code,
           code_settings: code_settings,
+          code_lesson: (typeof code_lesson === 'string' && code_lesson.trim()) ? code_lesson.trim() : 'All',
           viewed: false,
           viewed_by_who: null,
           code_state: code_state,
@@ -298,6 +316,9 @@ export default async function handler(req, res) {
         
         if (code_settings === 'number_of_views') {
           vvcData.number_of_views = parseInt(number_of_views);
+        } else if (code_settings === 'number_of_days') {
+          vvcData.number_of_days = Math.floor(Number(number_of_days));
+          vvcData.access_started_at = null;
         } else if (code_settings === 'deadline_date') {
           // Ensure date is stored as string in YYYY-MM-DD format
           vvcData.deadline_date = String(deadline_date).trim();
@@ -332,20 +353,27 @@ export default async function handler(req, res) {
       }
 
       const { id } = req.query;
-      const { code_settings, number_of_views, deadline_date, code_state, payment_state } = req.body;
+      const { code_settings, number_of_views, number_of_days, deadline_date, code_state, payment_state, code_lesson } = req.body;
 
       if (!id) {
         return res.status(400).json({ error: 'VVC ID is required' });
       }
 
       // Validation
-      if (code_settings && !['number_of_views', 'deadline_date'].includes(code_settings)) {
-        return res.status(400).json({ error: 'Code settings must be number_of_views or deadline_date' });
+      if (code_settings && !['number_of_views', 'number_of_days', 'deadline_date'].includes(code_settings)) {
+        return res.status(400).json({ error: 'Code settings must be number_of_views, number_of_days, or deadline_date' });
       }
 
       if (code_settings === 'number_of_views' && number_of_views !== undefined) {
         if (number_of_views < 1) {
           return res.status(400).json({ error: 'Number of views must be at least 1' });
+        }
+      }
+
+      if (code_settings === 'number_of_days' && number_of_days !== undefined) {
+        const days = Number(number_of_days);
+        if (Number.isNaN(days) || days < 0) {
+          return res.status(400).json({ error: 'Number of days must be a number greater than or equal to 0' });
         }
       }
 
@@ -385,12 +413,22 @@ export default async function handler(req, res) {
         // Clear the other field when switching settings
         if (code_settings === 'number_of_views') {
           update.deadline_date = null;
+          update.number_of_days = null;
+          update.access_started_at = null;
+        } else if (code_settings === 'number_of_days') {
+          update.deadline_date = null;
+          update.number_of_views = null;
         } else if (code_settings === 'deadline_date') {
           update.number_of_views = null;
+          update.number_of_days = null;
+          update.access_started_at = null;
         }
       }
       if (number_of_views !== undefined && code_settings === 'number_of_views') {
         update.number_of_views = parseInt(number_of_views);
+      }
+      if (number_of_days !== undefined && code_settings === 'number_of_days') {
+        update.number_of_days = Math.floor(Number(number_of_days));
       }
       if (deadline_date !== undefined && code_settings === 'deadline_date') {
         // Ensure date is stored as string in YYYY-MM-DD format
@@ -401,6 +439,9 @@ export default async function handler(req, res) {
       }
       if (payment_state !== undefined) {
         update.payment_state = payment_state;
+      }
+      if (code_lesson !== undefined) {
+        update.code_lesson = (typeof code_lesson === 'string' && code_lesson.trim()) ? code_lesson.trim() : 'All';
       }
 
       if (Object.keys(update).length === 0) {

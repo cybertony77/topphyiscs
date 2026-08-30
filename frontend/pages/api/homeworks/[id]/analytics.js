@@ -2,6 +2,7 @@ import { MongoClient, ObjectId } from 'mongodb';
 import fs from 'fs';
 import path from 'path';
 import { authMiddleware } from '../../../../lib/authMiddleware';
+import { buildAnalyticsStudentRow } from '../../../../lib/onlineAnalytics';
 
 function loadEnvConfig() {
   try {
@@ -63,9 +64,12 @@ export default async function handler(req, res) {
       return res.status(404).json({ error: 'Homework not found' });
     }
 
-    // Get homework grade
-    const homeworkGrade = homework.grade;
-    if (!homeworkGrade) {
+    // Get homework course, courseType, and lesson
+    const homeworkCourse = homework.course;
+    const homeworkCourseType = homework.courseType;
+    const homeworkLesson = homework.lesson;
+    
+    if (!homeworkCourse || !homeworkLesson) {
       return res.json({
         success: true,
         analytics: {
@@ -73,23 +77,41 @@ export default async function handler(req, res) {
           lessThan50: 0,
           between50And100: 0,
           exactly100: 0,
-          totalStudents: 0
+          totalStudents: 0,
+          students: [],
+          notAnsweredIds: [],
+          lessThan50Ids: [],
+          between50And100Ids: [],
+          exactly100Ids: []
         }
       });
     }
 
-    // Normalize grade for comparison
-    const normalizedHomeworkGrade = homeworkGrade.toLowerCase().replace(/\./g, '').trim();
+    const homeworkCourseTrimmed = (homeworkCourse || '').trim();
+    const homeworkCourseTypeTrimmed = (homeworkCourseType || '').trim();
+    const homeworkLessonTrimmed = (homeworkLesson || '').trim();
 
-    // Get all students with this grade
+    // Get all students and filter by course and courseType
     const allStudents = await db.collection('students').find({}).toArray();
-    const studentsInGrade = allStudents.filter(student => {
-      if (!student.grade) return false;
-      const normalizedStudentGrade = student.grade.toLowerCase().replace(/\./g, '').trim();
-      return normalizedStudentGrade === normalizedHomeworkGrade;
+    const studentsInCourse = allStudents.filter(student => {
+      if (!student.course) return false;
+      const studentCourse = (student.course || '').trim();
+      const studentCourseType = (student.courseType || '').trim();
+      
+      // Course match: if homework course is "All", it matches any student course
+      const courseMatch = homeworkCourseTrimmed.toLowerCase() === 'all' || 
+                         homeworkCourseTrimmed.toLowerCase() === studentCourse.toLowerCase();
+      
+      // CourseType match: if homework has no courseType, it matches any student courseType
+      // If homework has courseType, it must match student's courseType (case-insensitive)
+      const courseTypeMatch = !homeworkCourseTypeTrimmed || 
+                             !studentCourseType ||
+                             homeworkCourseTypeTrimmed.toLowerCase() === studentCourseType.toLowerCase();
+      
+      return courseMatch && courseTypeMatch;
     });
 
-    const totalStudents = studentsInGrade.length;
+    const totalStudents = studentsInCourse.length;
     const homeworkIdStr = homework._id.toString();
 
     // Initialize counters and ID arrays
@@ -101,9 +123,11 @@ export default async function handler(req, res) {
     const lessThan50Ids = [];
     const between50And100Ids = [];
     const exactly100Ids = [];
+    const students = [];
+    const questions = homework.questions || [];
 
     // Check each student's result for this homework
-    studentsInGrade.forEach(student => {
+    studentsInCourse.forEach(student => {
       const studentId = student.id || student._id?.toString() || null;
       const onlineHomeworks = student.online_homeworks || [];
       const homeworkResult = onlineHomeworks.find(hw => {
@@ -113,21 +137,27 @@ export default async function handler(req, res) {
 
       let percentage = 0;
       let hasResult = false;
+      let degree = null;
+      let studentAnswers = null;
+      let shuffleMapping = null;
 
       // First, try to get result from online_homeworks
       if (homeworkResult) {
         const percentageStr = homeworkResult.percentage?.toString().replace('%', '') || '0';
         percentage = parseInt(percentageStr, 10);
         hasResult = true;
+        degree = homeworkResult.result || null;
+        studentAnswers = homeworkResult.student_answers || null;
+        shuffleMapping = homeworkResult.shuffle_mapping || null;
       } else {
-        // If no result in online_homeworks, check weeks array
-        // Find the week that matches this homework's week
-        const weeks = student.weeks || [];
-        const weekData = weeks.find(w => w.week === homework.week);
+        // If no result in online_homeworks, check lessons object
+        // Find the lesson that matches this homework's lesson
+        const lessons = student.lessons || {};
+        const lessonData = lessons[homeworkLessonTrimmed];
         
-        if (weekData && weekData.hwDegree) {
-          // Parse hwDegree format like "50 / 120"
-          const hwDegreeStr = String(weekData.hwDegree).trim();
+        if (lessonData && lessonData.homework_degree) {
+          // Parse homework_degree format like "50 / 120"
+          const hwDegreeStr = String(lessonData.homework_degree).trim();
           const match = hwDegreeStr.match(/^(\d+(?:\.\d+)?)\s*\/\s*(\d+(?:\.\d+)?)$/);
           
           if (match) {
@@ -135,22 +165,33 @@ export default async function handler(req, res) {
             const total = parseFloat(match[2]);
             percentage = total > 0 ? Math.round((obtained / total) * 100) : 0;
             hasResult = true;
+            degree = hwDegreeStr;
           }
         }
       }
 
+      const studentRow = buildAnalyticsStudentRow({
+        student,
+        hasResult,
+        percentage,
+        degree,
+        questions,
+        studentAnswers,
+        shuffleMapping,
+      });
+      students.push(studentRow);
+
       // Categorize based on percentage
-      if (!hasResult || percentage === 0) {
-        // Student didn't answer
+      if (studentRow.category === 'notAnswered') {
         notAnswered++;
         if (studentId) notAnsweredIds.push(studentId);
-      } else if (percentage === 100) {
+      } else if (studentRow.category === 'exactly100') {
         exactly100++;
         if (studentId) exactly100Ids.push(studentId);
-      } else if (percentage >= 50 && percentage < 100) {
+      } else if (studentRow.category === 'between50And100') {
         between50And100++;
         if (studentId) between50And100Ids.push(studentId);
-      } else if (percentage > 0 && percentage < 50) {
+      } else if (studentRow.category === 'lessThan50') {
         lessThan50++;
         if (studentId) lessThan50Ids.push(studentId);
       }
@@ -164,6 +205,7 @@ export default async function handler(req, res) {
         between50And100,
         exactly100,
         totalStudents,
+        students,
         notAnsweredIds,
         lessThan50Ids,
         between50And100Ids,

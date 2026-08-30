@@ -26,12 +26,12 @@ export default function QuizPerformanceChart({ chartData, height = 500 }) {
       return [];
     }
     return chartData.map(item => ({
-      week: item.week || `Week ${item.weekNumber}`,
+      lesson: item.lesson_name || item.lesson || item.week || 'Unknown',
       percentage: item.percentage || 0,
-      weekNumber: item.weekNumber,
       result: item.result || '0 / 0' // Include result from API
     }));
   }, [chartData]);
+  const minChartWidth = Math.max(data.length * 70, 320);
 
   if (!data.length) {
     return (
@@ -52,23 +52,28 @@ export default function QuizPerformanceChart({ chartData, height = 500 }) {
 
   return (
     <>
-      <div className="quiz-chart-container" style={{ width: '100%', height: height }}>
-        <ResponsiveContainer>
+      <div className="quiz-chart-container" style={{ width: '100%', height: height, overflowX: 'auto' }}>
+        <div style={{ width: '100%', minWidth: `${minChartWidth}px`, height: '100%' }}>
+        <ResponsiveContainer width="100%" height="100%">
           <BarChart 
           data={data} 
-          margin={{ top: 20, right: 10, left: 10, bottom: 50 }}
+          margin={{ top: 20, right: 20, left: 20, bottom: 95 }}
+          barCategoryGap="12%"
+          barGap={2}
           className="quiz-bar-chart"
         >
             <CartesianGrid strokeDasharray="3 3" stroke="#e9ecef" />
             <XAxis 
-              dataKey="week" 
+              dataKey="lesson" 
               stroke="#6c757d"
               fontSize={12}
               tick={{ fill: '#495057', fontSize: 14 }}
               interval={0} 
-              angle={-20} 
+              angle={-35} 
               textAnchor="end" 
-              height={50}
+              height={95}
+              minTickGap={24}
+              tickMargin={14}
               className="quiz-x-axis"
             />
             <YAxis 
@@ -87,12 +92,12 @@ export default function QuizPerformanceChart({ chartData, height = 500 }) {
                 fontSize: '0.875rem'
               }}
               formatter={(value, name, props) => {
-                const week = props.payload.week;
+                const lesson = props.payload.lesson;
                 const percentage = value.toFixed(1);
                 const result = props.payload.result || '0 / 0';
                 return [
                   <div key="tooltip" style={{ color: '#000000' }}>
-                    <div><strong style={{ color: '#000000' }}>Week:</strong> {week}</div>
+                    <div><strong style={{ color: '#000000' }}>Lesson:</strong> {lesson}</div>
                     <div><strong style={{ color: '#000000' }}>Percentage:</strong> {percentage}%</div>
                     <div><strong style={{ color: '#000000' }}>Result:</strong> {result}</div>
                   </div>
@@ -111,6 +116,7 @@ export default function QuizPerformanceChart({ chartData, height = 500 }) {
             </Bar>
           </BarChart>
         </ResponsiveContainer>
+        </div>
       </div>
       <style jsx global>{`
         @media (max-width: 768px) {

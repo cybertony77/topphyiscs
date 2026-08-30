@@ -1,7 +1,8 @@
-import { MongoClient } from 'mongodb';
+import { MongoClient, ObjectId } from 'mongodb';
 import fs from 'fs';
 import path from 'path';
 import { authMiddleware } from '../../../../lib/authMiddleware';
+import { mergeStudentLesson } from '../../../../lib/studentLessons';
 
 function loadEnvConfig() {
   try {
@@ -57,7 +58,7 @@ export default async function handler(req, res) {
 
   const { id } = req.query;
   const student_id = parseInt(id);
-  const { week, percentage, result, student_answers, homework_id, date_of_start, date_of_end, points_added } = req.body;
+  const { week, percentage, result, student_answers, homework_id, date_of_start, date_of_end, points_added, shuffle_mapping } = req.body;
 
   if (week === undefined || percentage === undefined || !result || !student_answers || !homework_id) {
     return res.status(400).json({ error: 'Missing required fields: week, percentage, result, student_answers, homework_id' });
@@ -81,6 +82,18 @@ export default async function handler(req, res) {
       return res.status(404).json({ error: 'Student not found' });
     }
 
+    // Get the homework document to get the lesson name
+    let lessonName = null;
+    try {
+      const homework = await db.collection('homeworks').findOne({ _id: new ObjectId(homework_id) });
+      if (homework && homework.lesson) {
+        lessonName = homework.lesson;
+      }
+    } catch (err) {
+      console.error('Error fetching homework document:', err);
+      // Continue even if we can't get the lesson name
+    }
+
     // Prepare homework result object
     // Ensure percentage is a number (strip % if present)
     const percentageNum = typeof percentage === 'string' ? percentage.replace('%', '') : percentage;
@@ -92,7 +105,8 @@ export default async function handler(req, res) {
       student_answers: student_answers,
       date_of_start: date_of_start || formatDate(new Date()),
       date_of_end: date_of_end || formatDate(new Date()),
-      points_added: points_added !== undefined && points_added !== null ? points_added : null
+      points_added: points_added !== undefined && points_added !== null ? points_added : null,
+      shuffle_mapping: shuffle_mapping || null
     };
 
     // Ensure online_homeworks array exists, then push the result
@@ -104,10 +118,23 @@ export default async function handler(req, res) {
       );
     }
 
-    // Push the homework result
+    const currentOnlineHomeworks = Array.isArray(student.online_homeworks) ? [...student.online_homeworks] : [];
+    const existingHomeworkIndex = currentOnlineHomeworks.findIndex(
+      (item) => String(item?.homework_id ?? '') === String(homework_id)
+    );
+    if (existingHomeworkIndex >= 0) {
+      currentOnlineHomeworks[existingHomeworkIndex] = {
+        ...currentOnlineHomeworks[existingHomeworkIndex],
+        ...homeworkResult,
+      };
+    } else {
+      currentOnlineHomeworks.push(homeworkResult);
+    }
+
+    // Replace existing result for the same homework instead of duplicating it
     const updateResult = await db.collection('students').updateOne(
       { id: student_id },
-      { $push: { online_homeworks: homeworkResult } }
+      { $set: { online_homeworks: currentOnlineHomeworks } }
     );
 
     if (updateResult.matchedCount === 0) {
@@ -169,6 +196,18 @@ export default async function handler(req, res) {
           );
         }
       }
+    }
+
+    // Update lessons object if lesson name is available
+    if (lessonName) {
+      const nextLessons = mergeStudentLesson(student.lessons, lessonName, {
+        hwDone: true,
+        homework_degree: result,
+      });
+      await db.collection('students').updateOne(
+        { id: student_id },
+        { $set: { lessons: nextLessons } }
+      );
     }
 
     res.json({ success: true, message: 'Homework result saved successfully' });

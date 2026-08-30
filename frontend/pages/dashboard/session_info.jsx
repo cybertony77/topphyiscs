@@ -1,34 +1,41 @@
 import { useEffect, useState, useRef, useMemo } from 'react';
 import Image from 'next/image';
-import GradeSelect from '../../components/GradeSelect';
+import { useQuery } from '@tanstack/react-query';
+import apiClient from '../../lib/axios';
+import CourseSelect from '../../components/CourseSelect';
+import CourseTypeSelect from '../../components/CourseTypeSelect';
 import CenterSelect from '../../components/CenterSelect';
-import AttendanceWeekSelect from '../../components/AttendanceWeekSelect';
+import AttendancelessonSelect from '../../components/AttendancelessonSelect';
 import { SessionTable } from '../../components/SessionTable.jsx';
 import Title from '../../components/Title';
 import { IconArrowDownRight, IconArrowUpRight, IconChevronLeft, IconChevronRight } from '@tabler/icons-react';
 import { Center, Group, Paper, RingProgress, SimpleGrid, Text } from '@mantine/core';
 import { useRouter } from 'next/router';
 import { useStudents } from '../../lib/api/students';
-import { useSystemConfig } from '../../lib/api/system';
+import { useSystemConfig, useNationalSystem, getCourseFieldLabels } from '../../lib/api/system';
 import LoadingSkeleton from '../../components/LoadingSkeleton';
 
 export default function SessionInfo() {
   const { data: systemConfig } = useSystemConfig();
+  const isNational = useNationalSystem();
+  const courseLabels = getCourseFieldLabels(isNational);
   const isScoringEnabled = systemConfig?.scoring_system === true || systemConfig?.scoring_system === 'true';
+  const isPaymentSystemEnabled = systemConfig?.payment_system === true || systemConfig?.payment_system === 'true';
   
   const containerRef = useRef(null);
   const router = useRouter();
   const [selectedCenter, setSelectedCenter] = useState('');
-  const [selectedGrade, setSelectedGrade] = useState('');
-  const [selectedWeek, setSelectedWeek] = useState('');
+  const [selectedCourse, setSelectedCourse] = useState('');
+  const [selectedCourseType, setSelectedCourseType] = useState('');
+  const [selectedLesson, setSelectedLesson] = useState('');
   const [filtered, setFiltered] = useState(null);
   const [showHW, setShowHW] = useState(false);
   
   const [showQuiz, setShowQuiz] = useState(false);
-  const [showComment, setShowComment] = useState(false); // legacy toggle: both main + week for attended table
+  const [showComment, setShowComment] = useState(false); // legacy toggle: both main + lesson for attended table
   const [showMainComment, setShowMainComment] = useState(false);
-  const [showWeekComment, setShowWeekComment] = useState(false);
-  const [openDropdown, setOpenDropdown] = useState(null); // 'grade', 'center', 'week', or null
+  const [showLessonComment, setShowLessonComment] = useState(false);
+  const [openDropdown, setOpenDropdown] = useState(null); // 'course', 'courseType', 'center', 'lesson', or null
   
   // Pagination state for each table
   const [attendedPage, setAttendedPage] = useState(1);
@@ -53,14 +60,22 @@ export default function SessionInfo() {
   });
 
   // Require all filters to be selected to show any data
-  const allFiltersSelected = !!(selectedCenter && selectedGrade && selectedWeek);
+  const allFiltersSelected = isNational
+    ? !!(selectedCenter && selectedCourse && selectedLesson)
+    : !!(selectedCenter && selectedCourseType && selectedLesson);
 
-  useEffect(() => {
-    if (error) {
-      const timer = setTimeout(() => setError(""), 5000);
-      return () => clearTimeout(timer);
+  const primaryFiltersReady = isNational
+    ? !!(selectedCourse && selectedCenter && selectedLesson)
+    : !!(selectedCourseType && selectedCenter && selectedLesson);
+
+  const matchesPrimaryFilter = (s) => {
+    if (isNational) {
+      return !!(s.course && selectedCourse && s.course.toLowerCase() === selectedCourse.toLowerCase());
     }
-  }, [error]);
+    return !!(s.courseType && selectedCourseType && s.courseType.toLowerCase() === selectedCourseType.toLowerCase());
+  };
+
+  const selectedPrimaryLabel = isNational ? selectedCourse : selectedCourseType;
 
   // Handle message state updates (simplified - SessionTable handles the local state)
   const handleMessageStateChange = (studentId, messageState) => {
@@ -104,12 +119,14 @@ export default function SessionInfo() {
   // Load remembered values from sessionStorage on component mount
   useEffect(() => {
     const rememberedCenter = sessionStorage.getItem('sessionInfoLastSelectedCenter');
-    const rememberedGrade = sessionStorage.getItem('sessionInfoLastSelectedGrade');
-    const rememberedWeek = sessionStorage.getItem('sessionInfoLastSelectedWeek');
+    const rememberedCourse = sessionStorage.getItem('sessionInfoLastSelectedCourse');
+    const rememberedCourseType = sessionStorage.getItem('sessionInfoLastSelectedCourseType');
+    const rememberedLesson = sessionStorage.getItem('sessionInfoLastSelectedLesson');
     
     if (rememberedCenter) setSelectedCenter(rememberedCenter);
-    if (rememberedGrade) setSelectedGrade(rememberedGrade);
-    if (rememberedWeek) setSelectedWeek(rememberedWeek);
+    if (rememberedCourse) setSelectedCourse(rememberedCourse);
+    if (rememberedCourseType) setSelectedCourseType(rememberedCourseType);
+    if (rememberedLesson) setSelectedLesson(rememberedLesson);
   }, []);
 
   // Handle click outside to close dropdowns
@@ -124,22 +141,26 @@ export default function SessionInfo() {
       }
     };
 
-    // Also handle when a dropdown opens to close others
-    const handleDropdownOpen = () => {
-      // Close any open dropdowns when a new one opens
-      if (openDropdown) {
-        setOpenDropdown(null);
-      }
-    };
-
     document.addEventListener('mousedown', handleClickOutside);
-    document.addEventListener('focusin', handleDropdownOpen);
-    
+
     return () => {
       document.removeEventListener('mousedown', handleClickOutside);
-      document.removeEventListener('focusin', handleDropdownOpen);
     };
   }, [openDropdown]);
+
+  // Fetch centers from database
+  const { data: centersResponse } = useQuery({
+    queryKey: ['centers'],
+    queryFn: async () => {
+      const response = await apiClient.get('/api/centers');
+      return response.data.centers || [];
+    },
+    staleTime: 5 * 60 * 1000, // Cache for 5 minutes
+    refetchOnWindowFocus: false
+  });
+
+  // Get all possible centers for dropdown
+  const allCenters = centersResponse?.map(center => center.name) || [];
 
   // Filtering logic
   const handleFilterFormSubmit = (e) => {
@@ -153,8 +174,17 @@ export default function SessionInfo() {
       return;
     }
     let filteredList = students;
-    if (selectedGrade) {
-      filteredList = filteredList.filter(s => s.grade && s.grade.toLowerCase().includes(selectedGrade.toLowerCase()));
+    // Filter by course (national) or courseType (standard)
+    if (isNational) {
+      if (selectedCourse) {
+        filteredList = filteredList.filter(s => {
+          return s.course && s.course.toLowerCase() === selectedCourse.toLowerCase();
+        });
+      }
+    } else if (selectedCourseType) {
+      filteredList = filteredList.filter(s => {
+        return s.courseType && s.courseType.toLowerCase() === selectedCourseType.toLowerCase();
+      });
     }
     // Filter out deactivated students
     filteredList = filteredList.filter(s => s.account_state !== 'Deactivated');
@@ -164,184 +194,177 @@ export default function SessionInfo() {
   // Trigger filtering when students data or filters change
   useEffect(() => {
     handleFilter();
-  }, [students, selectedGrade, selectedCenter, selectedWeek]);
+  }, [students, selectedCourse, selectedCourseType, selectedCenter, selectedLesson, isNational]);
 
-  // Helper function to get week number from week string
-  const getWeekNumber = (weekString) => {
-    if (!weekString) return null;
-    const match = weekString.match(/week (\d+)/);
-    return match ? parseInt(match[1]) : null;
-  };
-
-  // Helper function to get student data for specific week
-  const getStudentWeekData = (student, weekNumber) => {
-    if (!student.weeks || !weekNumber) return student;
-    const weekIndex = weekNumber - 1;
-    const weekData = student.weeks[weekIndex];
+  // Helper function to get student data for specific lesson
+  const getStudentLessonData = (student, lessonName) => {
+    if (!student.lessons || !lessonName) return student;
     
-    // If week data doesn't exist, return student with default week values
-    if (!weekData) {
+    // Check if lessons is an object (new format) or array (old format)
+    let lessonData = null;
+    if (typeof student.lessons === 'object' && !Array.isArray(student.lessons)) {
+      lessonData = student.lessons[lessonName];
+    }
+    
+    // If lesson data doesn't exist, return student with default lesson values
+    if (!lessonData) {
       return {
         ...student,
         attended_the_session: false,
         lastAttendance: null,
         lastAttendanceCenter: null,
         hwDone: false,
-        hwDegree: null,
+        homework_degree: null,
         quizDegree: null,
         comment: null,
-        message_state: false, // Default to false for non-existent weeks
-        // Store the week number for WhatsApp button to use
-        currentWeekNumber: weekNumber
+        message_state: false, // Default to false for non-existent lessons
+        student_message_state: false,
+        // Store the lesson name for WhatsApp button to use
+        attendanceLesson: lessonName,
+        currentLesson: lessonName
       };
     }
     
-      return {
+    return {
       ...student,
-      attended_the_session: weekData.attended,
-      lastAttendance: weekData.lastAttendance,
-      lastAttendanceCenter: weekData.lastAttendanceCenter,
-      hwDone: weekData.hwDone,
-      hwDegree: weekData.hwDegree || null,
-      quizDegree: weekData.quizDegree,
-      comment: weekData.comment,
-      message_state: weekData.message_state,
-      // Store the week number for WhatsApp button to use
-      currentWeekNumber: weekNumber
+      attended_the_session: lessonData.attended || false,
+      lastAttendance: lessonData.lastAttendance || null,
+      lastAttendanceCenter: lessonData.lastAttendanceCenter || null,
+      hwDone: lessonData.hwDone || false,
+      homework_degree: lessonData.homework_degree || null,
+      quizDegree: lessonData.quizDegree || null,
+      comment: lessonData.comment || null,
+      message_state: lessonData.message_state || false,
+      student_message_state: lessonData.student_message_state || false,
+      // Store the lesson name for WhatsApp button to use
+      attendanceLesson: lessonName,
+      currentLesson: lessonName
     };
   };
 
   const dataToCount = allFiltersSelected ? (filtered !== null ? filtered : students) : [];
 
-  // Helper function to check if student attended in specific week
-  const didStudentAttendInWeek = (student, weekNumber) => {
-    if (!student.weeks || !weekNumber) return false;
-    const weekIndex = weekNumber - 1;
-    const weekData = student.weeks[weekIndex];
-    return weekData && weekData.attended;
+  // Helper function to check if student has lesson and attended in specific lesson
+  const didStudentAttendInLesson = (student, lessonName) => {
+    if (!student.lessons || !lessonName) return false;
+    if (typeof student.lessons === 'object' && !Array.isArray(student.lessons)) {
+      const lessonData = student.lessons[lessonName];
+      return lessonData && lessonData.attended === true;
+    }
+    return false;
   };
 
-  // Helper function to check if student attended in specific center in specific week
-  const didStudentAttendInCenterInWeek = (student, center, weekNumber) => {
-    if (!student.weeks || !weekNumber || !center) return false;
-    const weekIndex = weekNumber - 1;
-    const weekData = student.weeks[weekIndex];
-    return weekData && weekData.attended && weekData.lastAttendanceCenter && 
-           weekData.lastAttendanceCenter.toLowerCase() === center.toLowerCase();
+  // Helper function to check if student attended in specific center in specific lesson
+  const didStudentAttendInCenterInLesson = (student, center, lessonName) => {
+    if (!student.lessons || !lessonName || !center) return false;
+    if (typeof student.lessons === 'object' && !Array.isArray(student.lessons)) {
+      const lessonData = student.lessons[lessonName];
+      return lessonData && 
+             lessonData.attended === true && 
+             lessonData.lastAttendanceCenter && 
+             lessonData.lastAttendanceCenter.toLowerCase() === center.toLowerCase();
+    }
+    return false;
   };
 
-  // Get the week number for filtering
-  const weekNumber = getWeekNumber(selectedWeek);
-
-  // Counts - now based on specific week if selected
-  const attendedCount = weekNumber ? 
-    dataToCount.filter(s => didStudentAttendInWeek(s, weekNumber)).length :
-    dataToCount.filter(s => s.weeks && s.weeks.some(week => week && week && week.attended)).length;
+  // Counts - now based on specific lesson if selected
+  const attendedCount = selectedLesson ? 
+    dataToCount.filter(s => didStudentAttendInLesson(s, selectedLesson)).length :
+    0; // If no lesson selected, can't count
     
-  const notAttendedCount = weekNumber ? 
-    dataToCount.filter(s => !didStudentAttendInWeek(s, weekNumber)).length :
-    dataToCount.filter(s => !s.weeks || !s.weeks.some(week => week && week && week.attended)).length;
-    
-  const hwDoneCount = weekNumber ? 
+  const notAttendedCount = selectedLesson ? 
     dataToCount.filter(s => {
-      if (!s.weeks || !weekNumber) return false;
-      const weekIndex = weekNumber - 1;
-      const weekData = s.weeks[weekIndex];
-      return weekData && weekData.hwDone;
+      if (!s.lessons || typeof s.lessons !== 'object' || Array.isArray(s.lessons)) return false;
+      const lessonData = s.lessons[selectedLesson];
+      return !lessonData || lessonData.attended !== true;
     }).length :
-    dataToCount.filter(s => s.weeks && s.weeks.some(week => week && week && week.hwDone)).length;
+    0;
     
-  const hwNotDoneCount = weekNumber ? 
+  const hwDoneCount = selectedLesson ? 
     dataToCount.filter(s => {
-      if (!s.weeks || !weekNumber) return false;
-      const weekIndex = weekNumber - 1;
-      const weekData = s.weeks[weekIndex];
-      return weekData && !weekData.hwDone;
+      if (!s.lessons || typeof s.lessons !== 'object' || Array.isArray(s.lessons)) return false;
+      const lessonData = s.lessons[selectedLesson];
+      return lessonData && lessonData.hwDone === true;
     }).length :
-    dataToCount.filter(s => !s.weeks || !s.weeks.some(week => week && week && week.hwDone)).length;
+    0;
+    
+  const hwNotDoneCount = selectedLesson ? 
+    dataToCount.filter(s => {
+      if (!s.lessons || typeof s.lessons !== 'object' || Array.isArray(s.lessons)) return false;
+      const lessonData = s.lessons[selectedLesson];
+      return !lessonData || lessonData.hwDone !== true;
+    }).length :
+    0;
     
   
 
   const centerCounts = {};
   dataToCount.forEach(s => {
-    if (s.weeks && Array.isArray(s.weeks)) {
-      s.weeks.forEach(week => {
-        if (week && week.lastAttendanceCenter) {
-          // If week is selected, only count that week
-          if (weekNumber && week.week !== weekNumber) return;
-          centerCounts[week.lastAttendanceCenter] = (centerCounts[week.lastAttendanceCenter] || 0) + 1;
-        }
-      });
+    if (s.lessons && typeof s.lessons === 'object' && !Array.isArray(s.lessons) && selectedLesson) {
+      const lessonData = s.lessons[selectedLesson];
+      if (lessonData && lessonData.lastAttendanceCenter) {
+        centerCounts[lessonData.lastAttendanceCenter] = (centerCounts[lessonData.lastAttendanceCenter] || 0) + 1;
+      }
     }
   });
 
   // --- NEW METRICS LOGIC ---
-  // MC: Main Center Attended (in specific week if selected)
+  // MC: Main Center Attended (in specific lesson if selected)
   const MC = dataToCount.filter(s => {
-    if (!selectedGrade || !selectedCenter) return false;
+    if (!primaryFiltersReady) return false;
     
-    const gradeMatch = s.grade && s.grade.toLowerCase().replace(/\./g, '') === selectedGrade.toLowerCase().replace(/\./g, '');
+    // Check course / courseType match
+    const courseTypeMatch = matchesPrimaryFilter(s);
+    
+    // Check main center match
     const centerMatch = s.main_center && s.main_center.toLowerCase() === selectedCenter.toLowerCase();
     
-    if (!gradeMatch || !centerMatch) return false;
+    if (!courseTypeMatch || !centerMatch) return false;
     
-    if (weekNumber) {
-      // Check if attended in selected week and in selected center
-      return didStudentAttendInCenterInWeek(s, selectedCenter, weekNumber);
-    } else {
-      // Check if attended in any week in selected center
-      return s.weeks && s.weeks.some(week => 
-        week && week.attended && week.lastAttendanceCenter && 
-        week.lastAttendanceCenter.toLowerCase() === selectedCenter.toLowerCase()
-      );
-    }
+    // Check if student has the selected lesson and attended in selected center
+    return didStudentAttendInCenterInLesson(s, selectedCenter, selectedLesson);
   }).length;
 
-  // NAMC: Not Attended but Main Center (in specific week if selected)
+  // NAMC: Not Attended but Main Center (in specific lesson if selected)
   const NAMC_students = allFiltersSelected ? dataToCount.filter(s => {
-    if (!selectedGrade || !selectedCenter) return false;
+    if (!primaryFiltersReady) return false;
     
-    const gradeMatch = s.grade && s.grade.toLowerCase().replace(/\./g, '') === selectedGrade.toLowerCase().replace(/\./g, '');
+    // Check course / courseType match
+    const courseTypeMatch = matchesPrimaryFilter(s);
+    
+    // Check main center match
     const centerMatch = s.main_center && s.main_center.toLowerCase() === selectedCenter.toLowerCase();
     
-    if (!gradeMatch || !centerMatch) return false;
+    if (!courseTypeMatch || !centerMatch) return false;
     
-    if (weekNumber) {
-      // Check if NOT attended in selected week
-      return !didStudentAttendInWeek(s, weekNumber);
-    } else {
-      // Check if NOT attended in any week
-      return !s.weeks || !s.weeks.some(week => week && week.attended);
-    }
+    // Check if student has the selected lesson but did NOT attend
+    if (!s.lessons || typeof s.lessons !== 'object' || Array.isArray(s.lessons)) return false;
+    const lessonData = s.lessons[selectedLesson];
+    return !lessonData || lessonData.attended !== true;
   }) : [];
   const NAMC = NAMC_students.length;
   const NAMC_ids = NAMC_students.map(s => s.id).join(', ');
 
-  // Main Center denominator: all students with main_center === selectedCenter and grade === selectedGrade (regardless of attendance)
-  const mainCenterTotal = allFiltersSelected ? dataToCount.filter(s =>
-    s.main_center && s.main_center.toLowerCase() === selectedCenter.toLowerCase() &&
-    s.grade && s.grade.toLowerCase().replace(/\./g, '') === selectedGrade.toLowerCase().replace(/\./g, '')
-  ).length : 0;
+  // Main Center denominator: all students with main_center === selectedCenter and matching primary filter
+  const mainCenterTotal = allFiltersSelected ? dataToCount.filter(s => {
+    return s.main_center && s.main_center.toLowerCase() === selectedCenter.toLowerCase() &&
+           matchesPrimaryFilter(s);
+  }).length : 0;
 
-  // NMC: Not Main Center Attended (in specific week if selected)
+  // NMC: Not Main Center Attended (in specific lesson if selected)
   const NMC = dataToCount.filter(s => {
-    if (!selectedGrade || !selectedCenter) return false;
+    if (!primaryFiltersReady) return false;
     
-    const gradeMatch = s.grade && s.grade.toLowerCase().replace(/\./g, '') === selectedGrade.toLowerCase().replace(/\./g, '');
+    // Check course / courseType match
+    const courseTypeMatch = matchesPrimaryFilter(s);
+    
+    // Check main center does NOT match
     const centerMatch = s.main_center && s.main_center.toLowerCase() !== selectedCenter.toLowerCase();
     
-    if (!gradeMatch || !centerMatch) return false;
+    if (!courseTypeMatch || !centerMatch) return false;
     
-    if (weekNumber) {
-      // Check if attended in selected week and in selected center
-      return didStudentAttendInCenterInWeek(s, selectedCenter, weekNumber);
-    } else {
-      // Check if attended in any week in selected center
-      return s.weeks && s.weeks.some(week => 
-        week && week.attended && week.lastAttendanceCenter && 
-        week.lastAttendanceCenter.toLowerCase() === selectedCenter.toLowerCase()
-      );
-    }
+    // Check if student has the selected lesson and attended in selected center
+    return didStudentAttendInCenterInLesson(s, selectedCenter, selectedLesson);
   }).length;
 
   // Total Attended: MC + NMC
@@ -350,87 +373,88 @@ export default function SessionInfo() {
   // MC percent (show as MC / mainCenterTotal and percent)
   const MC_percent = mainCenterTotal > 0 ? Math.round((MC / mainCenterTotal) * 100) : 0;
 
-  // Filtered students for table (by grade, center, and week if selected)
+  // Filtered students for table 1 (Attended): by course/courseType, center, and lesson
   let filteredStudents = (allFiltersSelected ? (filtered !== null ? filtered : students) : []).filter(s => {
-    if (!selectedGrade || !selectedCenter) return false;
+    if (!primaryFiltersReady) return false;
     
     // Exclude deactivated students
     if (s.account_state === 'Deactivated') return false;
     
-    const gradeMatch = s.grade && s.grade.toLowerCase().replace(/\./g, '') === selectedGrade.toLowerCase().replace(/\./g, '');
-    if (!gradeMatch) return false;
+    // Check course / courseType match
+    if (!matchesPrimaryFilter(s)) return false;
     
-    if (weekNumber) {
-      // If week is selected, check if attended in that specific week and center
-      return didStudentAttendInCenterInWeek(s, selectedCenter, weekNumber);
-    } else {
-      // If no week selected, check if attended in any week in selected center
-      return s.weeks && s.weeks.some(week => 
-        week && week.attended && week.lastAttendanceCenter && 
-        week.lastAttendanceCenter.toLowerCase() === selectedCenter.toLowerCase()
-      );
-    }
+    // Check if student has the selected lesson
+    if (!s.lessons || typeof s.lessons !== 'object' || Array.isArray(s.lessons)) return false;
+    const lessonData = s.lessons[selectedLesson];
+    if (!lessonData) return false;
+    
+    // Check if attended in selected lesson and in selected center
+    return lessonData.attended === true && 
+           lessonData.lastAttendanceCenter && 
+           lessonData.lastAttendanceCenter.toLowerCase() === selectedCenter.toLowerCase();
   });
 
-  // If a specific week is selected, update the student data to show that week's information
-  if (selectedWeek && weekNumber) {
-    filteredStudents = filteredStudents.map(student => getStudentWeekData(student, weekNumber));
+  // Update the student data to show that lesson's information
+  if (selectedLesson) {
+    filteredStudents = filteredStudents.map(student => getStudentLessonData(student, selectedLesson));
   }
 
-  // Filter for not attended students (considering week if selected)
+  // Filter for not attended students (table 2): by course/courseType, main center, and lesson
   const notAttendedStudents = (allFiltersSelected ? (filtered !== null ? filtered : students) : []).filter(s => {
-    if (!selectedGrade || !selectedCenter) return false;
+    if (!primaryFiltersReady) return false;
     
     // Exclude deactivated students
     if (s.account_state === 'Deactivated') return false;
     
-    const gradeMatch = s.grade && s.grade.toLowerCase().replace(/\./g, '') === selectedGrade.toLowerCase().replace(/\./g, '');
+    // Check course / courseType match
+    if (!matchesPrimaryFilter(s)) return false;
+    
+    // Check main center match
     const centerMatch = s.main_center && s.main_center.toLowerCase() === selectedCenter.toLowerCase();
+    if (!centerMatch) return false;
     
-    if (!gradeMatch || !centerMatch) return false;
-    
-    if (weekNumber) {
-      // Check if NOT attended in selected week
-      return !didStudentAttendInWeek(s, weekNumber);
-    } else {
-      // Check if NOT attended in any week
-      return !s.weeks || !s.weeks.some(week => week && week.attended);
-    }
+    // Check if student has the selected lesson but did NOT attend
+    if (!s.lessons || typeof s.lessons !== 'object' || Array.isArray(s.lessons)) return false;
+    const lessonData = s.lessons[selectedLesson];
+    return !lessonData || lessonData.attended !== true;
   });
 
-  // Update not attended students with week data if week is selected
-  if (selectedWeek && weekNumber) {
+  // Update not attended students with lesson data
+  if (selectedLesson) {
     notAttendedStudents.forEach(student => {
-      Object.assign(student, getStudentWeekData(student, weekNumber));
+      Object.assign(student, getStudentLessonData(student, selectedLesson));
     });
   }
 
   // AIAC: Attended in Another Center - students who attended in a different center than their main center
   const aiacStudents = (allFiltersSelected ? (filtered !== null ? filtered : students) : []).filter(s => {
-    if (!selectedGrade || !selectedCenter || !weekNumber) return false;
+    if (!primaryFiltersReady) return false;
     
     // Exclude deactivated students
     if (s.account_state === 'Deactivated') return false;
     
-    const gradeMatch = s.grade && s.grade.toLowerCase().replace(/\./g, '') === selectedGrade.toLowerCase().replace(/\./g, '');
+    // Check course / courseType match
+    if (!matchesPrimaryFilter(s)) return false;
+    
+    // Check main center match
     const centerMatch = s.main_center && s.main_center.toLowerCase() === selectedCenter.toLowerCase();
+    if (!centerMatch) return false;
     
-    if (!gradeMatch || !centerMatch) return false;
+    // Check if student has the selected lesson
+    if (!s.lessons || typeof s.lessons !== 'object' || Array.isArray(s.lessons)) return false;
+    const lessonData = s.lessons[selectedLesson];
     
-    // Check if attended in selected week but in a different center
-    const weekIndex = weekNumber - 1;
-    const weekData = s.weeks && s.weeks[weekIndex];
-    
-    return weekData && 
-           weekData.attended === true && 
-           weekData.lastAttendanceCenter && 
-           weekData.lastAttendanceCenter.toLowerCase() !== selectedCenter.toLowerCase();
+    // Check if attended in selected lesson but in a different center than selectedCenter
+    return lessonData && 
+           lessonData.attended === true && 
+           lessonData.lastAttendanceCenter && 
+           lessonData.lastAttendanceCenter.toLowerCase() !== selectedCenter.toLowerCase();
   });
 
-  // Update AIAC students with week data
-  if (selectedWeek && weekNumber) {
+  // Update AIAC students with lesson data
+  if (selectedLesson) {
     aiacStudents.forEach(student => {
-      Object.assign(student, getStudentWeekData(student, weekNumber));
+      Object.assign(student, getStudentLessonData(student, selectedLesson));
     });
   }
 
@@ -470,7 +494,7 @@ export default function SessionInfo() {
     setAttendedPage(1);
     setAbsencesPage(1);
     setAiacPage(1);
-  }, [selectedCenter, selectedGrade, selectedWeek]);
+  }, [selectedCenter, selectedCourse, selectedCourseType, selectedLesson]);
 
   // Pagination handlers for attended table
   const handleAttendedPageClick = (pageNumber) => {
@@ -813,7 +837,7 @@ export default function SessionInfo() {
             border: 1px solid #e9ecef;
             transition: all 0.2s ease;
             position: relative;
-            z-index: 9999;
+            z-index: 2;
           }
           
           .pagination-page-info.clickable:hover {
@@ -828,7 +852,7 @@ export default function SessionInfo() {
             left: 50%;
             transform: translateX(-50%);
             margin-bottom: 8px;
-            z-index: 10000;
+            z-index: 5;
           }
           
           .page-popup-content {
@@ -842,7 +866,7 @@ export default function SessionInfo() {
             max-height: 400px;
             overflow-y: auto;
             position: relative;
-            z-index: 10001;
+            z-index: 6;
           }
           
           .page-popup-header {
@@ -964,14 +988,33 @@ export default function SessionInfo() {
         </Title>
         {error && <div className="error-message">❌ {error}</div>}
         
-        {/* Show week info if week is selected */}
-        {selectedWeek && (
+        {/* Show lesson info if lesson is selected */}
+        {selectedLesson && (
           <div className="week-info">
-            <Image src="/books.svg" alt="Week Info" width={20} height={20} style={{ display: 'inline-block' , transform: 'translateY(4px)', marginRight: '5px' }} /> Showing data for {selectedWeek} - {selectedCenter} - {selectedGrade}
+            <Image src="/books.svg" alt="Lesson Info" width={20} height={20} style={{ display: 'inline-block' , transform: 'translateY(4px)', marginRight: '5px' }} /> Showing data for {selectedLesson} Lesson - {selectedCenter} ({selectedPrimaryLabel})
           </div>
         )}
         
         <form onSubmit={handleFilterFormSubmit} className="filter-section">
+          {isNational && (
+            <>
+              <div className="filter-label">{courseLabels.course}</div>
+              <CourseSelect
+                selectedGrade={selectedCourse}
+                onGradeChange={(course) => {
+                  setSelectedCourse(course);
+                  if (course) {
+                    sessionStorage.setItem('sessionInfoLastSelectedCourse', course);
+                  } else {
+                    sessionStorage.removeItem('sessionInfoLastSelectedCourse');
+                  }
+                }}
+                isOpen={openDropdown === 'course'}
+                onToggle={() => setOpenDropdown(openDropdown === 'course' ? null : 'course')}
+                onClose={() => setOpenDropdown(null)}
+              />
+            </>
+          )}
           <div className="filter-label">Center</div>
           <CenterSelect
             selectedCenter={selectedCenter}
@@ -980,7 +1023,6 @@ export default function SessionInfo() {
               if (center) {
                 sessionStorage.setItem('sessionInfoLastSelectedCenter', center);
               } else {
-                // Clear selection - remove from sessionStorage
                 sessionStorage.removeItem('sessionInfoLastSelectedCenter');
               }
             }}
@@ -988,44 +1030,45 @@ export default function SessionInfo() {
             onToggle={() => setOpenDropdown(openDropdown === 'center' ? null : 'center')}
             onClose={() => setOpenDropdown(null)}
           />
-          <div className="filter-label">Grade</div>
-          <GradeSelect 
-            selectedGrade={selectedGrade} 
-            onGradeChange={(grade) => {
-              setSelectedGrade(grade);
-              if (grade) {
-                sessionStorage.setItem('sessionInfoLastSelectedGrade', grade);
+          {courseLabels.showCourseType && (
+            <>
+          <div className="filter-label">Course Type</div>
+          <CourseTypeSelect
+            selectedCourseType={selectedCourseType}
+            onCourseTypeChange={(courseType) => {
+              setSelectedCourseType(courseType);
+              if (courseType) {
+                sessionStorage.setItem('sessionInfoLastSelectedCourseType', courseType);
               } else {
-                // Clear selection - remove from sessionStorage
-                sessionStorage.removeItem('sessionInfoLastSelectedGrade');
+                sessionStorage.removeItem('sessionInfoLastSelectedCourseType');
               }
             }}
-            required={false} 
-            isOpen={openDropdown === 'grade'}
-            onToggle={() => setOpenDropdown(openDropdown === 'grade' ? null : 'grade')}
+            isOpen={openDropdown === 'courseType'}
+            onToggle={() => setOpenDropdown(openDropdown === 'courseType' ? null : 'courseType')}
             onClose={() => setOpenDropdown(null)}
           />
-          <div className="filter-label">Week</div>
-          <AttendanceWeekSelect
-            selectedWeek={selectedWeek}
-            onWeekChange={(week) => {
-              setSelectedWeek(week);
-              if (week) {
-                sessionStorage.setItem('sessionInfoLastSelectedWeek', week);
+            </>
+          )}
+          <div className="filter-label">Lesson</div>
+          <AttendancelessonSelect
+            selectedLesson={selectedLesson}
+            onLessonChange={(lesson) => {
+              setSelectedLesson(lesson);
+              if (lesson) {
+                sessionStorage.setItem('sessionInfoLastSelectedLesson', lesson);
               } else {
-                // Clear selection - remove from sessionStorage
-                sessionStorage.removeItem('sessionInfoLastSelectedWeek');
+                sessionStorage.removeItem('sessionInfoLastSelectedLesson');
               }
             }}
-            isOpen={openDropdown === 'week'}
-            onToggle={() => setOpenDropdown(openDropdown === 'week' ? null : 'week')}
+            isOpen={openDropdown === 'lesson'}
+            onToggle={() => setOpenDropdown(openDropdown === 'lesson' ? null : 'lesson')}
             onClose={() => setOpenDropdown(null)}
             required={true}
           />
           <button type="submit" className="filter-btn">Filter Students</button>
         </form>
 
-        <StatsRing MC={MC} NMC={NMC} totalAttended={totalAttended} mainCenterTotal={mainCenterTotal} selectedWeek={selectedWeek} />
+        <StatsRing MC={MC} NMC={NMC} totalAttended={totalAttended} mainCenterTotal={mainCenterTotal} selectedLesson={selectedLesson} />
         
         {/* Table toggles and table */}
         <div className="table-container" style={{ margin: '24px 0', background: '#fff', borderRadius: 12, padding: '18px', boxShadow: '0 2px 8px rgba(0,0,0,0.07)' }}>
@@ -1044,15 +1087,15 @@ export default function SessionInfo() {
               {showQuiz ? 'Hide Quiz Degree' : 'Show Quiz Degree'}
             </button>
             <button
-              className={`table-toggle-btn ${(showComment || showMainComment) ? 'active' : ''}`}
+              className={`table-toggle-btn ${(showComment || showMainComment || showLessonComment) ? 'active' : ''}`}
               onClick={() => {
-                // legacy button toggles BOTH main+week for attended table
+                // legacy button toggles BOTH main+lesson for attended table
                 setShowComment(v => !v);
                 setShowMainComment(v => !v);
-                setShowWeekComment(v => !v);
+                setShowLessonComment(v => !v);
               }}
             >
-              {(showComment || showMainComment || showWeekComment) ? 'Hide Comments' : 'Show Comments'}
+              {(showComment || showMainComment || showLessonComment) ? 'Hide Comments' : 'Show Comments'}
             </button>
           </div>
           <SessionTable
@@ -1063,13 +1106,17 @@ export default function SessionInfo() {
             showQuiz={showQuiz}
             showComment={false}
             showMainComment={showComment || showMainComment}
-            showWeekComment={showComment || showWeekComment}
+            showWeekComment={showComment || showLessonComment}
             height={300}
             showWhatsApp={true}
+            showEmail={false}
+            showCourse={true}
+            showCourseType={true}
             showScore={isScoringEnabled}
-            emptyMessage={selectedWeek ? 
-              `No students attended in ${selectedCenter} for ${selectedGrade} in ${selectedWeek}.` :
-              `No students found for selected grade and center.`
+            showPayment={isPaymentSystemEnabled}
+            emptyMessage={selectedLesson ? 
+              `No students attended in ${selectedCenter} for ${selectedPrimaryLabel} in ${selectedLesson}.` :
+              `No students found for selected ${isNational ? 'grade' : 'course type'} and center.`
             }
             onMessageStateChange={handleMessageStateChange}
             onScoreUpdate={handleWhatsAppMessageSent}
@@ -1133,7 +1180,7 @@ export default function SessionInfo() {
         {/* Second table: Not attended, grade and main_center match selection */}
         <div className="table-container" style={{ margin: '24px 0', background: '#fff', borderRadius: 12, padding: '18px', boxShadow: '0 2px 8px rgba(0,0,0,0.07)' }}>
           <div style={{ fontWeight: 600, marginBottom: 12, textAlign: 'center', color: '#000' }}>
-          {selectedWeek ? `Absences Students in ${selectedWeek} (${notAttendedStudents.length} records)` : `Absences Students (${notAttendedStudents.length} records)`}
+          {selectedLesson ? `Absences Students in ${selectedLesson} (${notAttendedStudents.length} records)` : `Absences Students (${notAttendedStudents.length} records)`}
           </div>
           <SessionTable
             data={paginatedAbsencesStudents}
@@ -1144,12 +1191,16 @@ export default function SessionInfo() {
             showMainComment={true}
             showWeekComment={true}
             showWhatsApp={true}
+            showEmail={false}
+            showCourse={true}
+            showCourseType={true}
             showHW={showHW}
             showHomeworkVideo={false}
             showScore={isScoringEnabled}
-            emptyMessage={selectedWeek ? 
-              `No Absences in ${selectedCenter} for ${selectedGrade} in ${selectedWeek}.` :
-              `No students found for selected grade and center.`
+            showPayment={isPaymentSystemEnabled}
+            emptyMessage={selectedLesson ? 
+              `No Absences in ${selectedCenter} for ${selectedPrimaryLabel} in ${selectedLesson}.` :
+              `No students found for selected ${isNational ? 'grade' : 'course type'} and center.`
             }
             onMessageStateChange={handleMessageStateChange}
             onScoreUpdate={handleWhatsAppMessageSent}
@@ -1213,7 +1264,7 @@ export default function SessionInfo() {
         {/* AIAC: Attended in Another Center Table */}
         <div className="table-container" style={{ margin: '24px 0', background: '#fff', borderRadius: 12, padding: '18px', boxShadow: '0 2px 8px rgba(0,0,0,0.07)' }}>
           <div style={{ fontWeight: 600, marginBottom: 12, textAlign: 'center', color: '#000' }}>
-            {selectedWeek ? `Attended in another center in ${selectedWeek} (${aiacStudents.length} records)` : `Attended in another center (${aiacStudents.length} records)`}
+            {selectedLesson ? `Attended in another center in ${selectedLesson} (${aiacStudents.length} records)` : `Attended in another center (${aiacStudents.length} records)`}
           </div>
           <SessionTable
             data={paginatedAiacStudents}
@@ -1224,14 +1275,18 @@ export default function SessionInfo() {
             showMainComment={true}
             showWeekComment={true}
             showWhatsApp={true}
+            showEmail={false}
             showMessageState={true}
             showStatsColumns={true}
+            showCourse={true}
+            showCourseType={true}
             showHW={showHW}
             showHomeworkVideo={false}
             showScore={isScoringEnabled}
-            emptyMessage={selectedWeek ? 
-              `No students attended in another center in ${selectedWeek}.` :
-              `No students found for selected grade and center.`
+            showPayment={isPaymentSystemEnabled}
+            emptyMessage={selectedLesson ? 
+              `No students attended in another center in ${selectedLesson}.` :
+              `No students found for selected ${isNational ? 'grade' : 'course type'} and center.`
             }
             onMessageStateChange={handleMessageStateChange}
             onScoreUpdate={handleWhatsAppMessageSent}
@@ -1298,7 +1353,7 @@ export default function SessionInfo() {
 }
 
 // Replace counts-container with StatsRing
-function StatsRing({ MC, NMC, totalAttended, mainCenterTotal, selectedWeek }) {
+function StatsRing({ MC, NMC, totalAttended, mainCenterTotal, selectedLesson }) {
   const stats = [
     {
       label: 'Main Center',

@@ -2,6 +2,11 @@ import { MongoClient } from 'mongodb';
 import fs from 'fs';
 import path from 'path';
 import { authMiddleware } from '../../../../lib/authMiddleware';
+import {
+  createDefaultStudentLesson,
+  getStudentLesson,
+  mergeStudentLesson,
+} from '../../../../lib/studentLessons';
 
 // Load environment variables from env.config
 function loadEnvConfig() {
@@ -42,10 +47,10 @@ export default async function handler(req, res) {
 
   const { id } = req.query;
   const studentId = parseInt(id);
-  const { comment, week } = req.body;
+  const { comment, lesson } = req.body;
 
-  if (!week) {
-    return res.status(400).json({ error: 'week is required' });
+  if (!lesson) {
+    return res.status(400).json({ error: 'lesson is required' });
   }
   if (isNaN(studentId)) {
     return res.status(400).json({ error: 'Invalid student ID' });
@@ -59,18 +64,49 @@ export default async function handler(req, res) {
     // Verify authentication
     await authMiddleware(req);
 
-    // Validate student and weeks
+    // Validate student
     const student = await db.collection('students').findOne({ id: studentId });
     if (!student) return res.status(404).json({ error: 'Student not found' });
-    const weekIndex = week - 1;
-    if (!student.weeks || weekIndex < 0 || weekIndex >= student.weeks.length) {
-      return res.status(400).json({ error: `Week ${week} is out of range` });
-    }
+    
+    // Ensure the target lesson exists; if not, create it with default schema
+    const ensureLessonExists = async () => {
+      console.log(`🔍 Current student lessons structure:`, typeof student.lessons, student.lessons);
+      
+      // Handle case where lessons might be an array (old format) or undefined
+      if (!student.lessons || Array.isArray(student.lessons)) {
+        console.log(`🔄 Converting lessons from array to object format for student ${studentId}`);
+        student.lessons = {};
+        // Update the database to use object format
+        await db.collection('students').updateOne(
+          { id: studentId },
+          { $set: { lessons: {} } }
+        );
+      }
+      
+      if (!getStudentLesson(student.lessons, lesson)) {
+        console.log(`🧩 Creating missing lesson "${lesson}" for student ${studentId}`);
+        const nextLessons = mergeStudentLesson(
+          student.lessons,
+          lesson,
+          createDefaultStudentLesson(lesson)
+        );
+        await db.collection('students').updateOne(
+          { id: studentId },
+          { $set: { lessons: nextLessons } }
+        );
+        student.lessons = nextLessons;
+      }
+    };
 
-    // Update comment in the selected week
+    await ensureLessonExists();
+
+    // Update comment in the selected lesson
+    const nextLessons = mergeStudentLesson(student.lessons, lesson, {
+      comment: (comment && String(comment).trim() !== '') ? String(comment).trim() : null,
+    });
     await db.collection('students').updateOne(
       { id: studentId },
-      { $set: { [`weeks.${weekIndex}.comment`]: (comment && String(comment).trim() !== '') ? String(comment).trim() : null } }
+      { $set: { lessons: nextLessons } }
     );
 
     return res.json({ success: true });

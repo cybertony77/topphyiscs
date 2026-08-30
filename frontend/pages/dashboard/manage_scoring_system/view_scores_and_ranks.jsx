@@ -1,16 +1,28 @@
+import { useNationalSystem, getCourseFieldLabels } from '../../../lib/api/system';
 import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/router";
 import { useQuery } from '@tanstack/react-query';
 import apiClient from '../../../lib/axios';
 import { useProfile } from '../../../lib/api/auth';
 import Title from '../../../components/Title';
-import GradeSelect from '../../../components/GradeSelect';
+import CourseSelect from '../../../components/CourseSelect';
+import CourseTypeSelect from '../../../components/CourseTypeSelect';
 import CenterSelect from '../../../components/CenterSelect';
 import ScoreSelect from '../../../components/ScoreSelect';
 import { IconArrowRight, IconSearch, IconChevronLeft, IconChevronRight } from '@tabler/icons-react';
-import { ActionIcon, TextInput, useMantineTheme } from '@mantine/core';
+import { ActionIcon, TextInput, useMantineTheme, ScrollArea, Table } from '@mantine/core';
 import LoadingSkeleton from '../../../components/LoadingSkeleton';
 import Image from 'next/image';
+import cx from 'clsx';
+import classes from '../../../styles/TableScrollArea.module.css';
+
+function getScoreColor(score) {
+  if (score >= 400) return '#28a745';
+  if (score >= 150) return '#1FA8DC';
+  if (score >= 50) return '#0ac5b2';
+  if (score <= 20) return '#6c757d';
+  return '#dc3545';
+}
 
 function InputWithButton({ onButtonClick, onKeyDown, ...props }) {
   const theme = useMantineTheme();
@@ -51,11 +63,14 @@ function InputWithButton({ onButtonClick, onKeyDown, ...props }) {
 }
 
 export default function ViewScores() {
+  const isNational = useNationalSystem();
+  const courseLabels = getCourseFieldLabels(isNational);
   const router = useRouter();
   const containerRef = useRef(null);
   const { data: profile, isLoading: profileLoading } = useProfile();
   const [accessDenied, setAccessDenied] = useState(false);
-  const [selectedGrade, setSelectedGrade] = useState("");
+  const [selectedCourse, setSelectedCourse] = useState("");
+  const [selectedCourseType, setSelectedCourseType] = useState("");
   const [selectedCenter, setSelectedCenter] = useState("");
   const [selectedScore, setSelectedScore] = useState("");
   const [openDropdown, setOpenDropdown] = useState(null);
@@ -64,6 +79,7 @@ export default function ViewScores() {
   const [isMobile, setIsMobile] = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
   const [showPagePopup, setShowPagePopup] = useState(false);
+  const [scrolled, setScrolled] = useState(false);
   const pageSize = 100;
 
   useEffect(() => {
@@ -102,7 +118,7 @@ export default function ViewScores() {
 
   // Fetch students with scores and rankings
   const { data: studentsResponse, isLoading, error, refetch } = useQuery({
-    queryKey: ['scoring-view-scores', currentPage, searchTerm || '', selectedGrade, selectedCenter, selectedScore],
+    queryKey: ['scoring-view-scores', currentPage, searchTerm || '', selectedCourse, selectedCourseType, selectedCenter, selectedScore],
     queryFn: async () => {
       const params = new URLSearchParams();
       params.append('page', currentPage);
@@ -111,7 +127,8 @@ export default function ViewScores() {
       if (searchTerm && searchTerm.trim()) {
         params.append('search', searchTerm.trim());
       }
-      if (selectedGrade) params.append('grade', selectedGrade);
+      if (selectedCourse) params.append('course', selectedCourse);
+      if (selectedCourseType) params.append('courseType', selectedCourseType);
       if (selectedCenter) params.append('center', selectedCenter);
       if (selectedScore) params.append('score', selectedScore);
       params.append('sortBy', 'score');
@@ -153,7 +170,7 @@ export default function ViewScores() {
   // Reset to page 1 when filters change
   useEffect(() => {
     setCurrentPage(1);
-  }, [selectedGrade, selectedCenter, selectedScore, searchTerm]);
+  }, [selectedCourse, selectedCourseType, selectedCenter, selectedScore, searchTerm]);
 
   const handleSearchKeyPress = (e) => {
     if (e.key === 'Enter') {
@@ -213,7 +230,7 @@ export default function ViewScores() {
         minHeight: "100vh", 
         padding: "20px 5px 20px 5px"
       }}>
-        <div style={{ maxWidth: 800, margin: "40px auto", padding: "12px" }}>
+        <div style={{ maxWidth: 1400, width: '100%', margin: "40px auto", padding: "12px" }}>
           <Title backText="Back" href="/dashboard/manage_scoring_system">
             <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
               <Image src="/stars.svg" alt="View Scores" width={32} height={32} />
@@ -240,7 +257,7 @@ export default function ViewScores() {
       minHeight: "100vh", 
       padding: "20px 5px 20px 5px" 
     }}>
-      <div ref={containerRef} style={{ maxWidth: 800, margin: "40px auto", padding: "12px" }}>
+      <div ref={containerRef} style={{ maxWidth: 1000, width: '100%', margin: "40px auto", padding: "12px" }}>
         <Title backText="Back" href="/dashboard/manage_scoring_system">
           <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
             <Image src="/stars.svg" alt="View Scores" width={32} height={32} />
@@ -262,18 +279,33 @@ export default function ViewScores() {
         <div className="filters-container">
           <div className="filter-row">
             <div className="filter-group">
-              <label className="filter-label">Filter by Grade</label>
-              <GradeSelect
-                selectedGrade={selectedGrade}
-                onGradeChange={(grade) => {
-                  setSelectedGrade(grade);
+              <label className="filter-label">{courseLabels.filterByCourse}</label>
+              <CourseSelect
+                selectedGrade={selectedCourse}
+                onGradeChange={(course) => {
+                  setSelectedCourse(course);
                   setCurrentPage(1);
                 }}
-                isOpen={openDropdown === 'grade'}
-                onToggle={() => setOpenDropdown(openDropdown === 'grade' ? null : 'grade')}
+                isOpen={openDropdown === 'course'}
+                onToggle={() => setOpenDropdown(openDropdown === 'course' ? null : 'course')}
                 onClose={() => setOpenDropdown(null)}
               />
             </div>
+            {courseLabels.showCourseType && (
+<div className="filter-group">
+              <label className="filter-label">Filter by Course Type</label>
+              <CourseTypeSelect
+                selectedCourseType={selectedCourseType}
+                onCourseTypeChange={(courseType) => {
+                  setSelectedCourseType(courseType);
+                  setCurrentPage(1);
+                }}
+                isOpen={openDropdown === 'courseType'}
+                onToggle={() => setOpenDropdown(openDropdown === 'courseType' ? null : 'courseType')}
+                onClose={() => setOpenDropdown(null)}
+              />
+            </div>
+)}
             <div className="filter-group">
               <label className="filter-label">Filter by Main Center</label>
               <CenterSelect
@@ -327,72 +359,94 @@ export default function ViewScores() {
 
           {students.length === 0 ? (
             <div className="no-results">
-              {searchTerm || selectedGrade || selectedCenter
+              {searchTerm || selectedCourse || selectedCourseType || selectedCenter
                 ? "No students found with the current filters."
                 : "No students found."}
             </div>
           ) : (
-            <div style={{ overflowX: 'auto', maxHeight: '500px', overflowY: 'auto' }}>
-              <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 800 }}>
-                <thead style={{ position: 'sticky', top: 0, zIndex: 10, background: '#f8f9fa' }}>
-                  <tr style={{ background: '#f8f9fa', borderBottom: '2px solid #dee2e6' }}>
-                    <th style={{ padding: '12px', textAlign: 'center', fontWeight: 600, fontSize: '0.95rem' }}>ID</th>
-                    <th style={{ padding: '12px', textAlign: 'center', fontWeight: 600, fontSize: '0.95rem' }}>Name</th>
-                    <th style={{ padding: '12px', textAlign: 'center', fontWeight: 600, fontSize: '0.95rem' }}>Student Phone</th>
-                    <th style={{ padding: '12px', textAlign: 'center', fontWeight: 600, fontSize: '0.95rem' }}>Grade</th>
-                    <th style={{ padding: '12px', textAlign: 'center', fontWeight: 600, fontSize: '0.95rem' }}>School</th>
-                    <th style={{ padding: '12px', textAlign: 'center', fontWeight: 600, fontSize: '0.95rem' }}>Main Center</th>
-                    <th style={{ padding: '12px', textAlign: 'center', fontWeight: 600, fontSize: '0.95rem' }}>Score</th>
-                    <th style={{ padding: '12px', textAlign: 'center', fontWeight: 600, fontSize: '0.95rem' }}>Rank (Main Center)</th>
-                    <th style={{ padding: '12px', textAlign: 'center', fontWeight: 600, fontSize: '0.95rem' }}>Rank (Grade)</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {students.map((student, idx) => {
-                    const score = student.score !== null && student.score !== undefined ? student.score : 0;
-                    // Color based on score: green for high scores, blue for medium, gray for low
-                    const getScoreColor = (score) => {
-                      if (score >= 400) return '#28a745'; // Green for high scores
-                      if (score >= 150) return '#1FA8DC'; // Blue for medium scores
-                      if (score >= 50) return '#0ac5b2'; // Turquoise for low scores
-                      if (score <= 20) return '#6c757d'; // Gray for low scores
-                      return '#dc3545'; // Red for very low scores
-                    };
-                    return (
-                      <tr 
-                        key={student.id || idx}
-                        style={{ 
-                          borderBottom: '1px solid #e9ecef',
-                          background: idx % 2 === 0 ? 'white' : '#f8f9fa',
-                          transition: 'background 0.2s'
-                        }}
-                        onMouseEnter={(e) => e.currentTarget.style.background = '#e9ecef'}
-                        onMouseLeave={(e) => e.currentTarget.style.background = idx % 2 === 0 ? 'white' : '#f8f9fa'}
-                      >
-                        <td style={{ padding: '12px', textAlign: 'center', fontSize: '0.9rem' }}>{student.id}</td>
-                        <td style={{ padding: '12px', textAlign: 'center', fontSize: '0.9rem', fontWeight: 500 }}>{student.name || '-'}</td>
-                        <td style={{ padding: '12px', textAlign: 'center', fontSize: '0.9rem', fontFamily: 'monospace' }}>{student.phone || '-'}</td>
-                        <td style={{ padding: '12px', textAlign: 'center', fontSize: '0.9rem' }}>{student.grade || '-'}</td>
-                        <td style={{ padding: '12px', textAlign: 'center', fontSize: '0.9rem' }}>{student.school || '-'}</td>
-                        <td style={{ padding: '12px', textAlign: 'center', fontSize: '0.9rem' }}>{student.main_center || '-'}</td>
-                        <td style={{ padding: '12px', textAlign: 'center', fontSize: '0.9rem', fontWeight: 700, color: getScoreColor(score) }}>
-                          {score}
-                        </td>
-                        <td style={{ padding: '12px', textAlign: 'center', fontSize: '0.9rem' }}>
-                          {student.centerRank && student.centerTotal 
-                            ? `${student.centerRank} / ${student.centerTotal}`
-                            : '-'}
-                        </td>
-                        <td style={{ padding: '12px', textAlign: 'center', fontSize: '0.9rem' }}>
-                          {student.gradeRank && student.gradeTotal 
-                            ? `${student.gradeRank} / ${student.gradeTotal}`
-                            : '-'}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
+            <div className="scores-table-wrap">
+              <ScrollArea
+                h={isMobile ? 360 : 480}
+                type="hover"
+                onScrollPositionChange={({ y }) => setScrolled(y !== 0)}
+                offsetScrollbars
+              >
+                <Table
+                  miw={isMobile ? (courseLabels.showCourseType ? 940 : 840) : (courseLabels.showCourseType ? 1280 : 1160)}
+                  verticalSpacing={isMobile ? 'xs' : 'sm'}
+                  horizontalSpacing={isMobile ? 'xs' : 'md'}
+                  highlightOnHover
+                  striped
+                  withTableBorder={false}
+                  style={{ width: '100%' }}
+                >
+                  <Table.Thead className={cx(classes.header, { [classes.scrolled]: scrolled })}>
+                    <Table.Tr>
+                      <Table.Th style={{ minWidth: isMobile ? 44 : 70, textAlign: 'center', fontSize: isMobile ? 11 : undefined }}>ID</Table.Th>
+                      <Table.Th style={{ minWidth: isMobile ? 72 : 140, textAlign: 'center', fontSize: isMobile ? 11 : undefined }}>Name</Table.Th>
+                      <Table.Th style={{ minWidth: isMobile ? 52 : 90, textAlign: 'center', fontSize: isMobile ? 11 : undefined }}>Gender</Table.Th>
+                      <Table.Th style={{ minWidth: isMobile ? 52 : 90, textAlign: 'center', fontSize: isMobile ? 11 : undefined }}>Grade</Table.Th>
+                      <Table.Th style={{ minWidth: isMobile ? 56 : 110, textAlign: 'center', fontSize: isMobile ? 11 : undefined }}>{courseLabels.course}</Table.Th>
+                      {courseLabels.showCourseType && (
+                        <Table.Th style={{ minWidth: isMobile ? 56 : 110, textAlign: 'center', fontSize: isMobile ? 11 : undefined }}>Type</Table.Th>
+                      )}
+                      <Table.Th style={{ minWidth: isMobile ? 64 : 140, textAlign: 'center', fontSize: isMobile ? 11 : undefined }}>School</Table.Th>
+                      <Table.Th style={{ minWidth: isMobile ? 64 : 120, textAlign: 'center', fontSize: isMobile ? 11 : undefined }}>Center</Table.Th>
+                      <Table.Th style={{ minWidth: isMobile ? 44 : 90, textAlign: 'center', fontSize: isMobile ? 11 : undefined }}>Score</Table.Th>
+                      <Table.Th style={{ minWidth: isMobile ? 72 : 140, textAlign: 'center', fontSize: isMobile ? 11 : undefined }}>Rank (Center)</Table.Th>
+                      <Table.Th style={{ minWidth: isMobile ? 72 : 140, textAlign: 'center', fontSize: isMobile ? 11 : undefined }}>Rank ({courseLabels.course})</Table.Th>
+                    </Table.Tr>
+                  </Table.Thead>
+                  <Table.Tbody>
+                    {students.map((student, idx) => {
+                      const score = student.score !== null && student.score !== undefined ? student.score : 0;
+                      const cellFont = isMobile ? 11 : 15;
+                      return (
+                        <Table.Tr key={student.id || idx}>
+                          <Table.Td style={{ textAlign: 'center', fontSize: cellFont }}>{student.id}</Table.Td>
+                          <Table.Td style={{ textAlign: 'center', fontSize: cellFont, fontWeight: 500 }}>
+                            {student.name || '-'}
+                          </Table.Td>
+                          <Table.Td style={{ textAlign: 'center', fontSize: cellFont }}>{student.gender || '-'}</Table.Td>
+                          <Table.Td style={{ textAlign: 'center', fontSize: cellFont }}>{student.grade || '-'}</Table.Td>
+                          <Table.Td style={{ textAlign: 'center', fontSize: cellFont }}>
+                            {student.course || student.grade || '-'}
+                          </Table.Td>
+                          {courseLabels.showCourseType && (
+                            <Table.Td style={{ textAlign: 'center', fontSize: cellFont }}>
+                              {student.courseType || '-'}
+                            </Table.Td>
+                          )}
+                          <Table.Td style={{ textAlign: 'center', fontSize: cellFont }}>{student.school || 'No School'}</Table.Td>
+                          <Table.Td style={{ textAlign: 'center', fontSize: cellFont }}>
+                            {student.main_center || '-'}
+                          </Table.Td>
+                          <Table.Td
+                            style={{
+                              textAlign: 'center',
+                              fontSize: cellFont,
+                              fontWeight: 700,
+                              color: getScoreColor(score),
+                            }}
+                          >
+                            {score}
+                          </Table.Td>
+                          <Table.Td style={{ textAlign: 'center', fontSize: cellFont }}>
+                            {student.centerRank && student.centerTotal
+                              ? `${student.centerRank}/${student.centerTotal}`
+                              : '-'}
+                          </Table.Td>
+                          <Table.Td style={{ textAlign: 'center', fontSize: cellFont }}>
+                            {student.courseRank && student.courseTotal
+                              ? `${student.courseRank}/${student.courseTotal}`
+                              : '-'}
+                          </Table.Td>
+                        </Table.Tr>
+                      );
+                    })}
+                  </Table.Tbody>
+                </Table>
+              </ScrollArea>
             </div>
           )}
 
@@ -481,7 +535,15 @@ export default function ViewScores() {
             border-radius: 16px;
             padding: 24px;
             box-shadow: 0 8px 32px rgba(0,0,0,0.1);
-            overflow-x: auto;
+            overflow: hidden;
+            width: 100%;
+          }
+          .scores-table-wrap {
+            width: 100%;
+            border-radius: 12px;
+            border: 1px solid #e9ecef;
+            overflow: hidden;
+            background: #fff;
           }
           .history-title {
             font-size: 1.5rem;
@@ -639,16 +701,14 @@ export default function ViewScores() {
             }
             .history-container {
               padding: 16px;
+              overflow-x: hidden;
             }
             .history-title {
               font-size: 1.3rem;
             }
-            table {
-              min-width: 600px !important;
-            }
-            th, td {
-              padding: 8px !important;
-              font-size: 0.85rem !important;
+            .scores-table-wrap {
+              border-radius: 10px;
+              zoom: 0.92;
             }
             .pagination-page-info {
               font-size: 1rem;
@@ -692,16 +752,13 @@ export default function ViewScores() {
             }
             .history-container {
               padding: 12px;
+              overflow-x: hidden;
             }
             .history-title {
               font-size: 1.1rem;
             }
-            table {
-              min-width: 500px !important;
-            }
-            th, td {
-              padding: 6px !important;
-              font-size: 0.8rem !important;
+            .scores-table-wrap {
+              zoom: 0.90;
             }
             .pagination-container {
               gap: 8px;
@@ -714,6 +771,23 @@ export default function ViewScores() {
               font-size: 0.9rem;
               min-width: 90px;
               padding: 6px 10px;
+            }
+          }
+
+          @supports not (zoom: 1) {
+            @media (max-width: 768px) {
+              .scores-table-wrap {
+                zoom: unset;
+                transform: scale(0.92);
+                transform-origin: top left;
+                width: 108.70%;
+              }
+            }
+            @media (max-width: 480px) {
+              .scores-table-wrap {
+                transform: scale(0.90);
+                width: 111.11%;
+              }
             }
           }
         `}</style>

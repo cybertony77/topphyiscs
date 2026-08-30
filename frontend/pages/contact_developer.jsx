@@ -8,7 +8,7 @@ import { useSystemConfig } from "../lib/api/system";
 export default function ContactDeveloperPage() {
   const router = useRouter();
   const { data: systemConfig } = useSystemConfig();
-  const systemName = systemConfig?.name || 'Demo Attendance System';
+  const systemName = systemConfig?.name || 'Math Academy';
   const [hasToken, setHasToken] = useState(false);
   const [loading, setLoading] = useState(true);
   const [developerPhone, setDeveloperPhone] = useState('201211172756');
@@ -53,7 +53,7 @@ export default function ContactDeveloperPage() {
     return (
       <div style={{
         minHeight: "100vh",
-        background: "linear-gradient(380deg, #1FA8DC 0%, #FEB954 100%)",
+        background: 'linear-gradient(380deg, #1FA8DC 0%, #FEB954 100%);',
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
@@ -156,8 +156,7 @@ export default function ContactDeveloperPage() {
               background: linear-gradient(
                 90deg,
                 #1FA8DC 0%,
-                #FEB954 50%,
-                #1FA8DC 100%
+                #FEB954 100%
               );
               background-size: 200% 100%;
               animation: shimmer 2s ease-in-out infinite;
@@ -198,7 +197,7 @@ export default function ContactDeveloperPage() {
             }} className="loading-logo">
               <Image 
                 src="/logo.png" 
-                alt="Demo Attendance System Logo" 
+                alt="Math Academy Logo" 
                 width={100} 
                 height={100} 
                 style={{ objectFit: "cover" }} 
@@ -210,7 +209,7 @@ export default function ContactDeveloperPage() {
               width: "50px",
               height: "50px",
               border: "4px solid rgba(31, 168, 220, 0.2)",
-              borderTop: "4px solid #1FA8DC",
+              borderTop: "4px solid rgb(65, 65, 65)",
               borderRadius: "50%",
               margin: "0 auto 24px auto",
               animation: "spin 1s linear infinite"
@@ -577,8 +576,8 @@ export default function ContactDeveloperPage() {
               }
               
               .contact-icon {
-                width: 50px;
-                height: 50px;
+                width: 55px;
+                height: 55px;
                 font-size: 18px;
               }
               
@@ -687,7 +686,7 @@ export default function ContactDeveloperPage() {
               border: "2px solid rgba(254, 185, 84, 0.2)",
               textAlign: "center"
             }}>
-              🚀 Senior Software Developer
+              🚀 Business Owner & Software Developer
             </div>
           </div>
 

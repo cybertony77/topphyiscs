@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/router";
 import Title from "../components/Title";
 import { useProfile, useUpdateProfile, useProfilePicture } from '../lib/api/auth';
@@ -20,6 +20,7 @@ export default function EditMyProfile() {
   const [uploadingImage, setUploadingImage] = useState(false);
   const [imagePreview, setImagePreview] = useState(null);
   const [isDragging, setIsDragging] = useState(false);
+  const localPreviewActiveRef = useRef(false);
   const router = useRouter();
 
   // React Query hooks
@@ -28,12 +29,15 @@ export default function EditMyProfile() {
   const updateProfileMutation = useUpdateProfile();
   const usernameCheck = useCheckUsername(form.id);
   
-  // Set image preview from signed URL when available
+  // Set image preview from signed URL when available (skip while user picked a new local file)
   useEffect(() => {
-    if (profilePictureUrl && form.profile_picture) {
-      setImagePreview(profilePictureUrl);
-    } else if (!form.profile_picture) {
+    if (!form.profile_picture) {
       setImagePreview(null);
+      localPreviewActiveRef.current = false;
+      return;
+    }
+    if (profilePictureUrl && !localPreviewActiveRef.current) {
+      setImagePreview(profilePictureUrl);
     }
   }, [profilePictureUrl, form.profile_picture]);
 
@@ -95,15 +99,16 @@ export default function EditMyProfile() {
       return;
     }
 
-    // Validate file size (5 MB)
-    if (file.size > 5 * 1024 * 1024) {
-      setError('❌ Sorry, Max profile picture size is 5 MB, Please try another picture');
+    // Validate file size (10 MB)
+    if (file.size > 10 * 1024 * 1024) {
+      setError('❌ Sorry, Max profile picture size is 10 MB, Please try another picture');
       return;
     }
 
     // Create preview
     const reader = new FileReader();
     reader.onloadend = () => {
+      localPreviewActiveRef.current = true;
       setImagePreview(reader.result);
     };
     reader.readAsDataURL(file);
@@ -135,6 +140,7 @@ export default function EditMyProfile() {
       }
     } catch (err) {
       setError(err.response?.data?.error || '❌ Failed to upload image. Please try again.');
+      localPreviewActiveRef.current = false;
       setImagePreview(null);
       setForm(prev => ({ ...prev, profile_picture: originalForm?.profile_picture || null }));
     } finally {
@@ -176,6 +182,7 @@ export default function EditMyProfile() {
 
   // Handle profile picture removal
   const handleRemoveImage = () => {
+    localPreviewActiveRef.current = false;
     setImagePreview(null);
     setForm(prev => ({ ...prev, profile_picture: null }));
     const fileInput = document.getElementById('profile-picture-upload-editprofile');
@@ -212,6 +219,27 @@ export default function EditMyProfile() {
     return changes;
   };
 
+  const areRequiredFieldsFilled = () => {
+    if (!form.name?.trim()) return false;
+    if (!form.id?.trim()) return false;
+    if (!form.email?.trim()) return false;
+    return true;
+  };
+
+  const isPasswordValid = () => {
+    if (!form.password || form.password.trim() === '') return true;
+    if (form.password.length < 8) return false;
+    if (form.password !== confirmPassword) return false;
+    return true;
+  };
+
+  const isUsernameAvailable = () => {
+    if (!form.id || form.id === originalForm?.id) return true;
+    if (usernameCheck.isLoading) return false;
+    if (usernameCheck.data?.exists) return false;
+    return true;
+  };
+
   // Helper function to check if any fields have changed
   const hasChanges = () => {
     if (!form || !originalForm) return false;
@@ -229,6 +257,13 @@ export default function EditMyProfile() {
       }
     });
   };
+
+  const canSubmit =
+    areRequiredFieldsFilled() &&
+    hasChanges() &&
+    isPasswordValid() &&
+    isUsernameAvailable() &&
+    !updateProfileMutation.isPending;
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -306,6 +341,7 @@ export default function EditMyProfile() {
     updateProfileMutation.mutate(submitForm, {
       onSuccess: () => {
         setSuccess(true);
+        localPreviewActiveRef.current = false;
         // Update original data to reflect the new state
         setOriginalForm({ ...form });
         // Clear password fields after successful update
@@ -361,7 +397,7 @@ export default function EditMyProfile() {
           .submit-btn {
             width: 100%;
             padding: 16px;
-            background: linear-gradient(135deg, #87CEEB 0%, #B0E0E6 100%);
+            background: linear-gradient(135deg, #15b0ef 0%, #15d0e7 100%);
             color: white;
             border: none;
             border-radius: 10px;
@@ -369,18 +405,21 @@ export default function EditMyProfile() {
             font-weight: 600;
             cursor: pointer;
             transition: all 0.3s ease;
-            box-shadow: 0 4px 16px rgba(135, 206, 235, 0.3);
+            box-shadow: 0 4px 16px rgba(21, 176, 239, 0.35);
             margin-top: 8px;
           }
           .submit-btn:hover:not(:disabled) {
             transform: translateY(-2px);
-            box-shadow: 0 6px 20px rgba(135, 206, 235, 0.4);
+            box-shadow: 0 6px 20px rgba(21, 176, 239, 0.45);
           }
           .submit-btn:disabled {
-            opacity: 0.7;
+            background: linear-gradient(135deg, #87ceeb 0%, #b0e0e6 100%);
+            color: rgba(255, 255, 255, 0.9);
+            opacity: 1;
             cursor: not-allowed;
             transform: none;
-            box-shadow: 0 2px 8px rgba(135, 206, 235, 0.2);
+            box-shadow: none;
+            filter: none;
           }
           .success-message {
             background: linear-gradient(135deg, #28a745 0%, #20c997 100%);
@@ -475,7 +514,7 @@ export default function EditMyProfile() {
             {/* Profile Picture Upload */}
             <div className="form-group" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '12px' }}>
               <label style={{ textAlign: 'center', width: '100%' }}>Profile Picture</label>
-              {form.profile_picture && imagePreview ? (
+              {imagePreview ? (
                 // Show uploaded image in circle
                 <div
                   style={{
@@ -506,6 +545,7 @@ export default function EditMyProfile() {
                     title="Drag & drop new image"
                   >
                     <img
+                      key={form.profile_picture || 'local-preview'}
                       src={imagePreview}
                       alt="Profile preview"
                       className="profile-picture-image"
@@ -638,7 +678,7 @@ export default function EditMyProfile() {
                 style={{ display: 'none' }}
               />
               <small style={{ color: '#6c757d', fontSize: '0.85rem', textAlign: 'center', marginTop: '4px' }}>
-                Max size: 5 MB. Formats: JPEG, PNG, GIF, WEBP
+                Max size: 10 MB. Formats: JPEG, PNG, GIF, WEBP
               </small>
             </div>
 
@@ -800,9 +840,15 @@ export default function EditMyProfile() {
                 </div>
               </div>
             )}
-            <button type="submit" className="submit-btn" disabled={updateProfileMutation.isPending || !hasChanges()}>
+            <button
+              type="submit"
+              className="submit-btn"
+              disabled={!canSubmit}
+              title={canSubmit ? 'Save profile changes' : 'Fill required fields and make changes to enable'}
+              aria-disabled={!canSubmit}
+            >
               {updateProfileMutation.isPending ? "Saving..." : "Save Changes"}
-        </button>
+            </button>
           </form>
           {success && <div className="success-message">✅ Profile updated successfully!</div>}
           {error && <div className="error-message">{error}</div>}

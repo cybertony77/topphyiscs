@@ -2,15 +2,40 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { useRouter } from "next/router";
 import Image from 'next/image';
 import Title from '../../components/Title';
-import R2VideoPlayer from '../../components/R2VideoPlayer';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import apiClient from '../../lib/axios';
 import { useProfile } from '../../lib/api/auth';
-import { useStudent } from '../../lib/api/students';
-import { useSystemConfig } from '../../lib/api/system';
+import { useStudent, studentKeys } from '../../lib/api/students';
+import { useSystemConfig, useNationalSystem } from '../../lib/api/system';
+import StudentLessonSelect from '../../components/StudentLessonSelect';
 import NeedHelp from '../../components/NeedHelp';
+import R2VideoPlayer from '../../components/R2VideoPlayer';
+import YoutubeEmbedWithProgress from '../../components/YoutubeEmbedWithProgress';
+import ZoomVideoPlayer from '../../components/ZoomVideoPlayer';
+import GoogleMeetVideoPlayer from '../../components/GoogleMeetVideoPlayer';
 import { TextInput, ActionIcon, useMantineTheme } from '@mantine/core';
 import { IconSearch, IconArrowRight } from '@tabler/icons-react';
+import { getStudentLesson } from '../../lib/studentLessons';
+import { isDeadlinePassedEgypt } from '../../lib/deadlineTimeEgypt';
+import { isCodeNumberOfDaysValid } from '../../lib/codeNumberOfDays';
+import CodePopupMessage from '../../components/CodePopupMessage';
+import {
+  CODE_ERROR,
+  getVerificationCodeMessage,
+  resolveVerificationCodeError,
+} from '../../lib/verificationCodeMessages';
+
+function unlockInfoFromVhcResponse(data) {
+  if (!data) return null;
+  return {
+    vhc_id: data.vhc_id,
+    code_settings: data.code_settings || 'number_of_views',
+    number_of_views: data.number_of_views ?? null,
+    number_of_days: data.number_of_days ?? null,
+    access_started_at: data.access_started_at || null,
+    deadline_date: data.deadline_date || null,
+  };
+}
 
 // Input with Button Component (matching manage online system style)
 function InputWithButton(props) {
@@ -32,128 +57,36 @@ function InputWithButton(props) {
   );
 }
 
-// Custom Week Select for Student Dashboard (only shows available weeks)
-function StudentWeekSelect({ availableWeeks = [], selectedWeek, onWeekChange, isOpen, onToggle, onClose, placeholder = 'Select Week' }) {
-  const dropdownRef = useRef(null);
-
-  useEffect(() => {
-    const handleClickOutside = (event) => {
-      if (dropdownRef.current && !dropdownRef.current.contains(event.target)) {
-        onClose();
-      }
-    };
-
-    if (isOpen) {
-      document.addEventListener('mousedown', handleClickOutside);
-    }
-
-    return () => {
-      document.removeEventListener('mousedown', handleClickOutside);
-    };
-  }, [isOpen, onClose]);
-
-  const handleWeekSelect = (week) => {
-    onWeekChange(week);
-    onClose();
-  };
-
-  return (
-    <div ref={dropdownRef} style={{ position: 'relative', width: '100%' }}>
-      <div
-        style={{
-          padding: '14px 16px',
-          border: isOpen ? '2px solid #1FA8DC' : '2px solid #e9ecef',
-          borderRadius: '10px',
-          backgroundColor: '#ffffff',
-          cursor: 'pointer',
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'center',
-          fontSize: '1rem',
-          color: selectedWeek && selectedWeek !== 'n/a' ? '#000000' : '#adb5bd',
-          transition: 'all 0.3s ease',
-          boxShadow: isOpen ? '0 0 0 3px rgba(31, 168, 220, 0.1)' : 'none'
-        }}
-        onClick={onToggle}
-      >
-        <span>{selectedWeek && selectedWeek !== 'n/a' ? selectedWeek : placeholder}</span>
-        <Image
-          src={isOpen ? "/chevron-down.svg" : "/chevron-right.svg"}
-          alt={isOpen ? "Close" : "Open"}
-          width={20}
-          height={20}
-          style={{
-            transition: 'transform 0.2s ease'
-          }}
-        />
-
-      </div>
-      
-      {isOpen && (
-        <div style={{
-          position: 'absolute',
-          top: '100%',
-          left: 0,
-          right: 0,
-          backgroundColor: '#ffffff',
-          border: '2px solid #e9ecef',
-          borderRadius: '10px',
-          boxShadow: '0 4px 16px rgba(0,0,0,0.1)',
-          zIndex: 1000,
-          maxHeight: '200px',
-          overflowY: 'auto',
-          marginTop: '4px'
-        }}>
-          {/* Clear selection option */}
-          <div
-            style={{
-              padding: '12px 16px',
-              cursor: 'pointer',
-              borderBottom: '1px solid #f8f9fa',
-              transition: 'background-color 0.2s ease',
-              color: '#dc3545',
-              fontWeight: '500'
-            }}
-            onClick={() => handleWeekSelect('')}
-            onMouseEnter={(e) => e.target.style.backgroundColor = '#fff5f5'}
-            onMouseLeave={(e) => e.target.style.backgroundColor = '#ffffff'}
-          >
-            ✕ Clear selection
-          </div>
-          {availableWeeks.map((week) => (
-            <div
-              key={week}
-              style={{
-                padding: '12px 16px',
-                cursor: 'pointer',
-                borderBottom: '1px solid #f8f9fa',
-                transition: 'background-color 0.2s ease',
-                color: '#000000'
-              }}
-              onClick={() => handleWeekSelect(week)}
-              onMouseEnter={(e) => e.target.style.backgroundColor = '#f8f9fa'}
-              onMouseLeave={(e) => e.target.style.backgroundColor = '#ffffff'}
-            >
-              {week}
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// Check if a video ID is an R2 key (not a YouTube ID)
-// YouTube IDs are exactly 11 characters matching [a-zA-Z0-9_-]
-// R2 keys contain '/' or are not matching YouTube ID format
-function isR2Key(videoId) {
-  if (!videoId) return false;
-  return !/^[a-zA-Z0-9_-]{11}$/.test(videoId);
-}
 
 // Build embed URL
 function buildEmbedUrl(videoId) {
-  return `https://www.youtube.com/embed/${videoId}?controls=1&rel=0&modestbranding=1&disablekb=1&fs=1`;
+  return `https://www.youtube.com/embed/${videoId}?controls=0&rel=0&modestbranding=1&disablekb=1&fs=0&iv_load_policy=3&playsinline=1`;
+}
+
+const VHC_UNLOCK_STORAGE_PREFIX = 'vhc-unlocked:';
+
+function readUnlockMap(studentId) {
+  if (typeof window === 'undefined' || !studentId) return new Map();
+  try {
+    const raw = window.sessionStorage.getItem(`${VHC_UNLOCK_STORAGE_PREFIX}${studentId}`);
+    if (!raw) return new Map();
+    const entries = JSON.parse(raw);
+    return Array.isArray(entries) ? new Map(entries) : new Map();
+  } catch {
+    return new Map();
+  }
+}
+
+function writeUnlockMap(studentId, map) {
+  if (typeof window === 'undefined' || !studentId) return;
+  try {
+    window.sessionStorage.setItem(
+      `${VHC_UNLOCK_STORAGE_PREFIX}${studentId}`,
+      JSON.stringify([...map.entries()])
+    );
+  } catch {
+    /* ignore quota / private mode */
+  }
 }
 
 
@@ -161,6 +94,7 @@ export default function HomeworksVideos() {
   const router = useRouter();
   const { data: profile } = useProfile();
   const { data: systemConfig } = useSystemConfig();
+  const isNational = useNationalSystem();
   const isHomeworksVideosEnabled = systemConfig?.homeworks_videos === true || systemConfig?.homeworks_videos === 'true';
   const [expandedSessions, setExpandedSessions] = useState(new Set());
   
@@ -180,7 +114,12 @@ export default function HomeworksVideos() {
   const videoContainerRef = useRef(null);
   const videoStartTimeRef = useRef(null); // Track when video was opened
   const isClosingVideoRef = useRef(false); // Prevent multiple close calls
-  const r2CompletedRef = useRef(false); // Track if R2 video was completed (>= 90%)
+  const r2CompletedRef = useRef(false); // R2: >= 90% watched
+  const watchedTenPercentRef = useRef(false); // Attendance/watch marker at >=10%
+  const selectedVideoRef = useRef(null);
+  const vhcViewsDecrementDoneRef = useRef(false);
+  const attendancePostedRef = useRef(false);
+  const lastUnlockStudentIdRef = useRef(null);
   const [vhcPopupOpen, setVhcPopupOpen] = useState(false);
   const [vhc, setVhc] = useState('');
   const [vhcError, setVhcError] = useState('');
@@ -188,9 +127,20 @@ export default function HomeworksVideos() {
   const [pendingVideo, setPendingVideo] = useState(null); // Store video info while waiting for VHC
   const [unlockedSessions, setUnlockedSessions] = useState(new Map()); // Store unlocked sessions with VHC info
 
+  // Auto-hide VHC popup messages after 6s
+  useEffect(() => {
+    if (!vhcError) return undefined;
+    const timer = setTimeout(() => setVhcError(''), 6000);
+    return () => clearTimeout(timer);
+  }, [vhcError]);
+
   // Fetch student data to check attendance
   const studentId = profile?.id ? profile.id.toString() : null;
-  const { data: studentData } = useStudent(studentId, { enabled: !!studentId });
+  const queryClient = useQueryClient();
+  const { data: studentData } = useStudent(studentId, {
+    enabled: !!studentId,
+    refetchOnMount: 'always',
+  });
 
   // Fetch homeworks videos
   const { data: sessionsData, isLoading } = useQuery({
@@ -208,6 +158,11 @@ export default function HomeworksVideos() {
 
   const sessions = sessionsData?.sessions || [];
 
+  // Hide deactivated homework videos from students
+  const visibleSessions = sessions.filter(
+    (session) => (session.account_state || 'Activated') !== 'Deactivated'
+  );
+
   // Restore unlocked sessions from student's homeworks_videos on page load
   useEffect(() => {
     const restoreUnlockedSessions = async () => {
@@ -219,6 +174,7 @@ export default function HomeworksVideos() {
 
       console.log('[RESTORE VHC] Starting restore process, found', studentData.homeworks_videos.length, 'homeworks_videos');
       const newUnlocked = new Map();
+      const invalidIds = [];
       
       // Process each homeworks_video entry
       for (const homeworkVideo of studentData.homeworks_videos) {
@@ -226,6 +182,10 @@ export default function HomeworksVideos() {
           console.log('[RESTORE VHC] Skipping entry - missing vhc_id or video_id:', homeworkVideo);
           continue;
         }
+
+        const videoId = typeof homeworkVideo.video_id === 'string' 
+          ? homeworkVideo.video_id 
+          : homeworkVideo.video_id.toString();
 
         try {
           console.log('[RESTORE VHC] Fetching VHC details for video_id:', homeworkVideo.video_id, 'vhc_id:', homeworkVideo.vhc_id);
@@ -236,20 +196,11 @@ export default function HomeworksVideos() {
 
           console.log('[RESTORE VHC] VHC response:', response.data);
           if (response.data.success && response.data.valid) {
-            // Add to unlocked sessions Map
-            const videoId = typeof homeworkVideo.video_id === 'string' 
-              ? homeworkVideo.video_id 
-              : homeworkVideo.video_id.toString();
-            
             console.log('[RESTORE VHC] Adding to unlocked sessions - videoId:', videoId, 'vhc_id:', response.data.vhc_id);
-            newUnlocked.set(videoId, {
-              vhc_id: response.data.vhc_id,
-              code_settings: response.data.code_settings || 'number_of_views',
-              number_of_views: response.data.number_of_views || null,
-              deadline_date: response.data.deadline_date || null
-            });
+            newUnlocked.set(videoId, unlockInfoFromVhcResponse(response.data));
           } else {
             console.log('[RESTORE VHC] VHC not valid:', response.data);
+            invalidIds.push(videoId);
           }
         } catch (err) {
           console.error('[RESTORE VHC] Failed to restore VHC for video:', homeworkVideo.video_id, err);
@@ -257,67 +208,85 @@ export default function HomeworksVideos() {
         }
       }
 
-      // Update unlocked sessions state
+      // Update unlocked sessions state (add valid, remove expired/invalid)
       console.log('[RESTORE VHC] Restored', newUnlocked.size, 'unlocked sessions');
-      if (newUnlocked.size > 0) {
-        setUnlockedSessions(newUnlocked);
+      if (newUnlocked.size > 0 || invalidIds.length > 0) {
+        setUnlockedSessions((prev) => {
+          const merged = new Map(prev);
+          invalidIds.forEach((id) => merged.delete(id));
+          newUnlocked.forEach((value, key) => merged.set(key, value));
+          return merged;
+        });
       }
     };
 
     restoreUnlockedSessions();
-  }, [studentData]);
+  }, [studentData, sessionsData]);
 
-  // Helper function to check if student attended a specific week
-  const checkWeekAttendance = (weekNumber) => {
-    if (!studentData || !studentData.weeks || !weekNumber) return false;
-    const weekData = studentData.weeks.find(w => w && w.week === weekNumber);
-    return weekData && weekData.attended === true;
+  // Helper function to check if student attended a specific lesson
+  const checkLessonAttendance = (lessonName) => {
+    if (!studentData || !studentData.lessons || !lessonName) return false;
+    const lessonData = getStudentLesson(studentData.lessons, lessonName);
+    return lessonData && lessonData.attended === true;
+  };
+
+  /** Unlock when lessons[lessonName].hwDone exists and is not false (needs VHC otherwise). */
+  const checkLessonHomeworkDoneForVideo = (lessonName) => {
+    if (!studentData?.lessons || !lessonName) return false;
+    const lessonData = getStudentLesson(studentData.lessons, lessonName);
+    if (!lessonData || typeof lessonData !== 'object') return false;
+    if (!Object.prototype.hasOwnProperty.call(lessonData, 'hwDone')) return false;
+    if (lessonData.hwDone === false) return false;
+    return true;
   };
 
   // Helper function to check if video is unlocked
   const isVideoUnlocked = (session) => {
     if (session.payment_state === 'free') {
       return true; // Free videos are always unlocked
+    } else if (session.payment_state === 'free_if_homework_done') {
+      if (session._isFreeIfHomeworkDone !== undefined) {
+        return session._hwDoneUnlocks === true;
+      }
+      const lessonName = session.lesson;
+      return checkLessonHomeworkDoneForVideo(lessonName);
     } else if (session.payment_state === 'free_if_attended') {
-      // Check if student attended this week
-      const weekNumber = session.week;
-      return checkWeekAttendance(weekNumber);
+      // Check if student attended this lesson
+      // Use API flag if available, otherwise check student data
+      if (session._isFreeIfAttended !== undefined) {
+        return session._attended === true;
+      }
+      const lessonName = session.lesson;
+      return checkLessonAttendance(lessonName);
     } else if (session.payment_state === 'paid') {
       // Check if session is in unlockedSessions
       const sessionId = session._id?.toString() || session._id;
       const unlockedInfo = unlockedSessions.get(sessionId);
-      
-      console.log('[UNLOCK CHECK VHC] Session ID:', sessionId, 'Unlocked info:', unlockedInfo, 'All unlocked keys:', Array.from(unlockedSessions.keys()));
-      
+
       if (!unlockedInfo) {
         return false; // Not unlocked yet
       }
-      
-      // Check deadline date if code_settings is 'deadline_date'
-      if (unlockedInfo.code_settings === 'deadline_date' && unlockedInfo.deadline_date) {
-        const deadlineDate = new Date(unlockedInfo.deadline_date);
-        const today = new Date();
-        today.setHours(0, 0, 0, 0);
-        deadlineDate.setHours(0, 0, 0, 0);
-        
-        if (deadlineDate <= today) {
-          // Expired - remove from unlocked sessions
-          const newUnlocked = new Map(unlockedSessions);
-          newUnlocked.delete(sessionId);
-          setUnlockedSessions(newUnlocked);
+
+      // Check deadline date if code_settings is 'deadline_date' / number_of_days (Africa/Cairo)
+      if (unlockedInfo.code_settings === 'number_of_days') {
+        if (unlockedInfo.access_started_at != null && unlockedInfo.number_of_days != null) {
+          if (!isCodeNumberOfDaysValid(unlockedInfo.access_started_at, unlockedInfo.number_of_days)) {
+            return false;
+          }
+        } else if (unlockedInfo.deadline_date && isDeadlinePassedEgypt(unlockedInfo.deadline_date, null)) {
+          return false;
+        }
+      } else if (unlockedInfo.code_settings === 'deadline_date' && unlockedInfo.deadline_date) {
+        if (isDeadlinePassedEgypt(unlockedInfo.deadline_date, null)) {
           return false;
         }
       } else if (unlockedInfo.code_settings === 'number_of_views') {
-        // Check if views are remaining
-        if (unlockedInfo.number_of_views <= 0) {
-          // No views remaining - remove from unlocked sessions
-          const newUnlocked = new Map(unlockedSessions);
-          newUnlocked.delete(sessionId);
-          setUnlockedSessions(newUnlocked);
+        const views = Number(unlockedInfo.number_of_views);
+        if (!Number.isFinite(views) || views <= 0) {
           return false;
         }
       }
-      
+
       return true; // Unlocked and valid
     }
     return false; // Default to locked
@@ -326,48 +295,45 @@ export default function HomeworksVideos() {
   // Search and filter states
   const [searchInput, setSearchInput] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
-  const [filterWeek, setFilterWeek] = useState('');
-  const [filterWeekDropdownOpen, setFilterWeekDropdownOpen] = useState(false);
+  const [filterLesson, setFilterLesson] = useState('');
+  const [filterLessonDropdownOpen, setFilterLessonDropdownOpen] = useState(false);
 
-  // Extract week number from week string (e.g., "week 01" -> 1)
-  const extractWeekNumber = (weekString) => {
-    if (!weekString) return null;
-    const match = weekString.match(/week\s*(\d+)/i);
-    return match ? parseInt(match[1], 10) : null;
-  };
-
-  // Convert week number to week string (e.g., 1 -> "week 01")
-  const weekNumberToString = (weekNumber) => {
-    if (weekNumber === null || weekNumber === undefined) return '';
-    return `week ${String(weekNumber).padStart(2, '0')}`;
-  };
-
-  // Get available weeks from sessions (only weeks that exist in the data and are Activated)
-  const getAvailableWeeks = () => {
-    const weekSet = new Set();
+  // Get available lessons from sessions (only lessons that exist in sessions, are Activated, and match student's course/courseType)
+  const getAvailableLessons = () => {
+    const lessonSet = new Set();
+    const studentCourse = (studentData?.course || '').trim();
+    const studentCourseType = (studentData?.courseType || '').trim();
+    
     sessions.forEach(session => {
       const effectiveState = session.state || session.account_state || 'Activated';
       if (effectiveState === 'Deactivated') return;
-      if (session.week !== undefined && session.week !== null) {
-        weekSet.add(weekNumberToString(session.week));
+      if (session.lesson && session.lesson.trim()) {
+        // Check if session matches student's course and courseType
+        const sessionCourse = (session.course || '').trim();
+        const sessionCourseType = (session.courseType || '').trim();
+        
+        // Course match: if session course is "All", it matches any student course
+        const courseMatch = sessionCourse.toLowerCase() === 'all' || 
+                           sessionCourse.toLowerCase() === studentCourse.toLowerCase();
+        
+        // CourseType match: skip when national system; otherwise match as before
+        const courseTypeMatch = isNational ||
+                               !sessionCourseType || 
+                               !studentCourseType ||
+                               sessionCourseType.toLowerCase() === studentCourseType.toLowerCase();
+        
+        if (courseMatch && courseTypeMatch) {
+          lessonSet.add(session.lesson);
+        }
       }
     });
-    return Array.from(weekSet).sort((a, b) => {
-      const aNum = extractWeekNumber(a);
-      const bNum = extractWeekNumber(b);
-      return (aNum || 0) - (bNum || 0);
-    });
+    return Array.from(lessonSet).sort();
   };
 
-  const availableWeeks = getAvailableWeeks();
+  const availableLessons = getAvailableLessons();
 
   // Filter sessions based on search and filters
-  const filteredSessions = sessions.filter(session => {
-    // Hide deactivated homework videos
-    const effectiveState = session.state || session.account_state || 'Activated';
-    if (effectiveState === 'Deactivated') {
-      return false;
-    }
+  const filteredSessions = visibleSessions.filter(session => {
     // Search filter (by lesson name - case-insensitive)
     if (searchTerm.trim()) {
       const lessonName = session.name || '';
@@ -376,10 +342,9 @@ export default function HomeworksVideos() {
       }
     }
 
-    // Week filter
-    if (filterWeek) {
-      const weekNumber = extractWeekNumber(filterWeek);
-      if (session.week !== weekNumber) {
+    // Lesson filter
+    if (filterLesson) {
+      if (session.lesson !== filterLesson) {
         return false;
       }
     }
@@ -393,6 +358,35 @@ export default function HomeworksVideos() {
       setSearchTerm("");
     }
   }, [searchInput, searchTerm]);
+
+  useEffect(() => {
+    selectedVideoRef.current = selectedVideo;
+  }, [selectedVideo]);
+
+  useEffect(() => {
+    if (videoPopupOpen) {
+      vhcViewsDecrementDoneRef.current = false;
+      watchedTenPercentRef.current = false;
+      attendancePostedRef.current = false;
+    }
+  }, [videoPopupOpen, selectedVideo?._id]);
+
+  useEffect(() => {
+    if (!studentId) return;
+    if (lastUnlockStudentIdRef.current !== studentId) {
+      lastUnlockStudentIdRef.current = studentId;
+      const stored = readUnlockMap(studentId);
+      if (stored.size > 0) {
+        setUnlockedSessions((prev) => {
+          const merged = new Map(stored);
+          prev.forEach((value, key) => merged.set(key, value));
+          return merged;
+        });
+      }
+      return;
+    }
+    writeUnlockMap(studentId, unlockedSessions);
+  }, [studentId, unlockedSessions]);
 
   // Handle search
   const handleSearch = () => {
@@ -419,70 +413,138 @@ export default function HomeworksVideos() {
     }
   };
 
+  const tryDecrementVhcViewsOnWatchProgress = useCallback(async () => {
+    if (vhcViewsDecrementDoneRef.current) return;
+    const v = selectedVideoRef.current;
+    if (!v?.vhc_id || v.code_settings !== 'number_of_views') return;
+    vhcViewsDecrementDoneRef.current = true;
+    try {
+      const decrementResponse = await apiClient.post('/api/vhc/decrement-views', {
+        vhc_id: v.vhc_id
+      });
+      if (decrementResponse.data.success) {
+        const sessionId = typeof v._id === 'string' ? v._id : v._id.toString();
+        const remaining = Number(decrementResponse.data.number_of_views);
+        setUnlockedSessions((prev) => {
+          const updatedUnlocked = new Map(prev);
+          const sessionInfo = updatedUnlocked.get(sessionId);
+          if (!sessionInfo) return updatedUnlocked;
+          if (!Number.isFinite(remaining) || remaining <= 0) {
+            updatedUnlocked.delete(sessionId);
+          } else {
+            updatedUnlocked.set(sessionId, {
+              ...sessionInfo,
+              number_of_views: remaining,
+            });
+          }
+          return updatedUnlocked;
+        });
+        if (studentId && (!Number.isFinite(remaining) || remaining <= 0)) {
+          queryClient.invalidateQueries({ queryKey: studentKeys.detail(studentId) });
+        }
+      } else {
+        vhcViewsDecrementDoneRef.current = false;
+      }
+    } catch (err) {
+      console.error('Failed to decrement VHC views:', err);
+      vhcViewsDecrementDoneRef.current = false;
+      if (err.response?.data?.error_code === CODE_ERROR.NO_VIEWS_REMAINING
+        || err.response?.data?.error?.includes('no views remaining')) {
+        const sessionId = typeof v._id === 'string' ? v._id : v._id.toString();
+        setUnlockedSessions((prev) => {
+          const next = new Map(prev);
+          next.delete(sessionId);
+          return next;
+        });
+        if (studentId) {
+          queryClient.invalidateQueries({ queryKey: studentKeys.detail(studentId) });
+        }
+        setVhcError(resolveVerificationCodeError('vhc', err.response?.data || CODE_ERROR.NO_VIEWS_REMAINING));
+      }
+    }
+  }, [studentId, queryClient]);
+
+  const postWatchAttendance = useCallback(async (currentVideo) => {
+    if (attendancePostedRef.current) return;
+    if (!currentVideo || !profile?.id || !currentVideo._id) return;
+    attendancePostedRef.current = true;
+    try {
+      const sessionId = typeof currentVideo._id === 'string'
+        ? currentVideo._id
+        : currentVideo._id.toString();
+
+      await apiClient.post(`/api/students/${profile.id}/watch-homework-video`, {
+        session_id: sessionId,
+        action: 'finish',
+        payment_state: currentVideo.payment_state,
+        lesson: currentVideo.lesson
+      });
+    } catch (err) {
+      attendancePostedRef.current = false;
+      console.error('Failed to mark homework video as finished:', err);
+    }
+  }, [profile?.id]);
+
+  const handleWatchTenPercentHomework = useCallback(async () => {
+    watchedTenPercentRef.current = true;
+    await tryDecrementVhcViewsOnWatchProgress();
+    await postWatchAttendance(selectedVideoRef.current);
+  }, [tryDecrementVhcViewsOnWatchProgress, postWatchAttendance]);
+
+  const handleR2VideoCompleteHomework = useCallback(() => {
+    r2CompletedRef.current = true;
+  }, []);
 
   // Open video popup
   const openVideoPopup = async (session, videoId, videoIndex) => {
     // Get video type, default to 'youtube' for backward compatibility
-    // Also detect R2 keys by format if video_type is missing
-    const storedType = session[`video_type_${videoIndex}`];
-    const videoType = storedType || (isR2Key(videoId) ? 'r2' : 'youtube');
+    const videoType = session[`video_type_${videoIndex}`] || 'youtube';
     
     // Check if video is unlocked
     if (isVideoUnlocked(session)) {
-      // Video is unlocked - check deadline date and decrement views if needed
+      // Video is unlocked - check deadline date (views decrement after >=10% watch via player)
       const sessionId = session._id?.toString() || session._id;
-      const unlockedInfo = unlockedSessions.get(sessionId);
-      
-      if (unlockedInfo) {
-        // Check deadline date expiration
+      let unlockedInfo = unlockedSessions.get(sessionId);
+
+      // Sync number_of_days from server so admin day extensions apply automatically
+      if (unlockedInfo?.vhc_id && unlockedInfo.code_settings === 'number_of_days') {
+        try {
+          const syncRes = await apiClient.post('/api/vhc/get-by-id', {
+            vhc_id: unlockedInfo.vhc_id,
+          });
+          if (syncRes.data?.success && syncRes.data?.valid) {
+            unlockedInfo = unlockInfoFromVhcResponse(syncRes.data);
+            setUnlockedSessions((prev) => {
+              const next = new Map(prev);
+              next.set(sessionId, unlockedInfo);
+              return next;
+            });
+          } else {
+            setVhcError(resolveVerificationCodeError('vhc', syncRes.data));
+            setUnlockedSessions((prev) => {
+              const next = new Map(prev);
+              next.delete(sessionId);
+              return next;
+            });
+            setPendingVideo({ session, videoId, videoIndex, videoType });
+            setVhcPopupOpen(true);
+            setVhc('');
+            return;
+          }
+        } catch (err) {
+          console.error('Failed to sync VHC number_of_days:', err);
+        }
+      } else if (unlockedInfo) {
         if (unlockedInfo.code_settings === 'deadline_date' && unlockedInfo.deadline_date) {
-          const deadlineDate = new Date(unlockedInfo.deadline_date);
-          const today = new Date();
-          today.setHours(0, 0, 0, 0);
-          deadlineDate.setHours(0, 0, 0, 0);
-          
-          if (deadlineDate <= today) {
-            // Expired
-            setVhcError('❌ Sorry, This code is expired');
+          if (isDeadlinePassedEgypt(unlockedInfo.deadline_date, null)) {
+            setVhcError(getVerificationCodeMessage('vhc', CODE_ERROR.DEADLINE_EXPIRED, {
+              code_settings: 'deadline_date',
+              deadline_date: unlockedInfo.deadline_date,
+            }));
             const newUnlocked = new Map(unlockedSessions);
             newUnlocked.delete(sessionId);
             setUnlockedSessions(newUnlocked);
             return;
-          }
-        }
-        
-        // Decrement views if code_settings is 'number_of_views'
-        if (unlockedInfo.code_settings === 'number_of_views' && unlockedInfo.vhc_id) {
-          try {
-            const decrementResponse = await apiClient.post('/api/vhc/decrement-views', {
-              vhc_id: unlockedInfo.vhc_id
-            });
-            
-            if (decrementResponse.data.success) {
-              // Update unlocked sessions with new view count
-              const updatedUnlocked = new Map(unlockedSessions);
-              const sessionInfo = updatedUnlocked.get(sessionId);
-              if (sessionInfo) {
-                sessionInfo.number_of_views = decrementResponse.data.number_of_views;
-                if (sessionInfo.number_of_views <= 0) {
-                  // No views remaining - remove from unlocked
-                  updatedUnlocked.delete(sessionId);
-                } else {
-                  updatedUnlocked.set(sessionId, sessionInfo);
-                }
-                setUnlockedSessions(updatedUnlocked);
-              }
-            }
-          } catch (err) {
-            console.error('Failed to decrement views:', err);
-            if (err.response?.data?.error?.includes('no views remaining')) {
-              // Remove from unlocked sessions
-              const newUnlocked = new Map(unlockedSessions);
-              newUnlocked.delete(sessionId);
-              setUnlockedSessions(newUnlocked);
-              setVhcError('❌ Sorry, This code has no views remaining');
-              return;
-            }
           }
         }
       }
@@ -495,12 +557,55 @@ export default function HomeworksVideos() {
         vhc_id: unlockedInfo?.vhc_id,
         code_settings: unlockedInfo?.code_settings,
         number_of_views: unlockedInfo?.number_of_views,
+        number_of_days: unlockedInfo?.number_of_days,
+        access_started_at: unlockedInfo?.access_started_at,
         deadline_date: unlockedInfo?.deadline_date
       });
       setVideoPopupOpen(true);
       videoStartTimeRef.current = Date.now();
       r2CompletedRef.current = false;
+      watchedTenPercentRef.current = false;
+      attendancePostedRef.current = false;
     } else {
+      // Locked locally — but if student already redeemed a VHC, re-check server
+      // (admin may have extended number_of_days)
+      const sessionId = session._id?.toString() || session._id;
+      const redeemed = Array.isArray(studentData?.homeworks_videos)
+        ? studentData.homeworks_videos.find((s) => {
+            const videoIdStr = typeof s.video_id === 'string' ? s.video_id : s.video_id?.toString();
+            return videoIdStr === String(sessionId) && s.vhc_id;
+          })
+        : null;
+      if (redeemed?.vhc_id) {
+        try {
+          const syncRes = await apiClient.post('/api/vhc/get-by-id', {
+            vhc_id: redeemed.vhc_id,
+          });
+          if (syncRes.data?.success && syncRes.data?.valid) {
+            const unlockedInfo = unlockInfoFromVhcResponse(syncRes.data);
+            setUnlockedSessions((prev) => {
+              const next = new Map(prev);
+              next.set(sessionId, unlockedInfo);
+              return next;
+            });
+            setSelectedVideo({
+              ...session,
+              video_ID: videoId,
+              video_type: videoType,
+              ...unlockedInfo,
+            });
+            setVideoPopupOpen(true);
+            videoStartTimeRef.current = Date.now();
+            r2CompletedRef.current = false;
+            watchedTenPercentRef.current = false;
+            attendancePostedRef.current = false;
+            return;
+          }
+        } catch (err) {
+          console.error('Failed to revive VHC after day extension:', err);
+        }
+      }
+
       // Video is locked - require VHC
       setPendingVideo({ session, videoId, videoIndex, videoType });
       setVhcPopupOpen(true);
@@ -512,12 +617,12 @@ export default function HomeworksVideos() {
   // Handle VHC submission
   const handleVHCSubmit = async () => {
     if (!vhc || vhc.length !== 9) {
-      setVhcError('❌ VHC code must be 9 characters');
+      setVhcError(getVerificationCodeMessage('vhc', CODE_ERROR.INVALID_LENGTH));
       return;
     }
 
     if (!pendingVideo) {
-      setVhcError('❌ No video pending');
+      setVhcError(getVerificationCodeMessage('vhc', CODE_ERROR.NO_VIDEO_PENDING));
       return;
     }
 
@@ -531,7 +636,8 @@ export default function HomeworksVideos() {
 
       const response = await apiClient.post('/api/vhc/check', {
         VHC: vhc,
-        session_id: sessionId
+        session_id: sessionId,
+        lesson: pendingVideo.session.lesson || ''
       });
 
       if (response.data.valid) {
@@ -542,53 +648,45 @@ export default function HomeworksVideos() {
         
         // Store unlocked session info
         const newUnlocked = new Map(unlockedSessions);
-        newUnlocked.set(sessionId, {
-          vhc_id: response.data.vhc_id,
-          code_settings: response.data.code_settings || 'number_of_views',
-          number_of_views: response.data.number_of_views || null,
-          deadline_date: response.data.deadline_date || null
-        });
+        newUnlocked.set(sessionId, unlockInfoFromVhcResponse(response.data));
         setUnlockedSessions(newUnlocked);
+
+        if (studentId) {
+          queryClient.setQueryData(studentKeys.detail(studentId), (old) => {
+            if (!old) return old;
+            const list = Array.isArray(old.homeworks_videos) ? [...old.homeworks_videos] : [];
+            const entry = {
+              video_id: sessionId,
+              vhc_id: String(response.data.vhc_id),
+              date: new Date().toISOString(),
+            };
+            const idx = list.findIndex((s) => String(s.video_id) === sessionId);
+            if (idx !== -1) list[idx] = entry;
+            else list.push(entry);
+            return { ...old, homeworks_videos: list };
+          });
+          queryClient.invalidateQueries({ queryKey: studentKeys.detail(studentId) });
+        }
         
         setVhcPopupOpen(false);
         setSelectedVideo({ 
           ...pendingVideo.session, 
           video_ID: pendingVideo.videoId, 
           video_type: pendingVideo.videoType,
-          vhc_id: response.data.vhc_id,
-          code_settings: response.data.code_settings || 'number_of_views',
-          number_of_views: response.data.number_of_views || null,
-          deadline_date: response.data.deadline_date || null
+          ...unlockInfoFromVhcResponse(response.data),
         });
         setVideoPopupOpen(true);
         videoStartTimeRef.current = Date.now();
         r2CompletedRef.current = false;
+        watchedTenPercentRef.current = false;
+        attendancePostedRef.current = false;
         setPendingVideo(null);
         setVhc('');
-        
-        // Decrement views if code_settings is 'number_of_views'
-        if (response.data.code_settings === 'number_of_views' && response.data.vhc_id) {
-          try {
-            await apiClient.post('/api/vhc/decrement-views', {
-              vhc_id: response.data.vhc_id
-            });
-            // Update unlocked sessions with new view count
-            const updatedUnlocked = new Map(newUnlocked);
-            const sessionInfo = updatedUnlocked.get(sessionId);
-            if (sessionInfo && sessionInfo.number_of_views > 0) {
-              sessionInfo.number_of_views -= 1;
-              updatedUnlocked.set(sessionId, sessionInfo);
-              setUnlockedSessions(updatedUnlocked);
-            }
-          } catch (err) {
-            console.error('Failed to decrement views:', err);
-          }
-        }
       } else {
-        setVhcError(response.data.error || '❌ Invalid VHC code');
+        setVhcError(resolveVerificationCodeError('vhc', response.data));
       }
     } catch (err) {
-      setVhcError(err.response?.data?.error || '❌ Failed to verify VHC code');
+      setVhcError(resolveVerificationCodeError('vhc', err.response?.data || CODE_ERROR.VERIFY_FAILED));
     } finally {
       setIsCheckingVhc(false);
     }
@@ -602,53 +700,24 @@ export default function HomeworksVideos() {
     setVhcError('');
   };
 
-  // Handle R2 video completion (>= 90% watched)
-  const handleR2VideoComplete = useCallback(async (videoId, percent) => {
-    r2CompletedRef.current = true;
-    console.log(`[HOMEWORK VIDEOS] R2 video ${videoId} completed at ${Math.round(percent)}%`);
-  }, []);
-
-  // Close video popup and mark view_homework_video
+  // Close video popup; attendance is marked at >=10% watch (fallback if still pending)
   const closeVideoPopup = async () => {
-    // Prevent multiple calls
     if (isClosingVideoRef.current) {
       return;
     }
     
-    // Only mark view_homework_video if video was actually watched
-    // For YouTube: at least 5 seconds to prevent accidental closes
-    // For R2: must have reached >= 90% of the video
-    const minWatchTime = 5000; // 5 seconds in milliseconds
-    const watchTime = videoStartTimeRef.current ? Date.now() - videoStartTimeRef.current : 0;
-    
-    // Close popup immediately (UI feedback)
     const currentVideo = selectedVideo;
-    const isR2Video = currentVideo?.video_type === 'r2' || isR2Key(currentVideo?.video_ID);
-    const r2Completed = r2CompletedRef.current;
     setVideoPopupOpen(false);
     setSelectedVideo(null);
     videoStartTimeRef.current = null;
     r2CompletedRef.current = false;
-    
-    // Determine if video was actually watched
-    const videoWasWatched = isR2Video ? r2Completed : (watchTime >= minWatchTime);
-    
-    // Call watch-homework-video API to set view_homework_video=true
-    if (currentVideo && profile?.id && currentVideo._id && videoWasWatched) {
+    const videoWasWatched = watchedTenPercentRef.current;
+    watchedTenPercentRef.current = false;
+
+    if (videoWasWatched) {
       isClosingVideoRef.current = true;
       try {
-        // Convert _id to string if it's an ObjectId
-        const sessionId = typeof currentVideo._id === 'string' 
-          ? currentVideo._id 
-          : currentVideo._id.toString();
-        
-        await apiClient.post(`/api/students/${profile.id}/watch-homework-video`, {
-          session_id: sessionId,
-          action: 'finish',
-          payment_state: currentVideo.payment_state // Pass payment state to API
-        });
-      } catch (err) {
-        console.error('Failed to mark homework video as finished:', err);
+        await postWatchAttendance(currentVideo);
       } finally {
         isClosingVideoRef.current = false;
       }
@@ -697,20 +766,20 @@ export default function HomeworksVideos() {
             }}>
               <div className="filter-group" style={{ flex: 1, minWidth: 180 }}>
                 <label className="filter-label" style={{ display: 'block', marginBottom: '8px', fontWeight: 600, color: '#495057', fontSize: '0.95rem' }}>
-                  Filter by Week
+                  Filter by Lesson
                 </label>
-                <StudentWeekSelect
-                  availableWeeks={availableWeeks}
-                  selectedWeek={filterWeek}
-                  onWeekChange={(week) => {
-                    setFilterWeek(week);
+                <StudentLessonSelect
+                  availableLessons={availableLessons}
+                  selectedLesson={filterLesson}
+                  onLessonChange={(lesson) => {
+                    setFilterLesson(lesson);
                   }}
-                  isOpen={filterWeekDropdownOpen}
+                  isOpen={filterLessonDropdownOpen}
                   onToggle={() => {
-                    setFilterWeekDropdownOpen(!filterWeekDropdownOpen);
+                    setFilterLessonDropdownOpen(!filterLessonDropdownOpen);
                   }}
-                  onClose={() => setFilterWeekDropdownOpen(false)}
-                  placeholder="Select Week"
+                  onClose={() => setFilterLessonDropdownOpen(false)}
+                  placeholder="Select Lesson"
                 />
               </div>
             </div>
@@ -735,7 +804,7 @@ export default function HomeworksVideos() {
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
               {filteredSessions.map((session, index) => {
-                const sessionId = session._id?.toString() || `${session.name}-${session.week}-${index}`;
+                const sessionId = session._id?.toString() || `${session.name}-${session.lesson}-${index}`;
                 const isExpanded = expandedSessions.has(sessionId);
                 return (
                 <div
@@ -761,7 +830,7 @@ export default function HomeworksVideos() {
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
                     <div style={{ flex: 1 }} onClick={(e) => { e.stopPropagation(); toggleSession(sessionId); }}>
                       <div style={{ fontWeight: '600', fontSize: '1.1rem', color: '#333', marginBottom: '4px' }}>
-                        {[session.week !== undefined && session.week !== null ? `Week ${session.week}` : null, session.name].filter(Boolean).join(' • ')}
+                        {[session.lesson, session.name].filter(Boolean).join(' • ')}
                       </div>
                       {session.description && (
                         <div style={{ fontSize: '0.9rem', color: '#6c757d', marginTop: '4px' }}>
@@ -809,8 +878,8 @@ export default function HomeworksVideos() {
                           videoIndex++;
                         }
                         return videoIds.map((video, vidIndex) => {
-                          const storedVideoType = session[`video_type_${video.index}`];
-                          const videoType = storedVideoType || (isR2Key(video.id) ? 'r2' : 'youtube');
+                          // All videos are YouTube now
+                          const videoType = 'youtube';
                           // Get video name, default to "Video {index}" if not set
                           const videoName = video.name || `Video ${video.index}`;
                           const isUnlocked = isVideoUnlocked(session);
@@ -963,21 +1032,7 @@ export default function HomeworksVideos() {
                 }}
                 autoFocus
               />
-              {vhcError && (
-                <div style={{ 
-                  color: '#dc3545', 
-                  fontSize: '0.95rem', 
-                  marginBottom: '20px', 
-                  textAlign: 'center',
-                  fontWeight: '500',
-                  padding: '8px',
-                  backgroundColor: '#fff5f5',
-                  borderRadius: '8px',
-                  border: '1px solid #fecaca'
-                }}>
-                  {vhcError}
-                </div>
-              )}
+              {vhcError && <CodePopupMessage message={vhcError} />}
               <div style={{ display: 'flex', gap: '12px', flexDirection: 'row-reverse' }}>
                 <button
                   onClick={closeVhcPopup}
@@ -1133,7 +1188,7 @@ export default function HomeworksVideos() {
                 <h3 style={{ margin: 0, fontSize: '1.2rem' }}>{selectedVideo.name}</h3>
               </div>
 
-              {/* Video Player */}
+              {/* Video Iframe */}
               <div 
                 className="video-player-wrapper"
                 style={{ 
@@ -1155,31 +1210,41 @@ export default function HomeworksVideos() {
                 onDragStart={(e) => e.preventDefault()}
                 onSelectStart={(e) => e.preventDefault()}
               >
-                {(selectedVideo.video_type === 'r2' || isR2Key(selectedVideo.video_ID)) ? (
+                {selectedVideo.video_type === 'r2' ? (
                   <R2VideoPlayer
                     r2Key={selectedVideo.video_ID}
                     videoId={selectedVideo._id}
-                    onComplete={handleR2VideoComplete}
+                    watermarkText={`${profile?.id || 'unknown'}`}
+                    onComplete={handleR2VideoCompleteHomework}
+                    onMilestonePercent={handleWatchTenPercentHomework}
+                  />
+                ) : selectedVideo.video_type === 'zoom' ? (
+                  <ZoomVideoPlayer
+                    meetingId={selectedVideo.video_ID || selectedVideo.video_ID_1 || ''}
+                    videoId={selectedVideo._id}
+                    watermarkText={`${profile?.id || 'unknown'}`}
+                    onComplete={handleR2VideoCompleteHomework}
+                    onMilestonePercent={handleWatchTenPercentHomework}
+                  />
+                ) : selectedVideo.video_type === 'google_meet' ? (
+                  <GoogleMeetVideoPlayer
+                    secureId={selectedVideo.video_ID || selectedVideo.video_ID_1 || ''}
+                    videoId={selectedVideo._id}
+                    watermarkText={`${profile?.id || 'unknown'}`}
+                    onComplete={handleR2VideoCompleteHomework}
+                    onMilestonePercent={handleWatchTenPercentHomework}
+                  />
+                ) : selectedVideo.code_settings === 'number_of_views' && selectedVideo.vhc_id ? (
+                  <YoutubeEmbedWithProgress
+                    youtubeVideoId={selectedVideo.video_ID || selectedVideo.video_ID_1 || ''}
+                    watermarkText={`${profile?.id || 'unknown'}`}
+                    onThresholdReached={handleWatchTenPercentHomework}
                   />
                 ) : (
-                  <iframe
-                    src={buildEmbedUrl(selectedVideo.video_ID || selectedVideo.video_ID_1 || '')}
-                    frameBorder="0"
-                    allow="encrypted-media; autoplay; fullscreen; picture-in-picture"
-                    allowFullScreen={true}
-                    playsInline={true}
-                    style={{
-                      width: '100%',
-                      height: 'auto',
-                      maxHeight: '100vh',
-                      aspectRatio: '16 / 9',
-                      border: 'none',
-                      outline: 'none'
-                    }}
-                    onContextMenu={(e) => e.preventDefault()}
-                    onDragStart={(e) => e.preventDefault()}
-                    onSelectStart={(e) => e.preventDefault()}
-                    draggable={false}
+                  <YoutubeEmbedWithProgress
+                    youtubeVideoId={selectedVideo.video_ID || selectedVideo.video_ID_1 || ''}
+                    watermarkText={`${profile?.id || 'unknown'}`}
+                    onThresholdReached={handleWatchTenPercentHomework}
                   />
                 )}
               </div>
@@ -1201,6 +1266,49 @@ export default function HomeworksVideos() {
         )}
 
         <style jsx>{`
+          @keyframes codePopupMsgIn {
+            from { opacity: 0; transform: translateY(-8px); }
+            to { opacity: 1; transform: translateY(0); }
+          }
+
+          :global(.code-popup-msg) {
+            display: flex;
+            align-items: flex-start;
+            gap: 10px;
+            margin-bottom: 20px;
+            padding: 12px 14px;
+            border-radius: 12px;
+            background: linear-gradient(135deg, #fff5f5 0%, #ffe8e8 100%);
+            border: 1px solid #f5c2c7;
+            border-left: 4px solid #dc3545;
+            box-shadow: 0 4px 14px rgba(220, 53, 69, 0.12);
+            color: #842029;
+            font-size: 0.92rem;
+            font-weight: 600;
+            line-height: 1.45;
+            text-align: left;
+            animation: codePopupMsgIn 0.28s ease;
+          }
+
+          :global(.code-popup-msg-icon) {
+            flex-shrink: 0;
+            width: 22px;
+            height: 22px;
+            border-radius: 50%;
+            background: #dc3545;
+            color: #fff;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.75rem;
+            font-weight: 700;
+            margin-top: 1px;
+          }
+
+          :global(.code-popup-msg-text) {
+            flex: 1;
+          }
+
           .sessions-container {
             background: white;
             border-radius: 16px;

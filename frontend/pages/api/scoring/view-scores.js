@@ -45,7 +45,7 @@ export default async function handler(req, res) {
       return res.status(403).json({ error: 'Forbidden: Access denied' });
     }
 
-    const { page = 1, limit = 100, search, grade, center, score, sortBy = 'score', sortOrder = 'desc' } = req.query;
+    const { page = 1, limit = 100, search, grade, course, courseType, center, score, sortBy = 'score', sortOrder = 'desc' } = req.query;
 
     client = await MongoClient.connect(MONGO_URI);
     const db = client.db(DB_NAME);
@@ -54,9 +54,9 @@ export default async function handler(req, res) {
     const allStudents = await db.collection('students').find({}).toArray();
 
     // Calculate rankings for each student
-    // Group students by main center and grade for efficient ranking
+    // Group students by main center and course for efficient ranking
     const centerGroups = {};
-    const gradeGroups = {};
+    const courseGroups = {};
     
     allStudents.forEach(student => {
       if (student.score !== null && student.score !== undefined) {
@@ -67,12 +67,12 @@ export default async function handler(req, res) {
         }
         centerGroups[center].push(student);
         
-        // Group by grade
-        const grade = student.grade || 'Unknown';
-        if (!gradeGroups[grade]) {
-          gradeGroups[grade] = [];
+        // Group by course (use course field, fallback to grade)
+        const courseKey = student.course || student.grade || 'Unknown';
+        if (!courseGroups[courseKey]) {
+          courseGroups[courseKey] = [];
         }
-        gradeGroups[grade].push(student);
+        courseGroups[courseKey].push(student);
       }
     });
     
@@ -81,31 +81,31 @@ export default async function handler(req, res) {
       centerGroups[center].sort((a, b) => (b.score || 0) - (a.score || 0));
     });
     
-    Object.keys(gradeGroups).forEach(grade => {
-      gradeGroups[grade].sort((a, b) => (b.score || 0) - (a.score || 0));
+    Object.keys(courseGroups).forEach(course => {
+      courseGroups[course].sort((a, b) => (b.score || 0) - (a.score || 0));
     });
     
     // Calculate rankings for each student
     const studentsWithRankings = allStudents.map(student => {
       const center = student.main_center || 'Unknown';
-      const grade = student.grade || 'Unknown';
+      const courseKey = student.course || student.grade || 'Unknown';
       
       // Calculate rank within main center
       const sameCenterStudents = centerGroups[center] || [];
       const centerRank = sameCenterStudents.findIndex(s => s.id === student.id) + 1;
       const centerTotal = sameCenterStudents.length;
 
-      // Calculate rank within grade
-      const sameGradeStudents = gradeGroups[grade] || [];
-      const gradeRank = sameGradeStudents.findIndex(s => s.id === student.id) + 1;
-      const gradeTotal = sameGradeStudents.length;
+      // Calculate rank within course
+      const sameCourseStudents = courseGroups[courseKey] || [];
+      const courseRank = sameCourseStudents.findIndex(s => s.id === student.id) + 1;
+      const courseTotal = sameCourseStudents.length;
 
       return {
         ...student,
         centerRank: centerRank > 0 ? centerRank : null,
         centerTotal: centerTotal > 0 ? centerTotal : null,
-        gradeRank: gradeRank > 0 ? gradeRank : null,
-        gradeTotal: gradeTotal > 0 ? gradeTotal : null
+        courseRank: courseRank > 0 ? courseRank : null,
+        courseTotal: courseTotal > 0 ? courseTotal : null
       };
     });
 
@@ -126,8 +126,18 @@ export default async function handler(req, res) {
         }
       }
 
-      // Grade filter
+      // Grade filter (for backward compatibility)
       if (grade && student.grade !== grade) return false;
+      
+      // Course filter
+      if (course && (student.course || student.grade) !== course) return false;
+      
+      // Course Type filter (case-insensitive comparison)
+      if (courseType) {
+        const studentCourseType = (student.courseType || '').toLowerCase();
+        const filterCourseType = courseType.toLowerCase();
+        if (studentCourseType !== filterCourseType) return false;
+      }
       
       // Center filter
       if (center && student.main_center !== center) return false;
@@ -191,10 +201,13 @@ export default async function handler(req, res) {
     const totalPages = Math.ceil(totalCount / limitNum);
     const paginatedStudents = filteredStudents.slice(skip, skip + limitNum);
 
-    // Convert ObjectId to string for JSON serialization
+    // Convert ObjectId to string for JSON serialization and ensure course/courseType are included
     const serializedStudents = paginatedStudents.map(student => ({
       ...student,
-      _id: student._id?.toString() || student._id
+      _id: student._id?.toString() || student._id,
+      course: student.course || student.grade || null,
+      courseType: student.courseType || null,
+      gender: student.gender || null
     }));
 
     return res.status(200).json({

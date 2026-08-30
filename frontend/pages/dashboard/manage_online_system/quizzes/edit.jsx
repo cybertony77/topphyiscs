@@ -1,52 +1,94 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import { useRouter } from "next/router";
 import Title from '../../../../components/Title';
-import AttendanceWeekSelect from '../../../../components/AttendanceWeekSelect';
-import GradeSelect from '../../../../components/GradeSelect';
-import AccountStateSelect from '../../../../components/AccountStateSelect';
+import AttendanceLessonSelect from '../../../../components/AttendancelessonSelect';
+import CourseSelect from '../../../../components/CourseSelect';
+import CourseTypeSelect from '../../../../components/CourseTypeSelect';
+import CenterSelect from '../../../../components/CenterSelect';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import apiClient from '../../../../lib/axios';
+import { useSystemConfig , useNationalSystem, getCourseFieldLabels} from '../../../../lib/api/system';
 import Image from 'next/image';
 import ZoomableImage from '../../../../components/ZoomableImage';
+import AccountStateSelect from '../../../../components/AccountStateSelect';
+import ImportExistingOnlineItemModal from '../../../../components/ImportExistingOnlineItemModal';
+import { formatQuizPickerLabel } from '../../../../lib/importOnlineItemLabels';
+import { buildQuizImportFormState } from '../../../../lib/importOnlineFormState';
+import { fetchImportedQuestionImageUrls } from '../../../../lib/fetchImportedQuestionImageUrls';
+import { centersMatchDuplicateClient } from '../../../../lib/onlineItemDuplicate';
+import {
+  newQuestionClientKey,
+  reindexCompositeKeysAfterQuestionRemoved,
+  reindexQuestionErrorsAfterQuestionRemoved,
+  reindexDragOverAfterQuestionRemoved,
+} from '../../../../lib/onlineItemQuestionFormHelpers';
+import {
+  createEmptyMcqQuestion,
+  getQuestionType,
+  isEssayQuestion,
+  normalizeLoadedQuestion,
+  normalizeValidCorrectAnswers,
+  QUESTION_TYPE_ESSAY,
+  switchQuestionType,
+} from '../../../../lib/onlineQuestionTypes';
+import QuestionTypeTabs from '../../../../components/online/QuestionTypeTabs';
+import EssayValidAnswersEditor from '../../../../components/online/EssayValidAnswersEditor';
+import DeadlineTimeRow from '../../../../components/DeadlineTimeRow';
+import AllowDownloadingRadio from '../../../../components/AllowDownloadingRadio';
+import UseDesmosInQuestionRadio from '../../../../components/online/UseDesmosInQuestionRadio';
+import {
+  isDeadlineStrictlyInFutureEgypt,
+  normalizeDeadlineTimeField,
+  parseDeadlineTime,
+} from '../../../../lib/deadlineTimeEgypt';
+import { isQuizFormReady } from '../../../../lib/onlineItemFormReady';
 
-// Extract week number from week string (e.g., "week 01" -> 1)
-function extractWeekNumber(weekString) {
-  if (!weekString) return null;
-  const match = weekString.match(/week\s*(\d+)/i);
-  return match ? parseInt(match[1], 10) : null;
-}
-
-// Convert week number to week string (e.g., 1 -> "week 01")
-function weekNumberToString(weekNumber) {
-  if (weekNumber === null || weekNumber === undefined) return '';
-  return `week ${String(weekNumber).padStart(2, '0')}`;
+function createDefaultMcqQuestion(desmosEnabled) {
+  return {
+    ...createEmptyMcqQuestion(),
+    use_desmos: desmosEnabled ? true : false,
+  };
 }
 
 export default function EditQuiz() {
+  const isNational = useNationalSystem();
+  const courseLabels = getCourseFieldLabels(isNational);
   const router = useRouter();
   const queryClient = useQueryClient();
+  const { data: systemConfig } = useSystemConfig();
+  const desmosEnabled =
+    systemConfig?.desmos_integrations === true || systemConfig?.desmos_integrations === 'true';
   const { id } = router.query;
   const [formData, setFormData] = useState({
     lesson_name: '',
-    deadline_type: 'no_deadline', // 'no_deadline' or 'with_deadline'
+    comment: '',
+    deadline_type: 'no_deadline',
     deadline_date: '',
+    deadline_time: null,
+    quiz_type: 'questions',
     timer_type: 'no_timer',
     timer: null,
     shuffle_questions_and_answers: false,
     show_details_after_submitting: false,
-    questions: [{
-      question_text: '',
-      question_picture: null,
-      answers: ['A', 'B'],
-      answer_texts: ['', ''], // Text for each answer option
-      correct_answer: '',
-      question_explanation: '' // Explanation for the question (optional)
-    }] || []
+    pdf_file_name: '',
+    pdf_url: '',
+    allow_downloading: true,
+    questions: [createDefaultMcqQuestion(desmosEnabled)]
   });
-  const [selectedGrade, setSelectedGrade] = useState('');
-  const [gradeDropdownOpen, setGradeDropdownOpen] = useState(false);
-  const [selectedWeek, setSelectedWeek] = useState('');
-  const [weekDropdownOpen, setWeekDropdownOpen] = useState(false);
+  const [activeTab, setActiveTab] = useState('questions');
+  const [pdfUploading, setPdfUploading] = useState(false);
+  const [pdfUploadProgress, setPdfUploadProgress] = useState(0);
+  const [pdfUploadError, setPdfUploadError] = useState('');
+  const pdfFileInputRef = useRef(null);
+  const [selectedCourse, setSelectedCourse] = useState('');
+  const [courseDropdownOpen, setCourseDropdownOpen] = useState(false);
+  const [selectedCourseType, setSelectedCourseType] = useState('');
+  const [courseTypeDropdownOpen, setCourseTypeDropdownOpen] = useState(false);
+  const [selectedLesson, setSelectedLesson] = useState('');
+  const [lessonDropdownOpen, setLessonDropdownOpen] = useState(false);
+  const [selectedCenter, setSelectedCenter] = useState('');
+  const [centerDropdownOpen, setCenterDropdownOpen] = useState(false);
+  const [accountState, setAccountState] = useState('Activated');
   const [errors, setErrors] = useState({});
   const [uploadingImages, setUploadingImages] = useState({});
   const [imagePreviews, setImagePreviews] = useState({});
@@ -54,7 +96,9 @@ export default function EditQuiz() {
   const [loadingImages, setLoadingImages] = useState({});
   const [dragOverIndex, setDragOverIndex] = useState(null);
   const errorTimeoutRef = useRef(null);
-  const [accountState, setAccountState] = useState('Activated');
+  const [importModalOpen, setImportModalOpen] = useState(false);
+  const [importSelectedId, setImportSelectedId] = useState('');
+  const [importApplyLoading, setImportApplyLoading] = useState(false);
 
   // Auto-hide errors after 6 seconds
   useEffect(() => {
@@ -86,10 +130,10 @@ export default function EditQuiz() {
       return quiz;
     },
     enabled: !!id,
-    refetchInterval: false, // No auto-refresh - only manual refresh
-    refetchOnWindowFocus: false, // Don't refetch on window focus
-    refetchOnMount: false, // Don't refetch on mount if data exists
-    refetchOnReconnect: false, // Don't refetch on reconnect
+    staleTime: Infinity,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+    refetchOnMount: false,
   });
 
   // Fetch all quizzes for duplicate validation
@@ -99,9 +143,62 @@ export default function EditQuiz() {
       const response = await apiClient.get('/api/quizzes');
       return response.data;
     },
+    staleTime: Infinity,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+    refetchOnMount: false,
   });
 
   const quizzes = quizzesData?.quizzes || [];
+
+  const importQuizOptions = useMemo(
+    () =>
+      quizzes
+        .filter((q) => id && String(q._id) !== String(id))
+        .map((quiz) => ({
+          value: String(quiz._id),
+          label: formatQuizPickerLabel(quiz),
+        })),
+    [quizzes, id]
+  );
+
+  const isFormReady = useMemo(
+    () => isQuizFormReady({ formData, selectedCourse, selectedLesson, accountState }),
+    [formData, selectedCourse, selectedLesson, accountState]
+  );
+
+  const handleImportApply = async () => {
+    if (!importSelectedId) return;
+    const quiz = quizzes.find((q) => String(q._id) === importSelectedId);
+    if (!quiz) return;
+    const built = buildQuizImportFormState(quiz);
+    if (!built) return;
+    setImportApplyLoading(true);
+    try {
+      setFormData(built.formData);
+      setSelectedCourse(built.selectedCourse);
+      setSelectedCourseType(built.selectedCourseType);
+      setSelectedLesson(built.selectedLesson);
+      setSelectedCenter(built.selectedCenter);
+      setAccountState(built.accountState);
+      setActiveTab(built.activeTab);
+      setErrors({});
+      setImagePreviews({});
+      setImageUrls({});
+      if (built.formData.quiz_type === 'questions' && built.formData.questions?.length) {
+        const urls = await fetchImportedQuestionImageUrls(
+          built.formData.questions,
+          'quizzes',
+          apiClient
+        );
+        setImageUrls(urls);
+      }
+      setImportModalOpen(false);
+      setImportSelectedId('');
+    } finally {
+      setImportApplyLoading(false);
+    }
+  };
 
   // Redirect if quiz not found
   useEffect(() => {
@@ -118,58 +215,74 @@ export default function EditQuiz() {
   
   useEffect(() => {
     if (quizData && !dataLoaded && !dataLoadedRef.current) {
-      // Convert week number to week string for the select component
-      setSelectedWeek(quizData.week ? weekNumberToString(quizData.week) : '');
-      setSelectedGrade(quizData.grade || '');
+      setSelectedCourse(quizData.course || '');
+      setSelectedCourseType(quizData.courseType || '');
+      setSelectedCenter(quizData.center || '');
+      setSelectedLesson(quizData.lesson || '');
+      const quizType = quizData.quiz_type || 'questions';
+      setActiveTab(quizType);
+
       setFormData({
         lesson_name: quizData.lesson_name || '',
+        comment: quizData.comment || '',
         deadline_type: quizData.deadline_type || (quizData.deadline_date ? 'with_deadline' : 'no_deadline'),
         deadline_date: quizData.deadline_date || '',
+        deadline_time: quizData.deadline_time || null,
+        quiz_type: quizType,
         timer_type: quizData.timer === null || quizData.timer === undefined ? 'no_timer' : 'with_timer',
         timer: quizData.timer || null,
         shuffle_questions_and_answers: quizData.shuffle_questions_and_answers === true || quizData.shuffle_questions_and_answers === 'true' ? true : false,
         show_details_after_submitting: quizData.show_details_after_submitting === true || quizData.show_details_after_submitting === 'true' ? true : false,
-        questions: quizData.questions && Array.isArray(quizData.questions)
-          ? quizData.questions.map(q => ({
-              question_text: q.question_text || '',
-              question_picture: q.question_picture || null,
-              answers: q.answers && q.answers.length > 0 ? q.answers : ['A', 'B'],
-              answer_texts: q.answer_texts && q.answer_texts.length > 0 ? q.answer_texts : (q.answers ? q.answers.map(() => '') : ['', '']),
-              correct_answer: q.correct_answer || '',
-              question_explanation: q.question_explanation || ''
-            }))
-          : [{
-              question_text: '',
-              question_picture: null,
-              answers: ['A', 'B'],
-              answer_texts: ['', ''],
-              correct_answer: '',
-              question_explanation: ''
-            }]
+        pdf_file_name: quizData.pdf_file_name || '',
+        pdf_url: quizData.pdf_url || '',
+        allow_downloading: quizData.allow_downloading !== false && quizData.allow_downloading !== 'false',
+        questions: quizType === 'questions' && quizData.questions && Array.isArray(quizData.questions)
+          ? quizData.questions.map((q) =>
+              normalizeLoadedQuestion({
+                ...q,
+                _clientKey: q._id ? String(q._id) : newQuestionClientKey(),
+                question_picture: q.question_picture || null,
+                ...Object.keys(q)
+                  .filter((key) => /^question_picture_\d+$/.test(key))
+                  .reduce((acc, key) => ({ ...acc, [key]: q[key] || null }), {}),
+              })
+            )
+          : [createDefaultMcqQuestion(desmosEnabled)]
       });
-      setAccountState(quizData.state || quizData.account_state || 'Activated');
       setDataLoaded(true);
       dataLoadedRef.current = true; // Mark as loaded in ref
 
+      setAccountState(quizData.state || quizData.account_state || 'Activated');
+
       // Load image URLs for existing images
       const loadImageUrls = async () => {
-        const urlPromises = quizData.questions?.map(async (q, idx) => {
-          if (q.question_picture) {
-            setLoadingImages(prev => ({ ...prev, [idx]: true }));
-            try {
-              const response = await apiClient.get(`/api/quizzes/image?public_id=${q.question_picture}`);
-              if (response.data?.url) {
-                setImageUrls(prev => ({ ...prev, [idx]: response.data.url }));
-              }
-            } catch (err) {
-              console.error(`Failed to load image for question ${idx}:`, err);
-            } finally {
-              setLoadingImages(prev => {
-                const newLoading = { ...prev };
-                delete newLoading[idx];
-                return newLoading;
-              });
+        const urlPromises = quizData.questions?.flatMap((q, idx) => {
+          const pictures = [];
+          pictures[0] = q?.question_picture || null;
+          Object.keys(q || {})
+            .filter((key) => /^question_picture_\d+$/.test(key))
+            .sort((a, b) => Number(a.split('_').pop()) - Number(b.split('_').pop()))
+            .forEach((key) => {
+              const pictureIndex = Number(key.split('_').pop()) - 1;
+              if (pictureIndex >= 1) pictures[pictureIndex] = q[key] || null;
+            });
+
+          return pictures.map((publicId, imageIdx) => ({ publicId, imageKey: `${idx}_${imageIdx}` }));
+        }).filter((item) => !!item.publicId).map(async ({ publicId, imageKey }) => {
+          setLoadingImages(prev => ({ ...prev, [imageKey]: true }));
+          try {
+            const response = await apiClient.get(`/api/quizzes/image?public_id=${publicId}`);
+            if (response.data?.url) {
+              setImageUrls(prev => ({ ...prev, [imageKey]: response.data.url }));
             }
+          } catch (err) {
+            console.error(`Failed to load image ${imageKey}:`, err);
+          } finally {
+            setLoadingImages(prev => {
+              const newLoading = { ...prev };
+              delete newLoading[imageKey];
+              return newLoading;
+            });
           }
         }) || [];
         await Promise.all(urlPromises);
@@ -194,27 +307,124 @@ export default function EditQuiz() {
     },
   });
 
+  const getQuestionPictures = (question) => {
+    if (!question || typeof question !== 'object') return [null];
+    const pictures = [];
+    pictures[0] = question.question_picture || null;
+    Object.keys(question)
+      .filter((key) => /^question_picture_\d+$/.test(key))
+      .sort((a, b) => Number(a.split('_').pop()) - Number(b.split('_').pop()))
+      .forEach((key) => {
+        const idx = Number(key.split('_').pop()) - 1;
+        if (idx >= 1) pictures[idx] = question[key] || null;
+      });
+    return pictures.length ? pictures.map((pic) => pic || null) : [null];
+  };
+
+  const buildQuestionPicturesPayload = (pictures) => {
+    const payload = { question_picture: pictures[0] || null };
+    for (let i = 1; i < pictures.length; i++) {
+      payload[`question_picture_${i + 1}`] = pictures[i] || null;
+    }
+    return payload;
+  };
+
+  const updateQuestionPictures = (questionIndex, pictures) => {
+    setFormData((prev) => {
+      const newQuestions = [...prev.questions];
+      const currentQuestion = { ...newQuestions[questionIndex] };
+      Object.keys(currentQuestion).forEach((key) => {
+        if (/^question_picture_\d+$/.test(key)) delete currentQuestion[key];
+      });
+      newQuestions[questionIndex] = { ...currentQuestion, ...buildQuestionPicturesPayload(pictures) };
+      return { ...prev, questions: newQuestions };
+    });
+  };
+
+  /** After removing a middle/extra slot, shift UI state keys so slot N matches image N (lastIndexOf parses qIdx 10+). */
+  const reindexQuestionImageSlotKeys = (prev, questionIndex, removedImageIndex) => {
+    const next = {};
+    for (const [key, val] of Object.entries(prev)) {
+      const lastUs = key.lastIndexOf('_');
+      if (lastUs <= 0) {
+        next[key] = val;
+        continue;
+      }
+      const q = Number(key.slice(0, lastUs));
+      const idx = Number(key.slice(lastUs + 1));
+      if (Number.isNaN(q) || Number.isNaN(idx)) {
+        next[key] = val;
+        continue;
+      }
+      if (q !== questionIndex) {
+        next[key] = val;
+        continue;
+      }
+      if (idx === removedImageIndex) continue;
+      if (idx > removedImageIndex) {
+        next[`${questionIndex}_${idx - 1}`] = val;
+      } else {
+        next[key] = val;
+      }
+    }
+    return next;
+  };
+
+  const reindexQuestionImageErrors = (prev, questionIndex, removedImageIndex) => {
+    const next = { ...prev };
+    delete next[`question_${questionIndex}_image_${removedImageIndex}`];
+    const errPrefix = `question_${questionIndex}_image_`;
+    const movers = Object.keys(next)
+      .filter((k) => k.startsWith(errPrefix))
+      .map((k) => {
+        const idx = Number(k.slice(errPrefix.length));
+        return { k, idx };
+      })
+      .filter(({ idx }) => !Number.isNaN(idx) && idx > removedImageIndex)
+      .sort((a, b) => a.idx - b.idx);
+    for (const { k, idx } of movers) {
+      const v = next[k];
+      delete next[k];
+      next[`question_${questionIndex}_image_${idx - 1}`] = v;
+    }
+    return next;
+  };
+
+  const reindexDragOverForQuestion = (dragOverIndex, questionIndex, removedImageIndex) => {
+    if (dragOverIndex == null || dragOverIndex === '') return dragOverIndex;
+    const key = String(dragOverIndex);
+    const lastUs = key.lastIndexOf('_');
+    if (lastUs <= 0) return dragOverIndex;
+    const q = Number(key.slice(0, lastUs));
+    const idx = Number(key.slice(lastUs + 1));
+    if (Number.isNaN(q) || Number.isNaN(idx) || q !== questionIndex) return dragOverIndex;
+    if (idx === removedImageIndex) return null;
+    if (idx > removedImageIndex) return `${questionIndex}_${idx - 1}`;
+    return dragOverIndex;
+  };
+
   // Handle image upload
-  const handleImageUpload = async (questionIndex, file) => {
+  const handleImageUpload = async (questionIndex, imageIndex, file) => {
     if (!file) return;
+    const imageKey = `${questionIndex}_${imageIndex}`;
 
     // Allowed image MIME types
     const ALLOWED_MIME_TYPES = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/svg+xml', 'image/webp', 'image/x-icon', 'image/vnd.microsoft.icon'];
     
     // Validate file type
     if (!file.type || !ALLOWED_MIME_TYPES.includes(file.type)) {
-      setErrors(prev => ({ ...prev, [`question_${questionIndex}_image`]: '❌ Invalid file type. Only image formats (JPEG/JPG, PNG, GIF, SVG, WEBP, ICO) are allowed.' }));
+      setErrors(prev => ({ ...prev, [`question_${questionIndex}_image_${imageIndex}`]: '❌ Invalid file type. Only image formats (JPEG/JPG, PNG, GIF, SVG, WEBP, ICO) are allowed.' }));
       return;
     }
 
     // Validate file size (10 MB)
     const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
     if (file.size > MAX_FILE_SIZE) {
-      setErrors(prev => ({ ...prev, [`question_${questionIndex}_image`]: '❌ Sorry, Max image size is 10 MB, Please try another picture' }));
+      setErrors(prev => ({ ...prev, [`question_${questionIndex}_image_${imageIndex}`]: '❌ Sorry, Max image size is 10 MB, Please try another picture' }));
       // Clear preview if exists
       setImagePreviews(prev => {
         const newPreviews = { ...prev };
-        delete newPreviews[questionIndex];
+        delete newPreviews[imageKey];
         return newPreviews;
       });
       return;
@@ -223,15 +433,15 @@ export default function EditQuiz() {
     // Create preview
     const reader = new FileReader();
     reader.onloadend = () => {
-      setImagePreviews(prev => ({ ...prev, [questionIndex]: reader.result }));
+      setImagePreviews(prev => ({ ...prev, [imageKey]: reader.result }));
     };
     reader.readAsDataURL(file);
 
     // Upload to Cloudinary
-    setUploadingImages(prev => ({ ...prev, [questionIndex]: true }));
+    setUploadingImages(prev => ({ ...prev, [imageKey]: true }));
     setErrors(prev => {
       const newErrors = { ...prev };
-      delete newErrors[`question_${questionIndex}_image`];
+      delete newErrors[`question_${questionIndex}_image_${imageIndex}`];
       return newErrors;
     });
     
@@ -251,19 +461,15 @@ export default function EditQuiz() {
 
       if (response.data.success && response.data.public_id) {
         const newPublicId = response.data.public_id;
-        setFormData(prev => {
-          const newQuestions = [...prev.questions];
-          newQuestions[questionIndex] = {
-            ...newQuestions[questionIndex],
-            question_picture: newPublicId
-          };
-          return { ...prev, questions: newQuestions };
-        });
+        const currentPictures = getQuestionPictures(formData.questions[questionIndex]);
+        const nextPictures = [...currentPictures];
+        nextPictures[imageIndex] = newPublicId;
+        updateQuestionPictures(questionIndex, nextPictures);
         // Fetch signed URL for the newly uploaded image
         try {
           const urlResponse = await apiClient.get(`/api/quizzes/image?public_id=${newPublicId}`);
           if (urlResponse.data?.url) {
-            setImageUrls(prev => ({ ...prev, [questionIndex]: urlResponse.data.url }));
+            setImageUrls(prev => ({ ...prev, [imageKey]: urlResponse.data.url }));
           }
         } catch (urlErr) {
           console.error('Failed to fetch signed URL for new image:', urlErr);
@@ -292,48 +498,63 @@ export default function EditQuiz() {
         errorMessage = `❌ ${err.message}`;
       }
       
-      setErrors(prev => ({ ...prev, [`question_${questionIndex}_image`]: errorMessage }));
+      setErrors(prev => ({ ...prev, [`question_${questionIndex}_image_${imageIndex}`]: errorMessage }));
       setImagePreviews(prev => {
         const newPreviews = { ...prev };
-        delete newPreviews[questionIndex];
+        delete newPreviews[imageKey];
         return newPreviews;
       });
     } finally {
       setUploadingImages(prev => {
         const newLoading = { ...prev };
-        delete newLoading[questionIndex];
+        delete newLoading[imageKey];
         return newLoading;
       });
     }
   };
 
+  const addImageContainer = (questionIndex) => {
+    const currentPictures = getQuestionPictures(formData.questions[questionIndex]);
+    updateQuestionPictures(questionIndex, [...currentPictures, null]);
+  };
+
   // Handle remove image
-  const handleRemoveImage = (questionIndex) => {
-    setFormData(prev => {
-      const newQuestions = [...prev.questions];
-      newQuestions[questionIndex] = {
-        ...newQuestions[questionIndex],
-        question_picture: null
-      };
-      return { ...prev, questions: newQuestions };
-    });
+  const handleRemoveImage = (questionIndex, imageIndex) => {
+    const currentPictures = getQuestionPictures(formData.questions[questionIndex]);
+    const nextPictures = [...currentPictures];
+    nextPictures[imageIndex] = null;
+    updateQuestionPictures(questionIndex, nextPictures);
+    const imageKey = `${questionIndex}_${imageIndex}`;
     setImagePreviews(prev => {
       const newPreviews = { ...prev };
-      delete newPreviews[questionIndex];
+      delete newPreviews[imageKey];
       return newPreviews;
     });
     setImageUrls(prev => {
       const newUrls = { ...prev };
-      delete newUrls[questionIndex];
+      delete newUrls[imageKey];
       return newUrls;
     });
   };
 
+  const removeImageContainer = (questionIndex, imageIndex) => {
+    const currentPictures = getQuestionPictures(formData.questions[questionIndex]);
+    if (imageIndex === 0 || currentPictures.length <= 1) return;
+    const nextPictures = currentPictures.filter((_, idx) => idx !== imageIndex);
+    updateQuestionPictures(questionIndex, nextPictures);
+    setImagePreviews((prev) => reindexQuestionImageSlotKeys(prev, questionIndex, imageIndex));
+    setImageUrls((prev) => reindexQuestionImageSlotKeys(prev, questionIndex, imageIndex));
+    setUploadingImages((prev) => reindexQuestionImageSlotKeys(prev, questionIndex, imageIndex));
+    setLoadingImages((prev) => reindexQuestionImageSlotKeys(prev, questionIndex, imageIndex));
+    setErrors((prev) => reindexQuestionImageErrors(prev, questionIndex, imageIndex));
+    setDragOverIndex((d) => reindexDragOverForQuestion(d, questionIndex, imageIndex));
+  };
+
   // Drag and drop handlers
-  const handleDragOver = (e, questionIndex) => {
+  const handleDragOver = (e, questionIndex, imageIndex) => {
     e.preventDefault();
     e.stopPropagation();
-    setDragOverIndex(questionIndex);
+    setDragOverIndex(`${questionIndex}_${imageIndex}`);
   };
 
   const handleDragLeave = (e) => {
@@ -342,14 +563,14 @@ export default function EditQuiz() {
     setDragOverIndex(null);
   };
 
-  const handleDrop = (e, questionIndex) => {
+  const handleDrop = (e, questionIndex, imageIndex) => {
     e.preventDefault();
     e.stopPropagation();
     setDragOverIndex(null);
     
     const file = e.dataTransfer.files?.[0];
     if (file) {
-      handleImageUpload(questionIndex, file);
+      handleImageUpload(questionIndex, imageIndex, file);
     }
   };
 
@@ -375,30 +596,63 @@ export default function EditQuiz() {
   const handleQuestionChange = (questionIndex, field, value) => {
     setFormData(prev => {
       const newQuestions = [...(prev.questions || [])];
+      const currentQuestion = newQuestions[questionIndex];
+      
+      // If answer_texts are being updated, sync correct_answer
       if (field === 'answer_texts' && Array.isArray(value)) {
-        newQuestions[questionIndex] = {
-          ...newQuestions[questionIndex],
-          answer_texts: value
-        };
-      } else {
-        newQuestions[questionIndex] = {
-          ...newQuestions[questionIndex],
-          [field]: value
-        };
-      }
-      // Sync answer_texts with answers if answer_texts is being updated
-      if (field === 'answer_texts' && Array.isArray(value)) {
+        const newAnswerTexts = value;
+        const currentCorrectAnswer = currentQuestion.correct_answer;
+        
+        // If correct_answer is an array [letter, text], update the text part
+        if (Array.isArray(currentCorrectAnswer)) {
+          const correctLetter = currentCorrectAnswer[0];
+          const correctLetterIdx = currentQuestion.answers.indexOf(correctLetter.toUpperCase());
+          if (correctLetterIdx !== -1 && newAnswerTexts[correctLetterIdx] !== undefined) {
+            // Update the text part of correct_answer
+            currentQuestion.correct_answer = [correctLetter, newAnswerTexts[correctLetterIdx]];
+          }
+        } else if (currentCorrectAnswer) {
+          // If correct_answer is a string, check if we should convert to array format
+          const correctLetterIdx = currentQuestion.answers.indexOf(currentCorrectAnswer.toUpperCase());
+          if (correctLetterIdx !== -1 && newAnswerTexts[correctLetterIdx] && newAnswerTexts[correctLetterIdx].trim() !== '') {
+            // Convert to array format if text exists
+            currentQuestion.correct_answer = [currentCorrectAnswer.toLowerCase(), newAnswerTexts[correctLetterIdx]];
+          }
+        }
+        
         // Ensure answer_texts array matches answers array length
-        const currentAnswers = newQuestions[questionIndex].answers || ['A', 'B'];
-        if (value.length !== currentAnswers.length) {
-          const adjustedAnswerTexts = [...value];
+        const currentAnswers = currentQuestion.answers || ['A', 'B'];
+        if (newAnswerTexts.length !== currentAnswers.length) {
+          const adjustedAnswerTexts = [...newAnswerTexts];
           while (adjustedAnswerTexts.length < currentAnswers.length) {
             adjustedAnswerTexts.push('');
           }
           adjustedAnswerTexts.splice(currentAnswers.length);
-          newQuestions[questionIndex].answer_texts = adjustedAnswerTexts;
+          currentQuestion.answer_texts = adjustedAnswerTexts;
+        } else {
+          currentQuestion.answer_texts = newAnswerTexts;
+        }
+      } else {
+        // If correct_answer is being set, format it properly based on answer_texts
+        if (field === 'correct_answer') {
+          const answerTexts = currentQuestion.answer_texts || [];
+          const rawLetter = Array.isArray(value) ? value[0] : value;
+          const answerLetter = (typeof rawLetter === 'string' ? rawLetter : String(rawLetter || '')).toLowerCase();
+          const answerLetterIdx = currentQuestion.answers.indexOf(answerLetter.toUpperCase());
+          
+          if (answerLetterIdx !== -1 && answerTexts[answerLetterIdx] && answerTexts[answerLetterIdx].trim() !== '') {
+            // Store as [letter, text] if text exists
+            currentQuestion.correct_answer = [answerLetter, answerTexts[answerLetterIdx]];
+          } else {
+            // Store as just letter if no text
+            currentQuestion.correct_answer = answerLetter;
+          }
+        } else {
+          currentQuestion[field] = value;
         }
       }
+      
+      newQuestions[questionIndex] = currentQuestion;
       return { ...prev, questions: newQuestions };
     });
     setErrors(prev => {
@@ -468,40 +722,46 @@ export default function EditQuiz() {
     });
   };
 
+  const setQuestionType = (questionIndex, nextType) => {
+    setFormData((prev) => {
+      const newQuestions = [...prev.questions];
+      newQuestions[questionIndex] = switchQuestionType(newQuestions[questionIndex], nextType);
+      return { ...prev, questions: newQuestions };
+    });
+    setErrors((prev) => {
+      const next = { ...prev };
+      delete next[`question_${questionIndex}_answers`];
+      delete next[`question_${questionIndex}_correct`];
+      delete next[`question_${questionIndex}_valid`];
+      return next;
+    });
+  };
+
   const addQuestion = () => {
     setFormData(prev => ({
       ...prev,
-      questions: [...(prev.questions || []), {
-        question_text: '',
-        question_picture: null,
-        answers: ['A', 'B'],
-        answer_texts: ['', ''],
-        correct_answer: '',
-        question_explanation: ''
-      }]
+      questions: [...(prev.questions || []), createDefaultMcqQuestion(desmosEnabled)]
     }));
   };
 
   const removeQuestion = (questionIndex) => {
+    const i = Number(questionIndex);
+    if (Number.isNaN(i) || i < 0) return;
     if (!formData.questions || formData.questions.length === 1) {
       setErrors({ general: '❌ At least one question is required' });
       return;
     }
-    
+
     setFormData(prev => ({
       ...prev,
-      questions: prev.questions.filter((_, idx) => idx !== questionIndex)
+      questions: prev.questions.filter((_, idx) => idx !== i)
     }));
-    setImagePreviews(prev => {
-      const newPreviews = { ...prev };
-      delete newPreviews[questionIndex];
-      return newPreviews;
-    });
-    setImageUrls(prev => {
-      const newUrls = { ...prev };
-      delete newUrls[questionIndex];
-      return newUrls;
-    });
+    setImagePreviews(prev => reindexCompositeKeysAfterQuestionRemoved(prev, i));
+    setImageUrls(prev => reindexCompositeKeysAfterQuestionRemoved(prev, i));
+    setUploadingImages(prev => reindexCompositeKeysAfterQuestionRemoved(prev, i));
+    setLoadingImages(prev => reindexCompositeKeysAfterQuestionRemoved(prev, i));
+    setErrors(prev => reindexQuestionErrorsAfterQuestionRemoved(prev, i));
+    setDragOverIndex((d) => reindexDragOverAfterQuestionRemoved(d, i));
   };
 
   const handleSubmit = (e) => {
@@ -515,14 +775,14 @@ export default function EditQuiz() {
       return;
     }
 
-    // Validate grade
-    if (!selectedGrade || selectedGrade.trim() === '') {
-      newErrors.grade = '❌ Grade is required';
+    // Validate course
+    if (!selectedCourse || selectedCourse.trim() === '') {
+      newErrors.course = `❌ ${courseLabels.course} is required`;
     }
 
-    // Validate week
-    if (!selectedWeek || selectedWeek.trim() === '') {
-      newErrors.week = '❌ Quiz week is required';
+    // Validate lesson
+    if (!selectedLesson || selectedLesson.trim() === '') {
+      newErrors.lesson = '❌ Lesson is required';
     }
 
     // Validate lesson name
@@ -530,48 +790,59 @@ export default function EditQuiz() {
       newErrors.lesson_name = '❌ Lesson name is required';
     }
 
-    // Validate quiz state
-    if (!accountState || accountState.trim() === '') {
-      newErrors.accountState = '❌ Account State is required';
-    }
-
-    // Validate timer if with timer is selected
-    if (formData.timer_type === 'with_timer') {
-      if (!formData.timer || parseInt(formData.timer) < 1) {
-        newErrors.timer = '❌ Timer must be at least 1 minute';
+    if (formData.quiz_type === 'pdf') {
+      if (!formData.pdf_file_name || formData.pdf_file_name.trim() === '') {
+        newErrors.pdf_file_name = '❌ PDF file name is required';
+      }
+      if (!formData.pdf_url || formData.pdf_url.trim() === '') {
+        newErrors.pdf_url = '❌ PDF file is required';
+      }
+    } else {
+      // Validate timer if with timer is selected
+      if (formData.timer_type === 'with_timer') {
+        if (!formData.timer || parseInt(formData.timer) < 1) {
+          newErrors.timer = '❌ Timer must be at least 1 minute';
+        }
+      }
+      
+      // Validate questions
+      if (!formData.questions || !Array.isArray(formData.questions) || formData.questions.length === 0) {
+        newErrors.questions = '❌ At least one question is required';
+      } else {
+        formData.questions.forEach((q, qIdx) => {
+          const hasQuestionText = q.question_text && q.question_text.trim() !== '';
+          const hasQuestionImage = getQuestionPictures(q).some((pic) => !!pic);
+          if (!hasQuestionText && !hasQuestionImage) {
+            newErrors[`question_${qIdx}_text_or_image`] = '❌ Question must have at least question text or image (or both)';
+          }
+          if (isEssayQuestion(q)) {
+            if (normalizeValidCorrectAnswers(q.valid_correct_answers).length < 1) {
+              newErrors[`question_${qIdx}_valid`] = '❌ At least one valid correct answer is required';
+            }
+          } else {
+            if (!q.answers || q.answers.length < 2) {
+              newErrors[`question_${qIdx}_answers`] = '❌ At least 2 answers (A and B) are required';
+            }
+            if (!q.correct_answer) {
+              newErrors[`question_${qIdx}_correct`] = '❌ Please select the correct answer';
+            }
+          }
+        });
       }
     }
-    
-    // Validate questions
-    if (!formData.questions || !Array.isArray(formData.questions) || formData.questions.length === 0) {
-      newErrors.questions = '❌ At least one question is required';
-    } else {
-      formData.questions.forEach((q, qIdx) => {
-        // Each question must have at least question text OR image (or both)
-        const hasQuestionText = q.question_text && q.question_text.trim() !== '';
-        const hasQuestionImage = q.question_picture;
-        if (!hasQuestionText && !hasQuestionImage) {
-          newErrors[`question_${qIdx}_text_or_image`] = '❌ Question must have at least question text or image (or both)';
-        }
-        if (!q.answers || q.answers.length < 2) {
-          newErrors[`question_${qIdx}_answers`] = '❌ At least 2 answers (A and B) are required';
-        }
-        if (!q.correct_answer) {
-          newErrors[`question_${qIdx}_correct`] = '❌ Please select the correct answer';
-        }
-      });
-    }
 
-    // Validate deadline date if with deadline is selected
     if (formData.deadline_type === 'with_deadline') {
       if (!formData.deadline_date) {
         newErrors.deadline_date = '❌ Deadline date is required';
       } else {
-        const selectedDate = new Date(formData.deadline_date);
-        const today = new Date();
-        today.setHours(0, 0, 0, 0);
-        if (selectedDate <= today) {
-          newErrors.deadline_date = '❌ Deadline date must be in the future';
+        const rawT = formData.deadline_time;
+        if (rawT != null && String(rawT).trim() !== '' && !parseDeadlineTime(String(rawT).trim())) {
+          newErrors.deadline_time = '❌ Invalid deadline time (use format like 04:30 AM)';
+        } else {
+          const normT = normalizeDeadlineTimeField('with_deadline', rawT);
+          if (!isDeadlineStrictlyInFutureEgypt(formData.deadline_date, normT)) {
+            newErrors.deadline_date = '❌ Deadline must be in the future (Egypt time)';
+          }
         }
       }
     }
@@ -586,28 +857,35 @@ export default function EditQuiz() {
       newErrors.show_details_after_submitting = '❌ Show details after submitting is required';
     }
 
+    // Validate account state
+    if (!accountState || accountState.trim() === '') {
+      newErrors.accountState = '❌ Account State is required';
+    }
+
     if (Object.keys(newErrors).length > 0) {
       setErrors(newErrors);
       return;
     }
 
-    // Extract week number from week string
-    const weekNumber = extractWeekNumber(selectedWeek);
-    if (!weekNumber) {
-      newErrors.week = '❌ Invalid week selection';
-      setErrors(newErrors);
-      return;
-    }
-
-    // Check for duplicate grade and week combination (exclude current quiz)
+    // Check for duplicate course, courseType, lesson, and center (exclude current quiz)
+    const courseTrimmed = selectedCourse.trim();
+    const courseTypeTrimmed = selectedCourseType ? selectedCourseType.trim() : '';
+    const lessonTrimmed = selectedLesson.trim();
+    
     const duplicateQuiz = quizzes.find(
-      quiz => 
-        quiz._id !== id && 
-        quiz.grade === selectedGrade.trim() && 
-        quiz.week === weekNumber
+      quiz => {
+        if (quiz._id === id) return false;
+        const quizCourse = (quiz.course || '').trim();
+        const quizCourseType = (quiz.courseType || '').trim();
+        const quizLesson = (quiz.lesson || '').trim();
+        return quizCourse === courseTrimmed && 
+               (quizCourseType || '') === courseTypeTrimmed && 
+               quizLesson === lessonTrimmed &&
+               centersMatchDuplicateClient(selectedCenter, quiz.center);
+      }
     );
     if (duplicateQuiz) {
-      newErrors.general = '❌ A quiz with this grade and week already exists';
+      newErrors.general = '❌ A quiz with this course, course type, lesson, and center already exists';
       setErrors(newErrors);
       
       // Clear error after 6 seconds
@@ -627,28 +905,58 @@ export default function EditQuiz() {
     // Prepare data for API
     const submitData = {
       lesson_name: formData.lesson_name.trim(),
-      grade: selectedGrade.trim(),
-      week: weekNumber,
-      quiz_type: 'questions',
+      comment: formData.comment ? formData.comment.trim() : '',
+      course: courseTrimmed,
+      courseType: courseTypeTrimmed || null,
+      center: selectedCenter.trim() || null,
+      lesson: lessonTrimmed,
+      quiz_type: formData.quiz_type || 'questions',
       deadline_type: formData.deadline_type,
       deadline_date: formData.deadline_type === 'with_deadline' ? formData.deadline_date : null,
-      timer: formData.timer_type === 'with_timer' ? parseInt(formData.timer) : null,
-      shuffle_questions_and_answers: formData.shuffle_questions_and_answers,
-      show_details_after_submitting: formData.show_details_after_submitting,
+      deadline_time:
+        formData.deadline_type === 'with_deadline'
+          ? normalizeDeadlineTimeField('with_deadline', formData.deadline_time)
+          : null,
+      timer: formData.quiz_type === 'questions' && formData.timer_type === 'with_timer' ? parseInt(formData.timer) : null,
+      shuffle_questions_and_answers: formData.quiz_type === 'questions' ? formData.shuffle_questions_and_answers : false,
+      show_details_after_submitting: formData.quiz_type === 'questions' ? formData.show_details_after_submitting : false,
     };
 
-    // Attach state (Activated/Deactivated)
-    submitData.state = accountState && accountState !== '' ? accountState : 'Activated';
+    if (accountState) {
+      submitData.state = accountState;
+    }
 
-    if (formData.questions && Array.isArray(formData.questions)) {
-      submitData.questions = formData.questions.map(q => ({
-        question_text: q.question_text || '',
-        question_picture: q.question_picture,
-        answers: q.answers,
-        answer_texts: q.answer_texts || [],
-        correct_answer: q.correct_answer,
-        question_explanation: q.question_explanation || ''
-      }));
+    if (formData.quiz_type === 'pdf') {
+      submitData.pdf_file_name = formData.pdf_file_name.trim();
+      submitData.pdf_url = formData.pdf_url.trim();
+      submitData.allow_downloading = formData.allow_downloading !== false;
+    } else if (formData.questions && Array.isArray(formData.questions)) {
+      submitData.questions = formData.questions.map(({ _clientKey, ...q }) => {
+        const type = getQuestionType(q);
+        const base = {
+          question_type: type,
+          question_text: q.question_text || '',
+          ...buildQuestionPicturesPayload(getQuestionPictures(q)),
+          question_explanation: q.question_explanation || '',
+          use_desmos: q.use_desmos === true || q.use_desmos === 'true',
+        };
+        if (type === QUESTION_TYPE_ESSAY) {
+          return {
+            ...base,
+            valid_correct_answers: normalizeValidCorrectAnswers(q.valid_correct_answers),
+            answers: [],
+            answer_texts: [],
+            correct_answer: '',
+          };
+        }
+        return {
+          ...base,
+          answers: q.answers,
+          answer_texts: q.answer_texts || [],
+          correct_answer: q.correct_answer,
+          valid_correct_answers: [],
+        };
+      });
     }
 
     console.log('Submitting quiz data:', {
@@ -723,6 +1031,9 @@ export default function EditQuiz() {
     );
   }
 
+  const isUploading = Object.values(uploadingImages).some(val => val === true);
+  const isSaveDisabled = !isFormReady || updateQuizMutation.isPending || isUploading;
+
   return (
     <div style={{ 
       minHeight: "100vh", 
@@ -738,73 +1049,176 @@ export default function EditQuiz() {
           boxShadow: '0 8px 32px rgba(0,0,0,0.1)'
         }}>
           <form onSubmit={handleSubmit}>
+            <div
+              style={{
+                marginBottom: '24px',
+                padding: '18px',
+                borderRadius: '14px',
+                background: 'linear-gradient(135deg, #ecfdf5 0%, #d1fae5 100%)',
+                border: '1.5px solid #6ee7b7',
+                textAlign: 'center',
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+              }}
+            >
+              <div style={{ fontWeight: 700, color: '#064e3b', marginBottom: '8px', fontSize: '1rem', width: '100%' }}>
+                Import from another quiz
+              </div>
+              <p style={{ margin: '0 0 14px', fontSize: '0.88rem', color: '#047857', lineHeight: 1.45, maxWidth: '520px' }}>
+                Copy content from another quiz into this editor. Save when you are ready.
+              </p>
+              <button
+                type="button"
+                onClick={() => {
+                  setImportSelectedId('');
+                  setImportModalOpen(true);
+                }}
+                style={{
+                  padding: '12px 20px',
+                  borderRadius: '10px',
+                  border: 'none',
+                  background: 'linear-gradient(135deg, #059669 0%, #047857 100%)',
+                  color: '#fff',
+                  fontWeight: 700,
+                  fontSize: '0.95rem',
+                  cursor: 'pointer',
+                  boxShadow: '0 4px 12px rgba(5, 150, 105, 0.35)',
+                  width: '100%',
+                  maxWidth: '320px',
+                }}
+              >
+                Choose quiz to import…
+              </button>
+            </div>
+
             {/* Quiz Grade */}
             <div style={{ marginBottom: '20px' }}>
               <label style={{ display: 'block', marginBottom: '8px', fontWeight: '600', textAlign: 'left' }}>
                 Quiz Grade <span style={{ color: 'red' }}>*</span>
               </label>
-              <GradeSelect
-                selectedGrade={selectedGrade}
-                onGradeChange={(grade) => {
-                  setSelectedGrade(grade);
-                  if (errors.grade) {
-                    setErrors({ ...errors, grade: '' });
+              <CourseSelect
+                selectedGrade={selectedCourse}
+                onGradeChange={(course) => {
+                  setSelectedCourse(course);
+                  if (errors.course) {
+                    setErrors({ ...errors, course: '' });
                   }
                 }}
-                isOpen={gradeDropdownOpen}
-                onToggle={() => setGradeDropdownOpen(!gradeDropdownOpen)}
-                onClose={() => setGradeDropdownOpen(false)}
+                isOpen={courseDropdownOpen}
+                onToggle={() => {
+                  setCourseDropdownOpen(!courseDropdownOpen);
+                  setCourseTypeDropdownOpen(false);
+                  setLessonDropdownOpen(false);
+                  setCenterDropdownOpen(false);
+                }}
+                onClose={() => setCourseDropdownOpen(false)}
+                showAllOption={true}
                 required={true}
               />
-              {errors.grade && (
+              {errors.course && (
                 <div style={{ color: '#dc3545', fontSize: '0.875rem', marginTop: '4px' }}>
-                  {errors.grade}
+                  {errors.course}
                 </div>
               )}
             </div>
 
-            {/* Quiz Week */}
-            <div style={{ marginBottom: '20px' }}>
+            {/* Quiz Course Type */}
+            {courseLabels.showCourseType && (
+<div style={{ marginBottom: '20px' }}>
               <label style={{ display: 'block', marginBottom: '8px', fontWeight: '600', textAlign: 'left' }}>
-                Quiz Week <span style={{ color: 'red' }}>*</span>
+                Quiz Course Type
               </label>
-              <AttendanceWeekSelect
-                selectedWeek={selectedWeek}
-                onWeekChange={(week) => {
-                  setSelectedWeek(week);
-                  if (errors.week) {
-                    setErrors({ ...errors, week: '' });
+              <CourseTypeSelect
+                selectedCourseType={selectedCourseType}
+                onCourseTypeChange={(courseType) => {
+                  setSelectedCourseType(courseType);
+                  if (errors.courseType) {
+                    setErrors({ ...errors, courseType: '' });
                   }
                 }}
-                isOpen={weekDropdownOpen}
-                onToggle={() => setWeekDropdownOpen(!weekDropdownOpen)}
-                onClose={() => setWeekDropdownOpen(false)}
-                required={true}
-                placeholder="Select Quiz Week"
+                isOpen={courseTypeDropdownOpen}
+                onToggle={() => {
+                  setCourseTypeDropdownOpen(!courseTypeDropdownOpen);
+                  setCourseDropdownOpen(false);
+                  setLessonDropdownOpen(false);
+                  setCenterDropdownOpen(false);
+                }}
+                onClose={() => setCourseTypeDropdownOpen(false)}
               />
-              {errors.week && (
+              {errors.courseType && (
                 <div style={{ color: '#dc3545', fontSize: '0.875rem', marginTop: '4px' }}>
-                  {errors.week}
+                  {errors.courseType}
+                </div>
+              )}
+            </div>
+)}
+
+            {/* Quiz Center (optional) */}
+            <div style={{ marginBottom: '20px' }}>
+              <label style={{ display: 'block', marginBottom: '8px', fontWeight: '600', textAlign: 'left' }}>
+                Quiz Center
+              </label>
+              <CenterSelect
+                selectedCenter={selectedCenter}
+                onCenterChange={setSelectedCenter}
+                required={false}
+                isOpen={centerDropdownOpen}
+                onToggle={() => {
+                  setCenterDropdownOpen(!centerDropdownOpen);
+                  setCourseDropdownOpen(false);
+                  setCourseTypeDropdownOpen(false);
+                  setLessonDropdownOpen(false);
+                }}
+                onClose={() => setCenterDropdownOpen(false)}
+              />
+            </div>
+
+            {/* Quiz Lesson */}
+            <div style={{ marginBottom: '20px' }}>
+              <label style={{ display: 'block', marginBottom: '8px', fontWeight: '600', textAlign: 'left' }}>
+                Quiz Lesson <span style={{ color: 'red' }}>*</span>
+              </label>
+              <AttendanceLessonSelect
+                selectedLesson={selectedLesson}
+                onLessonChange={(lesson) => {
+                  setSelectedLesson(lesson);
+                  if (errors.lesson) {
+                    setErrors({ ...errors, lesson: '' });
+                  }
+                }}
+                isOpen={lessonDropdownOpen}
+                onToggle={() => {
+                  setLessonDropdownOpen(!lessonDropdownOpen);
+                  setCourseDropdownOpen(false);
+                  setCourseTypeDropdownOpen(false);
+                  setCenterDropdownOpen(false);
+                }}
+                onClose={() => setLessonDropdownOpen(false)}
+                required={true}
+                placeholder="Select Quiz Lesson"
+              />
+              {errors.lesson && (
+                <div style={{ color: '#dc3545', fontSize: '0.875rem', marginTop: '4px' }}>
+                  {errors.lesson}
                 </div>
               )}
             </div>
 
             {/* Quiz State */}
-            <div style={{ marginBottom: '20px' }}>
-              <AccountStateSelect
-                value={accountState}
-                onChange={setAccountState}
-                label="Quiz State"
-                placeholder="Select State"
-                required={true}
-                error={errors.accountState}
-              />
-              {errors.accountState && (
-                <div style={{ color: '#dc3545', fontSize: '0.875rem', marginTop: '4px' }}>
-                  {errors.accountState}
-                </div>
-              )}
-            </div>
+            <AccountStateSelect
+              value={accountState}
+              onChange={setAccountState}
+              label="Quiz State"
+              placeholder="Select Quiz State"
+              required={true}
+              error={errors.accountState}
+            />
+            {errors.accountState && (
+              <div style={{ color: '#dc3545', fontSize: '0.875rem', marginTop: '4px' }}>
+                {errors.accountState}
+              </div>
+            )}
 
             {/* Lesson Name */}
             <div style={{ marginBottom: '20px' }}>
@@ -832,8 +1246,189 @@ export default function EditQuiz() {
               )}
             </div>
 
+            {/* Comment (Optional) */}
+            <div style={{ marginBottom: '20px' }}>
+              <label style={{ display: 'block', marginBottom: '8px', fontWeight: '600', textAlign: 'left' }}>
+                Comment (Optional)
+              </label>
+              <textarea
+                name="comment"
+                value={formData.comment}
+                onChange={handleInputChange}
+                placeholder="Add a comment or note..."
+                rows={3}
+                style={{
+                  width: '100%',
+                  padding: '12px 16px',
+                  border: '2px solid #e9ecef',
+                  borderRadius: '10px',
+                  fontSize: '1rem',
+                  resize: 'vertical',
+                  fontFamily: 'inherit'
+                }}
+              />
+            </div>
+
+            {/* Tabs Container (Questions / PDF) */}
+            <div style={{ marginBottom: '20px' }}>
+              <div style={{ display: 'flex', gap: '8px', borderBottom: '2px solid #e9ecef', marginBottom: '20px' }}>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActiveTab('questions');
+                    setFormData({ ...formData, quiz_type: 'questions', pdf_file_name: '', pdf_url: '' });
+                  }}
+                  style={{
+                    padding: '12px 24px',
+                    border: 'none',
+                    borderBottom: activeTab === 'questions' ? '3px solid #1FA8DC' : '3px solid transparent',
+                    backgroundColor: 'transparent',
+                    color: activeTab === 'questions' ? '#1FA8DC' : '#6c757d',
+                    fontWeight: activeTab === 'questions' ? '600' : '500',
+                    cursor: 'pointer',
+                    fontSize: '1rem',
+                    transition: 'all 0.2s ease'
+                  }}
+                >
+                  Questions
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActiveTab('pdf');
+                    setFormData({
+                      ...formData,
+                      quiz_type: 'pdf',
+                      questions: [{ _clientKey: newQuestionClientKey(), question_text: '', question_picture: null, answers: ['A', 'B', 'C', 'D'], answer_texts: ['', '', '', ''], correct_answer: '', question_explanation: '', use_desmos: desmosEnabled ? true : false }],
+                      timer_type: 'no_timer',
+                      timer: null
+                    });
+                  }}
+                  style={{
+                    padding: '12px 24px',
+                    border: 'none',
+                    borderBottom: activeTab === 'pdf' ? '3px solid #1FA8DC' : '3px solid transparent',
+                    backgroundColor: 'transparent',
+                    color: activeTab === 'pdf' ? '#1FA8DC' : '#6c757d',
+                    fontWeight: activeTab === 'pdf' ? '600' : '500',
+                    cursor: 'pointer',
+                    fontSize: '1rem',
+                    transition: 'all 0.2s ease'
+                  }}
+                >
+                  PDF
+                </button>
+              </div>
+
+              {/* PDF Content */}
+              {activeTab === 'pdf' && (
+                <div style={{ padding: '20px', border: '2px solid #e9ecef', borderRadius: '12px', backgroundColor: '#f8f9fa' }}>
+                  <div style={{ marginBottom: '16px' }}>
+                    <label style={{ display: 'block', marginBottom: '8px', fontWeight: '600', textAlign: 'left' }}>
+                      File Name <span style={{ color: 'red' }}>*</span>
+                    </label>
+                    <input
+                      type="text"
+                      value={formData.pdf_file_name}
+                      onChange={(e) => setFormData({ ...formData, pdf_file_name: e.target.value })}
+                      placeholder="Enter PDF File Name"
+                      style={{ width: '100%', padding: '12px 16px', border: errors.pdf_file_name ? '2px solid #dc3545' : '2px solid #e9ecef', borderRadius: '10px', fontSize: '1rem' }}
+                    />
+                    {errors.pdf_file_name && <div style={{ color: '#dc3545', fontSize: '0.875rem', marginTop: '4px' }}>{errors.pdf_file_name}</div>}
+                    <AllowDownloadingRadio
+                      name="allow_downloading_quiz_edit"
+                      value={formData.allow_downloading !== false}
+                      onChange={(v) => setFormData({ ...formData, allow_downloading: v })}
+                    />
+                  </div>
+                  <div style={{ marginBottom: '16px' }}>
+                    <label style={{ display: 'block', marginBottom: '8px', fontWeight: '600', textAlign: 'left' }}>
+                      Upload PDF <span style={{ color: 'red' }}>*</span>
+                    </label>
+
+                    {!formData.pdf_url && !pdfUploading && !pdfUploadError && (
+                      <div onClick={() => pdfFileInputRef.current?.click()}
+                        style={{ border: errors.pdf_url ? '2px dashed #dc3545' : '2px dashed #ccc', borderRadius: '8px', padding: '32px 20px', textAlign: 'center', cursor: 'pointer', backgroundColor: '#fff', transition: 'border-color 0.2s ease' }}
+                        onMouseOver={(e) => { if (!errors.pdf_url) e.currentTarget.style.borderColor = '#1FA8DC'; }}
+                        onMouseOut={(e) => { if (!errors.pdf_url) e.currentTarget.style.borderColor = '#ccc'; }}>
+                        <div style={{ fontSize: '2rem', marginBottom: '8px', color: '#999' }}>+</div>
+                        <div style={{ color: '#666', fontSize: '0.95rem' }}>Click to select a PDF file</div>
+                        <div style={{ color: '#999', fontSize: '0.8rem', marginTop: '4px' }}>PDF (max 100MB)</div>
+                      </div>
+                    )}
+
+                    {pdfUploading && (
+                      <div style={{ border: '2px solid #1FA8DC', borderRadius: '8px', padding: '20px', backgroundColor: '#fff' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
+                          <span style={{ color: '#333', fontSize: '0.9rem', fontWeight: '500' }}>Uploading PDF...</span>
+                          <span style={{ color: '#1FA8DC', fontSize: '0.85rem', fontWeight: '600' }}>{pdfUploadProgress}%</span>
+                        </div>
+                        <div style={{ width: '100%', height: '8px', backgroundColor: '#e9ecef', borderRadius: '4px', overflow: 'hidden' }}>
+                          <div style={{ width: `${pdfUploadProgress}%`, height: '100%', backgroundColor: '#1FA8DC', borderRadius: '4px', transition: 'width 0.3s ease' }} />
+                        </div>
+                      </div>
+                    )}
+
+                    {formData.pdf_url && !pdfUploading && (
+                      <div style={{ border: '2px solid #28a745', borderRadius: '8px', padding: '16px 20px', backgroundColor: '#f0fff4', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                        <div>
+                          <div style={{ color: '#28a745', fontWeight: '600', fontSize: '0.9rem' }}>✅ Uploaded successfully</div>
+                          <div style={{ color: '#666', fontSize: '0.85rem', marginTop: '2px' }}>{formData.pdf_file_name || 'PDF file'}</div>
+                        </div>
+                        <button type="button" onClick={() => { setFormData(prev => ({ ...prev, pdf_url: '' })); if (pdfFileInputRef.current) pdfFileInputRef.current.value = ''; }}
+                          style={{ padding: '6px 12px', backgroundColor: '#dc3545', color: 'white', border: 'none', borderRadius: '6px', fontSize: '0.8rem', cursor: 'pointer' }}>
+                          ❌ Remove
+                        </button>
+                      </div>
+                    )}
+
+                    {pdfUploadError && !pdfUploading && !formData.pdf_url && (
+                      <div style={{ border: '2px solid #dc3545', borderRadius: '8px', padding: '16px 20px', backgroundColor: '#fff5f5' }}>
+                        <div style={{ color: '#dc3545', fontWeight: '500', fontSize: '0.9rem', marginBottom: '8px' }}>❌ Upload failed: {pdfUploadError}</div>
+                        <button type="button" onClick={() => { setPdfUploadError(''); if (pdfFileInputRef.current) pdfFileInputRef.current.value = ''; }}
+                          style={{ padding: '6px 14px', backgroundColor: '#1FA8DC', color: 'white', border: 'none', borderRadius: '6px', fontSize: '0.85rem', cursor: 'pointer' }}>
+                          Try Again
+                        </button>
+                      </div>
+                    )}
+
+                    <input ref={pdfFileInputRef} type="file" accept=".pdf,application/pdf" style={{ display: 'none' }}
+                      onChange={async (e) => {
+                        const file = e.target.files[0]; if (!file) return;
+                        if (file.type !== 'application/pdf') { setPdfUploadError('Only PDF files are allowed'); return; }
+                        if (file.size > 100 * 1024 * 1024) { setPdfUploadError('File size exceeds 100MB limit'); return; }
+                        setPdfUploadError('');
+                        setPdfUploading(true);
+                        setPdfUploadProgress(0);
+                        try {
+                          const { uploadToR2Direct } = await import('../../../../lib/r2DirectUpload');
+                          const result = await uploadToR2Direct(file, {
+                            prefix: 'pdfs/Quizs-PDFs',
+                            onProgress: (percent) => setPdfUploadProgress(percent),
+                          });
+                          if (result?.url) {
+                            setPdfUploadProgress(100);
+                            setFormData(prev => ({ ...prev, pdf_url: result.url }));
+                            setErrors(prev => { const n = { ...prev }; delete n.pdf_url; return n; });
+                          } else {
+                            throw new Error('Upload failed');
+                          }
+                        } catch (err) {
+                          setPdfUploadError(err.response?.data?.error || err.message || 'Failed to upload PDF');
+                        } finally {
+                          setPdfUploading(false);
+                        }
+                      }}
+                    />
+
+                    {errors.pdf_url && !pdfUploadError && <div style={{ color: '#dc3545', fontSize: '0.875rem', marginTop: '4px' }}>{errors.pdf_url}</div>}
+                  </div>
+                </div>
+              )}
+            </div>
+
             {/* Questions Content */}
-            <>
+            {activeTab === 'questions' && <>
                 {/* Deadline Radio */}
                 <div style={{ marginBottom: '20px' }}>
                   <label style={{ display: 'block', marginBottom: '12px', fontWeight: '600', textAlign: 'left' }}>
@@ -846,7 +1441,7 @@ export default function EditQuiz() {
                         name="deadline_type"
                         value="no_deadline"
                         checked={formData.deadline_type === 'no_deadline'}
-                        onChange={(e) => setFormData({ ...formData, deadline_type: e.target.value, deadline_date: '' })}
+                        onChange={(e) => setFormData({ ...formData, deadline_type: e.target.value, deadline_date: '', deadline_time: null })}
                         style={{ marginRight: '10px', width: '18px', height: '18px', cursor: 'pointer' }}
                       />
                       <span style={{ fontWeight: '500' }}>No Deadline Date</span>
@@ -874,8 +1469,13 @@ export default function EditQuiz() {
                     <input
                       type="date"
                       value={formData.deadline_date}
-                      onChange={(e) => setFormData({ ...formData, deadline_date: e.target.value })}
-                      min={new Date().toISOString().split('T')[0]}
+                      onChange={(e) =>
+                        setFormData({
+                          ...formData,
+                          deadline_date: e.target.value,
+                          deadline_time: e.target.value ? formData.deadline_time : null,
+                        })
+                      }
                       style={{
                         width: '100%',
                         padding: '12px 16px',
@@ -902,6 +1502,13 @@ export default function EditQuiz() {
                       <div style={{ color: '#dc3545', fontSize: '0.875rem', marginTop: '4px' }}>
                         {errors.deadline_date}
                       </div>
+                    )}
+                    {formData.deadline_date && (
+                      <DeadlineTimeRow
+                        value={formData.deadline_time}
+                        onChange={(t) => setFormData((prev) => ({ ...prev, deadline_time: t }))}
+                        error={errors.deadline_time}
+                      />
                     )}
                   </div>
                 )}
@@ -1030,7 +1637,7 @@ export default function EditQuiz() {
 
                 {/* Questions */}
                 {formData.questions && Array.isArray(formData.questions) && formData.questions.map((question, qIdx) => (
-              <div key={qIdx} className="question-section" style={{ marginBottom: '32px', padding: '20px', border: '2px solid #e9ecef', borderRadius: '12px' }}>
+              <div key={question._clientKey || qIdx} className="question-section" style={{ marginBottom: '32px', padding: '20px', border: '2px solid #e9ecef', borderRadius: '12px' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
                   <label style={{ fontWeight: '600', fontSize: '1.1rem', textAlign: 'left' }}>
                     Question {qIdx + 1}
@@ -1038,7 +1645,13 @@ export default function EditQuiz() {
                   {formData.questions.length > 1 && (
                     <button
                       type="button"
-                      onClick={() => removeQuestion(qIdx)}
+                      data-q-index={qIdx}
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        const raw = e.currentTarget.getAttribute('data-q-index');
+                        removeQuestion(raw != null && raw !== '' ? Number(raw) : qIdx);
+                      }}
                       style={{
                         padding: '6px 12px',
                         backgroundColor: '#dc3545',
@@ -1059,212 +1672,55 @@ export default function EditQuiz() {
                   )}
                 </div>
 
-                {/* Question Image Upload (first) */}
+                <QuestionTypeTabs
+                  value={getQuestionType(question)}
+                  onChange={(type) => setQuestionType(qIdx, type)}
+                />
+
+                {/* Question Image Uploads */}
                 <div style={{ marginBottom: '16px' }}>
-                  <label style={{ display: 'block', marginBottom: '8px', fontWeight: '600', textAlign: 'left' }}>
-                    Question Image
-                  </label>
                   <div style={{ fontSize: '0.875rem', color: '#6c757d', marginBottom: '8px' }}>
                     Max size: 10 MB
                   </div>
-                  {question.question_picture || imagePreviews[qIdx] ? (
-                    <div
-                      className="question-image-container"
-                      style={{
-                        position: 'relative',
-                        width: '100%',
-                        transition: 'all 0.3s ease'
-                      }}
-                    >
-                      {loadingImages[qIdx] ? (
-                        <div style={{
-                          width: '100%',
-                          padding: '40px',
-                          textAlign: 'center',
-                          color: '#6c757d'
-                        }}>
-                          Loading image...
+                  {(() => {
+                    const questionPictures = getQuestionPictures(question);
+                    return questionPictures.map((questionImage, imageIdx) => {
+                    const isLastImageSlot = imageIdx === questionPictures.length - 1;
+                    const imageKey = `${qIdx}_${imageIdx}`;
+                    const hasImage = !!questionImage || !!imagePreviews[imageKey] || !!imageUrls[imageKey];
+                    return (
+                      <div key={imageKey} style={{ marginBottom: '16px' }}>
+                        <label style={{ display: 'block', marginBottom: '8px', fontWeight: '600', textAlign: 'left' }}>
+                          {imageIdx === 0 ? 'Question Image' : `Question Image ${imageIdx + 1}`}
+                        </label>
+                        {hasImage ? (
+                          <div className="question-image-container" style={{ position: 'relative', width: '100%', transition: 'all 0.3s ease' }}>
+                            {loadingImages[imageKey] ? <div style={{ width: '100%', padding: '40px', textAlign: 'center', color: '#6c757d' }}>Loading image...</div> : <ZoomableImage src={imagePreviews[imageKey] || imageUrls[imageKey] || ''} alt="Question" />}
+                            <div className="question-image-trash" onClick={(e) => { e.stopPropagation(); handleRemoveImage(qIdx, imageIdx); }} style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', width: 72, height: 72, borderRadius: '50%', background: '#dc3545', display: 'flex', alignItems: 'center', justifyContent: 'center', opacity: 0, transition: 'opacity 0.3s ease', zIndex: 100, cursor: 'pointer', pointerEvents: 'none' }}>
+                              <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path><line x1="10" y1="11" x2="10" y2="17"></line><line x1="14" y1="11" x2="14" y2="17"></line></svg>
+                            </div>
+                            {uploadingImages[imageKey] && <div style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', width: 64, height: 64, borderRadius: '50%', background: 'rgba(0, 0, 0, 0.7)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 20 }}><div style={{ width: '40px', height: '40px', border: '4px solid rgba(255, 255, 255, 0.3)', borderTop: '4px solid white', borderRadius: '50%', animation: 'spin 1s linear infinite' }} /></div>}
+                          </div>
+                        ) : (
+                          <div onDragOver={(e) => handleDragOver(e, qIdx, imageIdx)} onDragLeave={handleDragLeave} onDrop={(e) => handleDrop(e, qIdx, imageIdx)} style={{ border: `2px dashed ${dragOverIndex === imageKey ? '#1FA8DC' : '#e9ecef'}`, borderRadius: '12px', padding: '40px 20px', textAlign: 'center', backgroundColor: dragOverIndex === imageKey ? '#f0f8ff' : 'white', transition: 'all 0.3s ease', cursor: uploadingImages[imageKey] ? 'not-allowed' : 'pointer' }}>
+                            <div style={{ marginBottom: '16px' }}><svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#1FA8DC" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ margin: '0 auto', display: 'block' }}><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg></div>
+                            <p style={{ margin: '0 0 12px 0', fontSize: '1rem', fontWeight: '500', color: '#333' }}>Drag your file here</p>
+                            <p style={{ margin: '0 0 16px 0', fontSize: '0.875rem', color: '#6c757d' }}>or</p>
+                            <input type="file" accept="image/*" onChange={(e) => { const file = e.target.files?.[0]; if (file) handleImageUpload(qIdx, imageIdx, file); }} style={{ display: 'none' }} id={`question-image-${qIdx}-${imageIdx}`} disabled={uploadingImages[imageKey]} />
+                            <label htmlFor={`question-image-${qIdx}-${imageIdx}`} style={{ display: 'inline-block', padding: '12px 24px', backgroundColor: uploadingImages[imageKey] ? '#6c757d' : '#1FA8DC', color: 'white', borderRadius: '8px', cursor: uploadingImages[imageKey] ? 'not-allowed' : 'pointer', fontSize: '0.9rem', fontWeight: '600', opacity: uploadingImages[imageKey] ? 0.7 : 1, transition: 'all 0.2s ease' }}>
+                              {uploadingImages[imageKey] ? 'Uploading...' : 'Browse'}
+                            </label>
+                          </div>
+                        )}
+                        <div className="image-buttons-container" style={{ display: 'flex', gap: '8px', alignItems: 'center', justifyContent: 'flex-end', flexWrap: 'wrap', width: '100%', marginTop: '8px' }}>
+                          {imageIdx > 0 && <button type="button" onClick={() => removeImageContainer(qIdx, imageIdx)} style={{ padding: '8px 16px', backgroundColor: '#dc3545', color: 'white', border: 'none', borderRadius: '8px', cursor: 'pointer', fontSize: '0.9rem', fontWeight: '600', display: 'flex', alignItems: 'center', gap: '6px' }}><Image src="/trash2.svg" alt="Remove" width={18} height={18} style={{ display: 'inline-block' }} />Remove</button>}
+                          {isLastImageSlot && <button type="button" onClick={() => addImageContainer(qIdx)} style={{ padding: '8px 16px', backgroundColor: '#28a745', color: 'white', border: 'none', borderRadius: '8px', cursor: 'pointer', fontSize: '0.9rem', fontWeight: '600', display: 'flex', alignItems: 'center', gap: '6px' }}><Image src="/plus.svg" alt="Add" width={18} height={18} style={{ display: 'inline-block' }} />Add</button>}
                         </div>
-                      ) : (
-                        <ZoomableImage
-                          src={imagePreviews[qIdx] || imageUrls[qIdx] || ''}
-                          alt="Question"
-                        />
-                      )}
-                      {/* Trash icon overlay - shown on hover */}
-                      <div
-                        className="question-image-trash"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleRemoveImage(qIdx);
-                        }}
-                        style={{
-                          position: 'absolute',
-                          top: '50%',
-                          left: '50%',
-                          transform: 'translate(-50%, -50%)',
-                          width: 72,
-                          height: 72,
-                          borderRadius: '50%',
-                          background: '#dc3545',
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                          opacity: 0,
-                          transition: 'opacity 0.3s ease',
-                          zIndex: 100,
-                          cursor: 'pointer',
-                          pointerEvents: 'none'
-                        }}
-                        onMouseEnter={(e) => {
-                          e.currentTarget.style.opacity = '1';
-                          e.currentTarget.style.pointerEvents = 'auto';
-                        }}
-                        onMouseLeave={(e) => {
-                          e.currentTarget.style.opacity = '0';
-                          e.currentTarget.style.pointerEvents = 'none';
-                        }}
-                        title="Click to remove image"
-                      >
-                        <svg
-                          width="32"
-                          height="32"
-                          viewBox="0 0 24 24"
-                          fill="none"
-                          stroke="white"
-                          strokeWidth="2"
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                        >
-                          <polyline points="3 6 5 6 21 6"></polyline>
-                          <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
-                          <line x1="10" y1="11" x2="10" y2="17"></line>
-                          <line x1="14" y1="11" x2="14" y2="17"></line>
-                        </svg>
+                        {errors[`question_${qIdx}_image_${imageIdx}`] && <div style={{ color: '#dc3545', fontSize: '0.875rem', marginTop: '4px' }}>{errors[`question_${qIdx}_image_${imageIdx}`]}</div>}
                       </div>
-                      {/* Uploading spinner overlay */}
-                      {uploadingImages[qIdx] && (
-                        <div
-                          style={{
-                            position: 'absolute',
-                            top: '50%',
-                            left: '50%',
-                            transform: 'translate(-50%, -50%)',
-                            width: 64,
-                            height: 64,
-                            borderRadius: '50%',
-                            background: 'rgba(0, 0, 0, 0.7)',
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                            zIndex: 20
-                          }}
-                        >
-                          <div
-                            style={{
-                              width: '40px',
-                              height: '40px',
-                              border: '4px solid rgba(255, 255, 255, 0.3)',
-                              borderTop: '4px solid white',
-                              borderRadius: '50%',
-                              animation: 'spin 1s linear infinite'
-                            }}
-                          />
-                        </div>
-                      )}
-                    </div>
-                  ) : (
-                    <div
-                      onDragOver={(e) => handleDragOver(e, qIdx)}
-                      onDragLeave={handleDragLeave}
-                      onDrop={(e) => handleDrop(e, qIdx)}
-                      style={{
-                        border: `2px dashed ${dragOverIndex === qIdx ? '#1FA8DC' : '#e9ecef'}`,
-                        borderRadius: '12px',
-                        padding: '40px 20px',
-                        textAlign: 'center',
-                        backgroundColor: dragOverIndex === qIdx ? '#f0f8ff' : 'white',
-                        transition: 'all 0.3s ease',
-                        cursor: uploadingImages[qIdx] ? 'not-allowed' : 'pointer'
-                      }}
-                    >
-                      <div style={{ marginBottom: '16px' }}>
-                        <svg
-                          width="48"
-                          height="48"
-                          viewBox="0 0 24 24"
-                          fill="none"
-                          stroke="#1FA8DC"
-                          strokeWidth="2"
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                          style={{ margin: '0 auto', display: 'block' }}
-                        >
-                          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-                          <polyline points="17 8 12 3 7 8"></polyline>
-                          <line x1="12" y1="3" x2="12" y2="15"></line>
-                        </svg>
-                      </div>
-                      <p style={{ 
-                        margin: '0 0 12px 0', 
-                        fontSize: '1rem', 
-                        fontWeight: '500',
-                        color: '#333'
-                      }}>
-                        Drag your file here
-                      </p>
-                      <p style={{ 
-                        margin: '0 0 16px 0', 
-                        fontSize: '0.875rem', 
-                        color: '#6c757d'
-                      }}>
-                        or
-                      </p>
-                      <input
-                        type="file"
-                        accept="image/*"
-                        onChange={(e) => {
-                          const file = e.target.files?.[0];
-                          if (file) handleImageUpload(qIdx, file);
-                        }}
-                        style={{ display: 'none' }}
-                        id={`question-image-${qIdx}`}
-                        disabled={uploadingImages[qIdx]}
-                      />
-                      <label
-                        htmlFor={`question-image-${qIdx}`}
-                        style={{
-                          display: 'inline-block',
-                          padding: '12px 24px',
-                          backgroundColor: uploadingImages[qIdx] ? '#6c757d' : '#1FA8DC',
-                          color: 'white',
-                          borderRadius: '8px',
-                          cursor: uploadingImages[qIdx] ? 'not-allowed' : 'pointer',
-                          fontSize: '0.9rem',
-                          fontWeight: '600',
-                          opacity: uploadingImages[qIdx] ? 0.7 : 1,
-                          transition: 'all 0.2s ease'
-                        }}
-                        onMouseEnter={(e) => {
-                          if (!uploadingImages[qIdx]) {
-                            e.target.style.backgroundColor = '#0d5a7a';
-                          }
-                        }}
-                        onMouseLeave={(e) => {
-                          if (!uploadingImages[qIdx]) {
-                            e.target.style.backgroundColor = '#1FA8DC';
-                          }
-                        }}
-                      >
-                        {uploadingImages[qIdx] ? 'Uploading...' : 'Browse'}
-                      </label>
-                    </div>
-                  )}
-                  {errors[`question_${qIdx}_text_or_image`] && (
-                    <div style={{ color: '#dc3545', fontSize: '0.875rem', marginTop: '4px' }}>
-                      {errors[`question_${qIdx}_text_or_image`]}
-                    </div>
-                  )}
+                    );
+                  });
+                  })()}
                 </div>
 
                 {/* Question Text */}
@@ -1289,13 +1745,22 @@ export default function EditQuiz() {
                   />
                 </div>
 
-                {/* Answers */}
+                {/* Answers (MCQ) / Valid Correct Answers (Essay) */}
+                {isEssayQuestion(question) ? (
+                  <EssayValidAnswersEditor
+                    questionIndex={qIdx}
+                    values={question.valid_correct_answers || []}
+                    error={errors[`question_${qIdx}_valid`]}
+                    onChange={(next) => handleQuestionChange(qIdx, 'valid_correct_answers', next)}
+                  />
+                ) : (
+                <>
                 <div style={{ marginBottom: '16px' }}>
                   <label style={{ display: 'block', marginBottom: '12px', fontWeight: '600', textAlign: 'left' }}>
                     Answers
                   </label>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                    {question.answers.map((answerLetter, aIdx) => {
+                    {(question.answers || []).map((answerLetter, aIdx) => {
                       const isLastAnswer = aIdx === question.answers.length - 1;
                       const hasTrashButton = aIdx >= 2;
                       const showAddButton = isLastAnswer && (aIdx === 1 || hasTrashButton);
@@ -1355,7 +1820,7 @@ export default function EditQuiz() {
                             />
                           </div>
                           
-                          <div className="answer-buttons-container" style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap', width: '100%', marginTop: '8px' }}>
+                          <div className="answer-buttons-container" style={{ display: 'flex', gap: '8px', alignItems: 'center', justifyContent: 'flex-end', flexWrap: 'wrap', width: '100%', marginTop: '8px' }}>
                             {hasTrashButton && (
                               <button
                                 type="button"
@@ -1413,20 +1878,28 @@ export default function EditQuiz() {
                     Correct Answer <span style={{ color: 'red' }}>*</span>
                   </label>
                   <div className="correct-answer-radio" style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                    {question.answers.map((answerLetter, aIdx) => {
-                      const answerText = question.answer_texts && question.answer_texts[aIdx] ? question.answer_texts[aIdx] : '';
-                      // Check if this answer is selected - handle both string and array formats
-                      const isCorrect = Array.isArray(question.correct_answer) 
-                        ? question.correct_answer[0] === answerLetter.toLowerCase()
-                        : question.correct_answer === answerLetter.toLowerCase();
-                      
+                    {(question.answers || []).map((answerLetter, aIdx) => {
                       return (
-                        <label key={aIdx} style={{ display: 'flex', alignItems: 'center', cursor: 'pointer', padding: '12px', borderRadius: '8px', border: isCorrect ? '2px solid #28a745' : '2px solid #e9ecef', backgroundColor: isCorrect ? '#f0fff4' : 'white' }}>
+                        <label key={aIdx} style={{ display: 'flex', alignItems: 'center', cursor: 'pointer', padding: '12px', borderRadius: '8px', border: (() => {
+                              const isCorrect = Array.isArray(question.correct_answer) 
+                                ? question.correct_answer[0] === answerLetter.toLowerCase()
+                                : question.correct_answer === answerLetter.toLowerCase();
+                              return isCorrect ? '2px solid #28a745' : '2px solid #e9ecef';
+                            })(), backgroundColor: (() => {
+                              const isCorrect = Array.isArray(question.correct_answer) 
+                                ? question.correct_answer[0] === answerLetter.toLowerCase()
+                                : question.correct_answer === answerLetter.toLowerCase();
+                              return isCorrect ? '#f0fff4' : 'white';
+                            })() }}>
                           <input
                             type="radio"
                             name={`correct_answer_${qIdx}`}
                             value={answerLetter.toLowerCase()}
-                            checked={isCorrect}
+                            checked={(() => {
+                              return Array.isArray(question.correct_answer) 
+                                ? question.correct_answer[0] === answerLetter.toLowerCase()
+                                : question.correct_answer === answerLetter.toLowerCase();
+                            })()}
                             onChange={(e) => handleQuestionChange(qIdx, 'correct_answer', e.target.value)}
                             style={{ marginRight: '12px', width: '20px', height: '20px', cursor: 'pointer' }}
                           />
@@ -1455,6 +1928,14 @@ export default function EditQuiz() {
                     </div>
                   )}
                 </div>
+                </>
+                )}
+
+                <UseDesmosInQuestionRadio
+                  name={`use_desmos_${qIdx}`}
+                  value={question.use_desmos === true || question.use_desmos === 'true'}
+                  onChange={(next) => handleQuestionChange(qIdx, 'use_desmos', next)}
+                />
 
                 {/* Question Explanation */}
                 <div style={{ marginBottom: '16px' }}>
@@ -1505,7 +1986,7 @@ export default function EditQuiz() {
                     Add Question
                   </button>
                 </div>
-            </>
+            </>}
 
             {/* Error Message */}
             {errors.general && (
@@ -1528,17 +2009,17 @@ export default function EditQuiz() {
             <div className="submit-buttons" style={{ display: 'flex', gap: '12px', justifyContent: 'center' }}>
               <button
                 type="submit"
-                disabled={updateQuizMutation.isPending || Object.values(uploadingImages).some(val => val === true)}
+                disabled={isSaveDisabled}
                 style={{
                   padding: '12px 24px',
                   background: 'linear-gradient(135deg, #28a745 0%, #20c997 100%)',
                   color: 'white',
                   border: 'none',
                   borderRadius: '8px',
-                  cursor: (updateQuizMutation.isPending || Object.values(uploadingImages).some(val => val === true)) ? 'not-allowed' : 'pointer',
+                  cursor: isSaveDisabled ? 'not-allowed' : 'pointer',
                   fontSize: '1rem',
                   fontWeight: '600',
-                  opacity: (updateQuizMutation.isPending || Object.values(uploadingImages).some(val => val === true)) ? 0.7 : 1
+                  opacity: isSaveDisabled ? 0.7 : 1
                 }}
               >
                 {updateQuizMutation.isPending ? 'Saving...' : 'Save'}
@@ -1565,6 +2046,22 @@ export default function EditQuiz() {
           </form>
         </div>
       </div>
+
+      <ImportExistingOnlineItemModal
+        open={importModalOpen}
+        onClose={() => {
+          if (!importApplyLoading) setImportModalOpen(false);
+        }}
+        title="Import quiz"
+        description="Pick another quiz to copy into this editor."
+        options={importQuizOptions}
+        selectedValue={importSelectedId}
+        onSelectedValueChange={setImportSelectedId}
+        onApply={handleImportApply}
+        applyLabel="Load"
+        emptyMessage="No other quizzes available."
+        applyLoading={importApplyLoading}
+      />
 
       <style jsx>{`
         @keyframes spin {
@@ -1595,6 +2092,10 @@ export default function EditQuiz() {
           }
           .submit-buttons button {
             width: 100%;
+          }
+          .answer-buttons-container button {
+          }
+          .image-buttons-container button {
           }
           .answer-option-row {
             flex-direction: column !important;
@@ -1650,8 +2151,14 @@ export default function EditQuiz() {
           }
           .question-section > div:first-child {
             flex-direction: column !important;
-            align-items: flex-start !important;
+            align-items: stretch !important;
             gap: 12px !important;
+          }
+          .question-section > div:first-child button {
+            align-self: flex-end !important;
+            width: auto !important;
+            max-width: 100% !important;
+            flex: 0 1 auto !important;
           }
         }
         @media (max-width: 480px) {
@@ -1695,6 +2202,10 @@ export default function EditQuiz() {
             padding: 8px 10px !important;
             font-size: 0.8rem !important;
           }
+          .answer-buttons-container button {
+          }
+          .image-buttons-container button {
+          }
           button[onclick*="addQuestion"] {
             padding: 10px 14px !important;
             font-size: 0.9rem !important;
@@ -1714,6 +2225,16 @@ export default function EditQuiz() {
           input[type="text"], textarea, select {
             font-size: 0.85rem !important;
             padding: 8px 10px !important;
+          }
+          .answer-buttons-container button {
+            flex: 1 1 100% !important;
+            width: 100% !important;
+            max-width: 100% !important;
+          }
+          .image-buttons-container button {
+            flex: 1 1 100% !important;
+            width: 100% !important;
+            max-width: 100% !important;
           }
         }
       `}</style>

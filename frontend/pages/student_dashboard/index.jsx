@@ -4,13 +4,115 @@ import Image from 'next/image';
 import { useQuery } from '@tanstack/react-query';
 import { useProfile } from '../../lib/api/auth';
 import { useStudent } from '../../lib/api/students';
-import { useSystemConfig } from '../../lib/api/system';
+import { useSystemConfig, isFeatureEnabled, useNationalSystem } from '../../lib/api/system';
+import { useDesmosConfig } from '../../lib/api/desmosConfig';
+import { isDesmosVisibleForStudent, resolveStudentCourse } from '../../lib/desmosConfigUtils';
 import apiClient from '../../lib/axios';
+import DashboardButtonsSkeleton from '../../components/DashboardButtonsSkeleton';
+import DesmosQuestionAssist from '../../components/student/DesmosQuestionAssist';
 
 // Join WhatsApp Group Popup Component (separate from button)
 function JoinWhatsAppGroupPopups({ showPopup, setShowPopup, showMessagePopup, setShowMessagePopup, messagePopupContent, groups, handleJoinGroup }) {
   return (
     <>
+      <style jsx global>{`
+        .whatsapp-groups-popup {
+          box-sizing: border-box;
+        }
+        .whatsapp-groups-popup *,
+        .whatsapp-groups-popup *::before,
+        .whatsapp-groups-popup *::after {
+          box-sizing: border-box;
+        }
+        .whatsapp-groups-popup-content {
+          min-width: 0;
+          overflow-x: hidden;
+        }
+        .whatsapp-groups-popup-header {
+          gap: 12px;
+          min-width: 0;
+        }
+        .whatsapp-groups-popup-title {
+          flex: 1;
+          min-width: 0;
+          font-size: clamp(1.05rem, 4.2vw, 1.5rem) !important;
+          line-height: 1.3;
+          word-break: break-word;
+        }
+        .whatsapp-groups-popup-title img {
+          flex-shrink: 0;
+        }
+        .whatsapp-group-row {
+          display: grid;
+          grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+          align-items: center;
+          column-gap: 12px;
+          min-width: 0;
+          width: 100%;
+          overflow: hidden;
+        }
+        .whatsapp-group-row-title {
+          min-width: 0;
+          justify-self: start;
+          text-align: left;
+          overflow-wrap: anywhere;
+          word-break: break-word;
+        }
+        .whatsapp-group-row-arrow {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          justify-self: center;
+          flex-shrink: 0;
+        }
+        .whatsapp-group-row-actions {
+          display: flex;
+          align-items: center;
+          justify-content: flex-end;
+          justify-self: end;
+          min-width: 0;
+        }
+        .whatsapp-group-join-btn {
+          white-space: nowrap;
+          flex-shrink: 0;
+        }
+        @media (max-width: 480px) {
+          .whatsapp-groups-popup {
+            padding: 12px !important;
+            align-items: center !important;
+          }
+          .whatsapp-groups-popup-content {
+            max-width: 100% !important;
+            width: 100% !important;
+            max-height: 85vh !important;
+            padding: 16px 14px !important;
+            border-radius: 16px !important;
+          }
+          .whatsapp-group-row {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: stretch;
+            gap: 10px;
+          }
+          .whatsapp-group-row-title {
+            flex: 1 1 100%;
+            justify-self: stretch;
+            text-align: center;
+          }
+          .whatsapp-group-row-actions {
+            width: 100%;
+            justify-content: flex-end;
+            justify-self: stretch;
+          }
+          .whatsapp-group-row-arrow {
+            display: none !important;
+          }
+          .whatsapp-group-join-btn {
+            width: 100%;
+            text-align: center;
+          }
+        }
+      `}</style>
 
       {/* Multiple Groups Popup */}
       {showPopup && groups && groups.length > 1 && (
@@ -34,7 +136,7 @@ function JoinWhatsAppGroupPopups({ showPopup, setShowPopup, showMessagePopup, se
             alignItems: 'center',
             justifyContent: 'center',
             zIndex: 1000,
-            padding: '20px'
+            padding: '16px'
           }}
         >
           <div 
@@ -43,37 +145,44 @@ function JoinWhatsAppGroupPopups({ showPopup, setShowPopup, showMessagePopup, se
             style={{
               background: '#fff',
               borderRadius: '16px',
-              padding: '32px 24px',
+              padding: '24px 18px',
               boxShadow: '0 8px 32px rgba(0,0,0,0.15)',
               maxWidth: '500px',
               width: '100%',
               maxHeight: '90vh',
-              overflowY: 'auto'
+              overflowY: 'auto',
+              overflowX: 'hidden'
             }}
           >
-            <div style={{
+            <div
+              className="whatsapp-groups-popup-header"
+              style={{
               display: 'flex',
               justifyContent: 'space-between',
               alignItems: 'center',
-              marginBottom: '24px',
-              paddingBottom: '16px',
+              marginBottom: '20px',
+              paddingBottom: '14px',
               borderBottom: '2px solid #e9ecef'
-            }}>
-              <h3 style={{
+            }}
+            >
+              <h3
+                className="whatsapp-groups-popup-title"
+                style={{
                 margin: 0,
                 color: '#333',
-                fontSize: '1.5rem',
                 fontWeight: '600',
                 display: 'flex',
                 alignItems: 'center',
                 gap: '8px'
-              }}>
-                <Image src="/whatsapp2.svg" alt="WhatsApp" width={30} height={30} />
-                Join WhatsApp Group
+              }}
+              >
+                <Image src="/whatsapp2.svg" alt="WhatsApp" width={28} height={28} />
+                Join WhatsApp Groups
               </h3>
               <button
                 type="button"
                 onClick={() => setShowPopup(false)}
+                aria-label="Close"
                 style={{
                   background: 'linear-gradient(135deg, #dc3545 0%, #e74c3c 100%)',
                   color: 'white',
@@ -111,20 +220,19 @@ function JoinWhatsAppGroupPopups({ showPopup, setShowPopup, showMessagePopup, se
             <div style={{
               display: 'flex',
               flexDirection: 'column',
-              gap: '12px'
+              gap: '12px',
+              minWidth: 0,
+              width: '100%'
             }}>
               {groups.map((group) => (
                 <div
                   key={group._id}
+                  className="whatsapp-group-row"
                   style={{
                     background: 'linear-gradient(135deg, rgba(255, 255, 255, 0.95) 0%, rgba(248, 249, 250, 0.95) 100%)',
                     border: '2px solid rgba(37, 211, 102, 0.2)',
                     borderRadius: '12px',
-                    padding: '16px 20px',
-                    display: 'flex',
-                    justifyContent: 'center',
-                    alignItems: 'center',
-                    gap: '100px',
+                    padding: '14px 16px',
                     transition: 'all 0.3s ease',
                     boxShadow: '0 2px 8px rgba(0,0,0,0.1)'
                   }}
@@ -139,24 +247,23 @@ function JoinWhatsAppGroupPopups({ showPopup, setShowPopup, showMessagePopup, se
                     e.currentTarget.style.borderColor = 'rgba(37, 211, 102, 0.2)';
                   }}
                 >
-                  <h4 style={{
+                  <h4
+                    className="whatsapp-group-row-title"
+                    style={{
                     margin: 0,
                     color: '#333',
                     fontSize: '1rem',
-                    fontWeight: '600',
-                    flex: 1
-                  }}>
+                    fontWeight: '600'
+                  }}
+                  >
                     {group.title}
                   </h4>
-                  <div style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    gap: '130px',
-                    flex: '0 0 auto'
-                  }}>
-                    <Image src="/arrow-right.svg" alt="Arrow" width={20} height={20} style={{ flexShrink: 0 }} />
+                  <span className="whatsapp-group-row-arrow">
+                    <Image src="/arrow-right.svg" alt="" width={18} height={18} />
+                  </span>
+                  <div className="whatsapp-group-row-actions">
                     <button
+                      className="whatsapp-group-join-btn"
                       onClick={(e) => {
                         e.stopPropagation();
                         handleJoinGroup(group.link);
@@ -166,7 +273,7 @@ function JoinWhatsAppGroupPopups({ showPopup, setShowPopup, showMessagePopup, se
                         color: 'white',
                         border: 'none',
                         borderRadius: '8px',
-                        padding: '10px 20px',
+                        padding: '10px 18px',
                         fontWeight: '600',
                         fontSize: '0.9rem',
                         cursor: 'pointer',
@@ -325,21 +432,47 @@ function JoinWhatsAppGroupPopups({ showPopup, setShowPopup, showMessagePopup, se
 export default function StudentDashboard() {
   const router = useRouter();
   const { data: profile, isLoading: profileLoading } = useProfile();
-  const { data: systemConfig } = useSystemConfig();
-  const isScoringEnabled = systemConfig?.scoring_system === true || systemConfig?.scoring_system === 'true';
-  const isWhatsAppJoinGroupEnabled = systemConfig?.whatsapp_join_group_btn === true || systemConfig?.whatsapp_join_group_btn === 'true';
-  const isOnlineVideosEnabled = systemConfig?.online_videos === true || systemConfig?.online_videos === 'true';
-  const isHomeworksVideosEnabled = systemConfig?.homeworks_videos === true || systemConfig?.homeworks_videos === 'true';
-  const isHomeworksEnabled = systemConfig?.homeworks === true || systemConfig?.homeworks === 'true';
-  const isQuizzesEnabled = systemConfig?.quizzes === true || systemConfig?.quizzes === 'true';
-  
+  const {
+    data: systemConfig,
+    isError: systemConfigError,
+    refetch: refetchSystemConfig,
+  } = useSystemConfig();
+  const isNational = useNationalSystem();
+  const isScoringEnabled = isFeatureEnabled(systemConfig, 'scoring_system');
+  const isWhatsAppJoinGroupEnabled = isFeatureEnabled(systemConfig, 'whatsapp_join_group_btn');
+  const isOnlineVideosEnabled = isFeatureEnabled(systemConfig, 'online_videos');
+  const isHomeworksVideosEnabled = isFeatureEnabled(systemConfig, 'homeworks_videos');
+  const isHomeworksEnabled = isFeatureEnabled(systemConfig, 'homeworks');
+  const isMaterialEnabled = isFeatureEnabled(systemConfig, 'material');
+  const isCertificatesEnabled = isFeatureEnabled(systemConfig, 'certificates');
+  const isQuizzesEnabled = isFeatureEnabled(systemConfig, 'quizzes');
+  const isMockExamsEnabled = isFeatureEnabled(systemConfig, 'mock_exams');
+  const isZoomJoinMeetingEnabled = isFeatureEnabled(systemConfig, 'zoom_join_meeting');
+  const isGoogleJoinMeetingEnabled = isFeatureEnabled(systemConfig, 'google_join_meeting');
+  const isPaymentSystemEnabled = isFeatureEnabled(systemConfig, 'payment_system');
+  const isDesmosEnabled = isFeatureEnabled(systemConfig, 'desmos_integrations');
+  const { data: desmosConfigData } = useDesmosConfig({ enabled: isDesmosEnabled });
+
   // Get student ID from profile and fetch student data
   const studentId = profile?.id ? profile.id.toString() : null;
-  const { data: studentData, isLoading: studentLoading } = useStudent(studentId, { 
+  const { data: studentData, isLoading: studentLoading, refetch: refetchStudent } = useStudent(studentId, { 
     enabled: !!studentId,
-    refetchInterval: 60000, // Auto-refetch every 1 minute (60,000 ms)
-    refetchIntervalInBackground: true, // Continue refetching even when tab is in background
+    staleTime: 0,
+    refetchOnMount: 'always',
+    refetchOnReconnect: true,
+    refetchOnWindowFocus: true,
+    refetchInterval: 8000,
+    refetchIntervalInBackground: false,
   });
+
+  const showDesmosCalculator =
+    isDesmosEnabled &&
+    isDesmosVisibleForStudent(
+      desmosConfigData?.items,
+      resolveStudentCourse(studentData),
+      studentData?.courseType,
+      isNational
+    );
   
   // Fetch centers data
   const { data: centers = [], isLoading: centersLoading } = useQuery({
@@ -361,7 +494,31 @@ export default function StudentDashboard() {
   };
   
   const firstName = studentData?.name ? getFirstName(studentData.name) : (profile?.name ? getFirstName(profile.name) : 'Student');
+  const remainingSessions = studentData?.payment?.numberOfSessions || 0;
   const isLoading = profileLoading || studentLoading;
+
+  useEffect(() => {
+    if (!studentId) return undefined;
+    refetchStudent();
+
+    const refreshScore = () => {
+      if (document.visibilityState === 'visible') refetchStudent();
+    };
+    const handleRoute = (url) => {
+      if (url === '/student_dashboard' || url.startsWith('/student_dashboard?')) {
+        refetchStudent();
+      }
+    };
+
+    window.addEventListener('focus', refreshScore);
+    document.addEventListener('visibilitychange', refreshScore);
+    router.events.on('routeChangeComplete', handleRoute);
+    return () => {
+      window.removeEventListener('focus', refreshScore);
+      document.removeEventListener('visibilitychange', refreshScore);
+      router.events.off('routeChangeComplete', handleRoute);
+    };
+  }, [studentId, refetchStudent, router.events]);
 
   // WhatsApp Groups state
   const [showWhatsAppPopup, setShowWhatsAppPopup] = useState(false);
@@ -371,13 +528,20 @@ export default function StudentDashboard() {
   const [whatsappGroupsLoading, setWhatsappGroupsLoading] = useState(false);
   const [hasAvailableGroups, setHasAvailableGroups] = useState(false);
 
+  // Zoom Meeting state
+  const [zoomMeeting, setZoomMeeting] = useState(null);
+  const [zoomMeetingLoading, setZoomMeetingLoading] = useState(false);
+
+  // Google Meet Meeting state
+  const [googleMeeting, setGoogleMeeting] = useState(null);
+  const [googleMeetingLoading, setGoogleMeetingLoading] = useState(false);
+
   // Check for available groups on mount and when student data changes
   // This is NOT related to SYSTEM_WHATSAPP_JOIN_GROUP - check regardless of that setting
   useEffect(() => {
     const checkAvailableGroups = async () => {
       if (!studentId) {
         setHasAvailableGroups(false);
-        setWhatsAppGroups([]);
         return;
       }
       
@@ -385,42 +549,133 @@ export default function StudentDashboard() {
         const response = await apiClient.get('/api/join-whatsapp-group/student');
         const matchingGroups = response.data.groups || [];
         setHasAvailableGroups(matchingGroups.length > 0);
-        setWhatsAppGroups(matchingGroups); // Pre-cache groups for instant navigation
       } catch (error) {
         console.error('Error checking available groups:', error);
         setHasAvailableGroups(false);
-        setWhatsAppGroups([]);
       }
     };
     
     checkAvailableGroups();
   }, [studentId]);
 
+  // Check for available zoom meeting on mount and when student data changes
+  useEffect(() => {
+    const checkZoomMeeting = async () => {
+      if (!studentId) {
+        setZoomMeeting(null);
+        return;
+      }
+      
+      try {
+        const response = await apiClient.get('/api/join-zoom-meeting/student');
+        setZoomMeeting(response.data.meeting || null);
+      } catch (error) {
+        // Expired/missing token is handled by axios interceptor (redirect to login)
+        if (error?.response?.status === 401) {
+          setZoomMeeting(null);
+          return;
+        }
+        console.warn('Error checking zoom meeting:', error?.message || 'unknown');
+        setZoomMeeting(null);
+      }
+    };
+    
+    checkZoomMeeting();
+    
+    // Re-check every 30 seconds to handle time-based visibility
+    const interval = setInterval(checkZoomMeeting, 30000);
+    return () => clearInterval(interval);
+  }, [studentId]);
+
+  // Check for available Google Meet meeting on mount and when student data changes
+  useEffect(() => {
+    const checkGoogleMeeting = async () => {
+      if (!studentId) {
+        setGoogleMeeting(null);
+        return;
+      }
+
+      try {
+        const response = await apiClient.get('/api/join-google-meeting/student');
+        setGoogleMeeting(response.data.meeting || null);
+      } catch (error) {
+        if (error?.response?.status === 401) {
+          setGoogleMeeting(null);
+          return;
+        }
+        console.warn('Error checking Google Meet meeting:', error?.message || 'unknown');
+        setGoogleMeeting(null);
+      }
+    };
+
+    checkGoogleMeeting();
+    const interval = setInterval(checkGoogleMeeting, 30000);
+    return () => clearInterval(interval);
+  }, [studentId]);
+
+  const handleJoinZoomMeeting = async () => {
+    if (!zoomMeeting || !zoomMeeting.link) return;
+
+    // Open the link immediately in the synchronous click context
+    // so the browser doesn't block the popup
+    window.open(zoomMeeting.link, '_blank', 'noopener,noreferrer');
+
+    // Record attendance (deducts 1 session when payment system is enabled)
+    if (zoomMeeting.lesson && studentId) {
+      try {
+        await apiClient.post('/api/join-zoom-meeting/attend', {
+          lesson: zoomMeeting.lesson
+        });
+        if (refetchStudent) {
+          await refetchStudent();
+        }
+      } catch (err) {
+        console.error('Failed to record zoom attendance:', err);
+        const msg =
+          err?.response?.data?.message ||
+          err?.response?.data?.error ||
+          'Failed to record attendance';
+        // Still opened Zoom; surface payment/session errors if any
+        if (err?.response?.status === 400) {
+          alert(msg);
+        }
+      }
+    }
+  };
+
+  const handleJoinGoogleMeeting = async () => {
+    if (!googleMeeting || !googleMeeting.link) return;
+
+    window.open(googleMeeting.link, '_blank', 'noopener,noreferrer');
+
+    if (googleMeeting.lesson && studentId) {
+      try {
+        await apiClient.post('/api/join-google-meeting/attend', {
+          lesson: googleMeeting.lesson,
+        });
+        if (refetchStudent) {
+          await refetchStudent();
+        }
+      } catch (err) {
+        console.error('Failed to record Google Meet attendance:', err);
+        const msg =
+          err?.response?.data?.message ||
+          err?.response?.data?.error ||
+          'Failed to record attendance';
+        if (err?.response?.status === 400) {
+          alert(msg);
+        }
+      }
+    }
+  };
+
   const handleJoinWhatsAppGroup = async () => {
     if (!studentId) return;
     
-    // Use pre-cached groups for instant navigation (avoids popup blocker)
-    if (whatsAppGroups && whatsAppGroups.length > 0) {
-      if (whatsAppGroups.length === 1) {
-        // For single group, use direct navigation to avoid popup blocker
-        const link = whatsAppGroups[0].link;
-        try {
-          const newWindow = window.open(link, '_blank', 'noopener,noreferrer');
-          if (!newWindow || newWindow.closed || typeof newWindow.closed === 'undefined') {
-            // Fallback: use location.href if popup was blocked
-            window.location.href = link;
-          }
-        } catch (e) {
-          window.location.href = link;
-        }
-        return;
-      } else {
-        setShowWhatsAppPopup(true);
-        return;
-      }
-    }
-    
-    // Fallback: fetch groups if not pre-cached
+    // Open a blank window immediately in the synchronous click context
+    // so the browser doesn't block the popup
+    const newWindow = window.open('about:blank', '_blank');
+
     setWhatsappGroupsLoading(true);
     try {
       const response = await apiClient.get('/api/join-whatsapp-group/student');
@@ -428,26 +683,30 @@ export default function StudentDashboard() {
       console.log('Matching groups:', matchingGroups);
       setWhatsAppGroups(matchingGroups);
       
+      // If only one group, redirect the already-opened window
       if (matchingGroups.length === 1) {
-        // Use a temporary anchor element to bypass popup blockers for async context
-        const a = document.createElement('a');
-        a.href = matchingGroups[0].link;
-        a.target = '_blank';
-        a.rel = 'noopener noreferrer';
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
+        if (newWindow) {
+          newWindow.location.href = matchingGroups[0].link;
+        } else {
+          window.open(matchingGroups[0].link, '_blank', 'noopener,noreferrer');
+        }
       } else if (matchingGroups.length > 1) {
+        // Multiple groups: close the blank window, show popup for user to choose
+        if (newWindow) newWindow.close();
         console.log('Showing popup for', matchingGroups.length, 'groups');
         setShowWhatsAppPopup(true);
       } else {
+        // No matching groups: close the blank window, show info
+        if (newWindow) newWindow.close();
         setWhatsAppMessageContent({
           type: 'info',
-          message: 'No WhatsApp groups available for your grade' + (studentData?.main_center ? ', center, and gender' : ' and gender') + '.'
+          message: 'No WhatsApp groups available for your course' + (studentData?.main_center ? ', center, and gender' : ' and gender') + '.'
         });
         setShowWhatsAppMessagePopup(true);
       }
     } catch (error) {
+      // Close the blank window on error
+      if (newWindow) newWindow.close();
       console.error('Error fetching WhatsApp groups:', error);
       setWhatsAppMessageContent({
         type: 'error',
@@ -460,19 +719,12 @@ export default function StudentDashboard() {
   };
 
   const handleJoinGroup = (link) => {
-    try {
-      const newWindow = window.open(link, '_blank', 'noopener,noreferrer');
-      if (!newWindow || newWindow.closed || typeof newWindow.closed === 'undefined') {
-        window.location.href = link;
-      }
-    } catch (e) {
-      window.location.href = link;
-    }
+    window.open(link, '_blank', 'noopener,noreferrer');
   };
   
   // Calculate next session
   const nextSession = useMemo(() => {
-    if (!studentData?.main_center || !studentData?.grade || !centers || centers.length === 0) {
+    if (!studentData?.main_center || !studentData?.course || !centers || centers.length === 0) {
       return null;
     }
     
@@ -486,11 +738,28 @@ export default function StudentDashboard() {
       return null;
     }
     
-    // Find the student's grade
-    const studentGrade = (studentData.grade || '').trim();
-    const gradeData = studentCenter.grades.find(g => 
-      (g.grade || '').trim().toLowerCase() === studentGrade.toLowerCase()
-    );
+    // Find matching grade data by course and courseType
+    const studentCourse = (studentData.course || '').trim();
+    const studentCourseType = (studentData.courseType || '').trim();
+    
+    // Find grade data that matches course (or "All") and optionally courseType
+    const gradeData = studentCenter.grades.find(g => {
+      const centerCourse = (g.course || g.grade || '').trim(); // Support both course and grade for backward compatibility
+      const centerCourseType = (g.courseType || '').trim();
+      
+      // Check if course matches (either exact match or center has "All")
+      const courseMatch = centerCourse.toLowerCase() === 'all' || 
+                         centerCourse.toLowerCase() === studentCourse.toLowerCase();
+      
+      // If courseType exists in center, it must match student's courseType (skipped when national)
+      // If courseType doesn't exist in center, it matches any student
+      const courseTypeMatch = isNational ||
+                             !centerCourseType || 
+                             centerCourseType === '' || 
+                             centerCourseType.toLowerCase() === studentCourseType.toLowerCase();
+      
+      return courseMatch && courseTypeMatch;
+    });
     
     if (!gradeData || !gradeData.timings || gradeData.timings.length === 0) {
       return null;
@@ -539,10 +808,6 @@ export default function StudentDashboard() {
       return -1;
     };
     
-    // Find the next session
-    let nextSessionDate = null;
-    let nextTiming = null;
-    
     // Sort timings by day and time for easier comparison
     const validTimings = gradeData.timings
       .filter(t => t.day && t.day.trim() !== '' && t.time && t.time.trim() !== '')
@@ -562,15 +827,18 @@ export default function StudentDashboard() {
     }
     
     // Find the next session
+    let nextSessionDate = null;
+    let nextTiming = null;
+
     validTimings.forEach((timing) => {
       const daysUntilSession = (timing.dayIndex - currentDayIndex + 7) % 7;
       const sessionTime = timing.timeMinutes;
-
+      
       let candidateDate = new Date(now);
 
       candidateDate.setDate(now.getDate() + daysUntilSession);
       candidateDate.setHours(Math.floor(sessionTime / 60), sessionTime % 60, 0, 0);
-
+    
       // if session today but already passed → move to next week
       if (daysUntilSession === 0 && sessionTime < currentTime) {
         candidateDate.setDate(candidateDate.getDate() + 7);
@@ -579,7 +847,7 @@ export default function StudentDashboard() {
       if (!nextSessionDate || candidateDate < nextSessionDate) {
         nextSessionDate = candidateDate;
         nextTiming = timing;
-      }
+    }
     });
     
     if (!nextSessionDate || !nextTiming) {
@@ -608,7 +876,7 @@ export default function StudentDashboard() {
     
     return {
       center: studentCenter.name,
-      location: studentCenter.location || '',
+      location: studentCenter.location || null,
       day: nextTiming.day,
       time: timeDisplay,
       date: dateDisplay,
@@ -640,6 +908,16 @@ export default function StudentDashboard() {
           .welcome-message {
             width: 450px;
             max-width: 100%;
+          }
+          
+          .sessions-reminder {
+            width: 450px;
+            max-width: 100%;
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+          }
+          .sessions-reminder:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 6px 20px rgba(0, 0, 0, 0.12) !important;
           }
           
           .score-section {
@@ -689,9 +967,47 @@ export default function StudentDashboard() {
             background: linear-gradient(90deg, #128C7E 0%, #25D366 100%);
             box-shadow: 0 8px 25px rgba(37, 211, 102, 0.4);
           }
+          .dashboard-btn.zoom-btn {
+            background: linear-gradient(90deg, #2d8cff 0%, #1a6fdb 100%);
+            box-shadow: 0 4px 16px rgba(45, 140, 255, 0.3);
+          }
+          .dashboard-btn.zoom-btn:hover:not(:disabled) {
+            background: linear-gradient(90deg, #1a6fdb 0%, #2d8cff 100%);
+            box-shadow: 0 8px 25px rgba(45, 140, 255, 0.4);
+          }
+          .dashboard-btn.google-meet-btn {
+            background: linear-gradient(200deg, #00AC47 0%, #4285F4 100%);
+            box-shadow: 0 4px 16px rgba(66, 133, 244, 0.3);
+          }
+          .dashboard-btn.google-meet-btn:hover:not(:disabled) {
+            background: linear-gradient(200deg, #4285F4 0%, #00AC47 100%);
+            box-shadow: 0 8px 25px rgba(0, 172, 71, 0.4);
+          }
+          .dashboard-btn.certificate-btn {
+            background: linear-gradient(90deg, #eda739 0%, #e09a2e 100%);
+            box-shadow: 0 4px 16px rgba(237, 167, 57, 0.35);
+          }
+          .dashboard-btn.certificate-btn:hover:not(:disabled) {
+            background: linear-gradient(90deg,rgb(231, 159, 50) 0%,rgb(218, 146, 45) 100%);
+            box-shadow: 0 8px 25px rgba(200, 134, 40, 0.4);
+          }
+          .dashboard-config-error {
+            width: 450px;
+            max-width: 100%;
+            margin: 0 auto 20px auto;
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 16px;
+            padding: 28px 24px;
+            text-align: center;
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+          }
           
           @media (max-width: 768px) {
             .welcome-message {
+              width: 100%;
+              max-width: 100%;
+            }
+            .sessions-reminder {
               width: 100%;
               max-width: 100%;
             }
@@ -725,6 +1041,13 @@ export default function StudentDashboard() {
               width: 100%;
               max-width: 100%;
               padding: 16px;
+              margin-left: 0 !important;
+              margin-right: 0 !important;
+            }
+            .sessions-reminder {
+              width: 100%;
+              max-width: 100%;
+              padding: 12px 14px !important;
               margin-left: 0 !important;
               margin-right: 0 !important;
             }
@@ -830,6 +1153,86 @@ export default function StudentDashboard() {
                   <Image src="/waving-hand.svg" alt="Waving Hand" width={24} height={24} />
                 </h2>
               </div>
+
+              {!systemConfig && !systemConfigError ? (
+                <DashboardButtonsSkeleton cards={2} />
+              ) : systemConfigError && !systemConfig ? (
+                <div className="dashboard-config-error">
+                  <p style={{ color: "#495057", fontSize: "1.05rem", fontWeight: 700, margin: "0 0 8px 0" }}>
+                    Could not load dashboard features
+                  </p>
+                  <p style={{ color: "#6c757d", fontSize: "0.95rem", margin: "0 0 20px 0" }}>
+                    Please try again. Feature buttons will appear once configuration loads.
+                  </p>
+                  <button
+                    type="button"
+                    className="dashboard-btn"
+                    onClick={() => refetchSystemConfig()}
+                    style={{ marginBottom: 0 }}
+                  >
+                    Retry
+                  </button>
+                </div>
+              ) : (
+              <>
+
+              {/* Sessions Remaining Reminder - only show when payment system is enabled and <= 3 */}
+              {isPaymentSystemEnabled && studentData && remainingSessions <= 3 && (
+                <div className="sessions-reminder" style={{
+                  background: "rgba(255, 255, 255, 0.95)",
+                  borderRadius: "12px",
+                  padding: "14px 18px",
+                  margin: "0 auto 20px auto",
+                  maxWidth: "450px",
+                  width: "100%",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "14px",
+                  borderLeft: `4px solid ${remainingSessions === 0 ? '#dc3545' : remainingSessions <= 2 ? '#f59e0b' : '#10b981'}`,
+                  boxShadow: "0 4px 16px rgba(0, 0, 0, 0.1)",
+                }}>
+                  <div style={{
+                    width: "40px",
+                    height: "40px",
+                    borderRadius: "10px",
+                    background: remainingSessions === 0 ? 'linear-gradient(135deg, #fef2f2, #fee2e2)' : remainingSessions <= 2 ? 'linear-gradient(135deg, #fffbeb, #fef3c7)' : 'linear-gradient(135deg, #ecfdf5, #d1fae5)',
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    flexShrink: 0,
+                  }}>
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke={remainingSessions === 0 ? '#dc3545' : remainingSessions <= 2 ? '#f59e0b' : '#10b981'} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect>
+                      <line x1="16" y1="2" x2="16" y2="6"></line>
+                      <line x1="8" y1="2" x2="8" y2="6"></line>
+                      <line x1="3" y1="10" x2="21" y2="10"></line>
+                    </svg>
+                  </div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{
+                      fontSize: "0.8rem",
+                      fontWeight: "600",
+                      color: remainingSessions === 0 ? '#dc3545' : remainingSessions <= 2 ? '#b45309' : '#047857',
+                      textTransform: "uppercase",
+                      letterSpacing: "0.5px",
+                      marginBottom: "2px",
+                    }}>
+                      {remainingSessions === 0 ? 'Action Required' : 'Sessions Remaining'}
+                    </div>
+                    <div style={{
+                      fontSize: "0.85rem",
+                      color: "#4b5563",
+                      lineHeight: "1.4",
+                    }}>
+                      {remainingSessions === 0 ? (
+                        <>You have <span style={{ fontWeight: "800", color: "#dc3545" }}>0</span> sessions remaining. Please renew now to continue.</>
+                      ) : (
+                        <>You have only <span style={{ fontWeight: "800", color: remainingSessions <= 2 ? '#b45309' : '#047857' }}>{remainingSessions}</span> session{remainingSessions !== 1 ? 's' : ''} remaining. Please renew to continue your sessions without interruption.</>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
 
               {/* Score Section - Only show if scoring system is enabled */}
               {isScoringEnabled && (
@@ -943,9 +1346,15 @@ export default function StudentDashboard() {
                     borderTop: "1px solid rgba(0, 0, 0, 0.08)",
                     flexWrap: "wrap"
                   }}>
-                    <Image src="/center.svg" alt="Center" width={18} height={18} style={{ flexShrink: 0 }} />
+                    <Image 
+                      src={nextSession.center && nextSession.center.toLowerCase() === 'online' ? "/online.svg" : "/center.svg"} 
+                      alt="Center" 
+                      width={18} 
+                      height={18} 
+                      style={{ flexShrink: 0 }} 
+                    />
                     <span style={{ fontWeight: "500" }}>{nextSession.center}</span>
-                    {nextSession.location && nextSession.location.trim() !== '' && (
+                    {nextSession.location && nextSession.location.trim() !== '' && nextSession.location !== null && (
                       <>
                         <span style={{ color: "#47494f", margin: "0 4px" }}>•</span>
                         <a
@@ -1015,13 +1424,35 @@ export default function StudentDashboard() {
                 </button>
               )}
 
+              {isZoomJoinMeetingEnabled && zoomMeeting && (!isPaymentSystemEnabled || (studentData?.payment?.numberOfSessions || 0) >= 1 || (zoomMeeting.lesson && studentData?.lessons?.[zoomMeeting.lesson]?.attended === true)) && (
+                <button
+                  className="dashboard-btn zoom-btn"
+                  onClick={handleJoinZoomMeeting}
+                  disabled={!studentId}
+                >
+                  <Image src="/zoom.svg" alt="Zoom" width={20} height={20} />
+                  Join Zoom Meeting
+                </button>
+              )}
+
+              {isGoogleJoinMeetingEnabled && googleMeeting && (!isPaymentSystemEnabled || (studentData?.payment?.numberOfSessions || 0) >= 1 || (googleMeeting.lesson && studentData?.lessons?.[googleMeeting.lesson]?.attended === true)) && (
+                <button
+                  className="dashboard-btn google-meet-btn"
+                  onClick={handleJoinGoogleMeeting}
+                  disabled={!studentId}
+                >
+                  <Image src="/google-meet.svg" alt="Google Meet" width={20} height={20} />
+                  Join Google Meeting
+                </button>
+              )}
+
               {isOnlineVideosEnabled && (
                 <button
                   className="dashboard-btn"
                   onClick={() => router.push("/student_dashboard/online_sessions")}
                 >
                   <Image src="/video.svg" alt="Videos" width={23} height={23} />
-                  Online Sessions
+                  Recorded Sessions
                 </button>
               )}
 
@@ -1031,7 +1462,17 @@ export default function StudentDashboard() {
                   onClick={() => router.push("/student_dashboard/homeworks_videos")}
                 >
                   <Image src="/play-pause.svg" alt="Play Pause" width={20} height={20} />
-                  Homeworks Videos
+                  Homework Videos
+                </button>
+              )}
+
+              {isMaterialEnabled && (
+                <button
+                  className="dashboard-btn"
+                  onClick={() => router.push("/student_dashboard/my_material")}
+                >
+                  <Image src="/notes4.svg" alt="Material" width={20} height={20} />
+                  My Material
                 </button>
               )}
 
@@ -1041,7 +1482,7 @@ export default function StudentDashboard() {
                   onClick={() => router.push("/student_dashboard/my_homeworks")}
                 >
                   <Image src="/books.svg" alt="Books" width={20} height={20} />
-                  My Homeworks
+                  My Homework
                 </button>
               )}
 
@@ -1052,6 +1493,48 @@ export default function StudentDashboard() {
                 >
                   <Image src="/notepad.svg" alt="Notepad" width={20} height={20} />
                   My Quizzes
+                </button>
+              )}
+
+              {isMockExamsEnabled && (
+                <button
+                  className="dashboard-btn"
+                  onClick={() => router.push("/student_dashboard/my_mock_exams")}
+                  style={{ background: "linear-gradient(90deg, #6f42c1 0%, #8e44ad 100%)" }}
+                >
+                  <Image src="/exam.svg" alt="Mock Exams" width={20} height={20} />
+                  My Mock Exams
+                </button>
+              )}
+
+              {showDesmosCalculator && (
+                <DesmosQuestionAssist
+                  standalone
+                  instanceKey="student-dashboard-desmos"
+                >
+                  {({ showDesmos, openCalculator, isOpen }) =>
+                    showDesmos ? (
+                      <button
+                        type="button"
+                        className="dashboard-btn"
+                        onClick={() => openCalculator?.()}
+                        disabled={isOpen || !openCalculator}
+                      >
+                        <Image src="/calculator.svg" alt="Desmos Calculator" width={20} height={20} />
+                        Desmos Calculator
+                      </button>
+                    ) : null
+                  }
+                </DesmosQuestionAssist>
+              )}
+
+              {isCertificatesEnabled && (
+                <button
+                  className="dashboard-btn certificate-btn"
+                  onClick={() => router.push("/student_dashboard/my_certificates")}
+                >
+                  <Image src="/certificate.svg" alt="My Certificates" width={20} height={20} />
+                  My Certificates
                 </button>
               )}
 
@@ -1078,6 +1561,8 @@ export default function StudentDashboard() {
                   <Image src="/whatsapp2.svg" alt="WhatsApp" width={20} height={20} />
                   {whatsappGroupsLoading ? 'Loading...' : 'Join WhatsApp Group'}
                 </button>
+              )}
+              </>
               )}
             </>
           )}

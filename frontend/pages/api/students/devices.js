@@ -32,8 +32,8 @@ function loadEnvConfig() {
 
 const envConfig = loadEnvConfig();
 const MONGO_URI =
-  envConfig.MONGO_URI || process.env.MONGO_URI || 'mongodb://localhost:27017/topphysics';
-const DB_NAME = envConfig.DB_NAME || process.env.DB_NAME || 'mr-george-magdy';
+  envConfig.MONGO_URI || process.env.MONGO_URI || 'mongodb://localhost:27017/demo-attendance-system';
+const DB_NAME = envConfig.DB_NAME || process.env.DB_NAME || 'demo-attendance-system';
 // Helper function to check if device limitations are enabled
 function isDeviceLimitationsEnabled() {
   // Get value from env.config first, then fallback to process.env
@@ -300,16 +300,12 @@ export default async function handler(req, res) {
       return res.json({ success: true });
     }
 
-    // Method not allowed
-    res.setHeader('Allow', ['GET', 'PATCH', 'DELETE']);
-    return res.status(405).json({ error: 'Method not allowed' });
+    return res.status(405).json({ error: 'method_not_allowed' });
   } catch (error) {
-    console.error('Error in students/devices API:', error);
-    return res.status(500).json({ error: 'internal_server_error' });
+    console.error('❌ Students devices API error:', error);
+    return res.status(500).json({ error: 'internal_error', details: error.message });
   } finally {
-    if (client) {
-      await client.close();
-    }
+    if (client) await client.close();
   }
 }
 

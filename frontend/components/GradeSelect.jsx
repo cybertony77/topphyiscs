@@ -29,7 +29,7 @@ export default function GradeSelect({ selectedGrade, onGradeChange, required = f
     actualOnClose();
   };
 
-  const grades = ["1st Secondary", "2nd Secondary", "3rd Secondary"];
+  const grades = ['Grade 9', 'Grade 10', 'Grade 11', 'Grade 12'];
 
   return (
     <div ref={dropdownRef} style={{ position: 'relative', width: '100%' }}>
@@ -44,7 +44,10 @@ export default function GradeSelect({ selectedGrade, onGradeChange, required = f
           justifyContent: 'space-between',
           alignItems: 'center',
           fontSize: '1rem',
-          color: selectedGrade ? '#000000' : '#adb5bd',
+          color: selectedGrade ? '#1FA8DC' : '#adb5bd',
+          backgroundColor: selectedGrade ? '#f0f8ff' : '#ffffff',
+          fontWeight: selectedGrade ? '600' : '400',
+          fontWeight: selectedGrade ? selectedGrade ? '600' : '400' : '400',
           transition: 'all 0.3s ease',
           boxShadow: actualIsOpen ? '0 0 0 3px rgba(31, 168, 220, 0.1)' : 'none'
         }}
@@ -52,8 +55,6 @@ export default function GradeSelect({ selectedGrade, onGradeChange, required = f
       >
         <span>{selectedGrade || 'Select Grade'}</span>
       </div>
-      
-
       
       {actualIsOpen && (
         <div style={{
@@ -94,7 +95,9 @@ export default function GradeSelect({ selectedGrade, onGradeChange, required = f
                 cursor: 'pointer',
                 borderBottom: '1px solid #f8f9fa',
                 transition: 'background-color 0.2s ease',
-                color: '#000000'
+                color: selectedGrade === grade ? '#1FA8DC' : '#000000',
+                backgroundColor: selectedGrade === grade ? '#f0f8ff' : '#ffffff',
+                fontWeight: selectedGrade === grade ? '600' : '400'
               }}
               onClick={() => handleGradeSelect(grade)}
               onMouseEnter={(e) => e.target.style.backgroundColor = '#f8f9fa'}

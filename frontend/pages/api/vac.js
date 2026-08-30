@@ -64,16 +64,6 @@ export default async function handler(req, res) {
       let vacQueryFilter = {};
       let accountIdsToSearch = null;
 
-      // Apply VAC activated filter
-      if (vac_activated === 'true') {
-        vacQueryFilter.VAC_activated = true;
-      } else if (vac_activated === 'false') {
-        vacQueryFilter.$or = [
-          { VAC_activated: false },
-          { VAC_activated: { $exists: false } }
-        ];
-      }
-
       if (searchTerm.trim()) {
         const search = searchTerm.trim();
         const isNumeric = /^\d+$/.test(search);
@@ -109,6 +99,18 @@ export default async function handler(req, res) {
               }
             });
           }
+        }
+      }
+
+      // Apply VAC_activated filter if provided
+      if (vac_activated !== undefined && vac_activated !== '') {
+        if (vac_activated === 'true') {
+          vacQueryFilter.VAC_activated = true;
+        } else if (vac_activated === 'false') {
+          vacQueryFilter.$or = [
+            { VAC_activated: false },
+            { VAC_activated: { $exists: false } }
+          ];
         }
       }
 

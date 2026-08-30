@@ -1,15 +1,22 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { useRouter } from "next/router";
 import Image from 'next/image';
+import dynamic from 'next/dynamic';
 import Title from '../../../components/Title';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import apiClient from '../../../lib/axios';
+import { downloadFileUrl } from '../../../lib/downloadFileUrl';
 import { useProfile } from '../../../lib/api/auth';
-import { useSystemConfig } from '../../../lib/api/system';
+import { useSystemConfig, useNationalSystem } from '../../../lib/api/system';
 import NeedHelp from '../../../components/NeedHelp';
 import HomeworkPerformanceChart from '../../../components/HomeworkPerformanceChart';
+const PdfViewerModal = dynamic(() => import('../../../components/PdfViewerModal'), { ssr: false });
+import StudentLessonSelect from '../../../components/StudentLessonSelect';
+import { isDownloadingAllowed } from '../../../components/AllowDownloadingRadio';
 import { TextInput, ActionIcon, useMantineTheme } from '@mantine/core';
 import { IconSearch, IconArrowRight } from '@tabler/icons-react';
+import { clientItemVisibleByCenter } from '../../../lib/studentCenterMatch';
+import { formatDeadlineCardLabel, isDeadlinePassedEgypt } from '../../../lib/deadlineTimeEgypt';
 
 // Input with Button Component (matching manage online system style)
 function InputWithButton(props) {
@@ -31,119 +38,9 @@ function InputWithButton(props) {
   );
 }
 
-// Custom Week Select for Student Dashboard (only shows available weeks)
-function StudentWeekSelect({ availableWeeks = [], selectedWeek, onWeekChange, isOpen, onToggle, onClose, placeholder = 'Select Week' }) {
-  const dropdownRef = useRef(null);
-
-  useEffect(() => {
-    const handleClickOutside = (event) => {
-      if (dropdownRef.current && !dropdownRef.current.contains(event.target)) {
-        onClose();
-      }
-    };
-
-    if (isOpen) {
-      document.addEventListener('mousedown', handleClickOutside);
-    }
-
-    return () => {
-      document.removeEventListener('mousedown', handleClickOutside);
-    };
-  }, [isOpen, onClose]);
-
-  const handleWeekSelect = (week) => {
-    onWeekChange(week);
-    onClose();
-  };
-
-  return (
-    <div ref={dropdownRef} style={{ position: 'relative', width: '100%' }}>
-      <div
-        style={{
-          padding: '14px 16px',
-          border: isOpen ? '2px solid #1FA8DC' : '2px solid #e9ecef',
-          borderRadius: '10px',
-          backgroundColor: '#ffffff',
-          cursor: 'pointer',
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'center',
-          fontSize: '1rem',
-          color: selectedWeek && selectedWeek !== 'n/a' ? '#000000' : '#adb5bd',
-          transition: 'all 0.3s ease',
-          boxShadow: isOpen ? '0 0 0 3px rgba(31, 168, 220, 0.1)' : 'none'
-        }}
-        onClick={onToggle}
-      >
-        <span>{selectedWeek && selectedWeek !== 'n/a' ? selectedWeek : placeholder}</span>
-        <Image
-          src={isOpen ? "/chevron-down.svg" : "/chevron-right.svg"}
-          alt={isOpen ? "Close" : "Open"}
-          width={20}
-          height={20}
-          style={{
-            transition: 'transform 0.2s ease'
-          }}
-        />
-
-      </div>
-      
-      {isOpen && (
-        <div style={{
-          position: 'absolute',
-          top: '100%',
-          left: 0,
-          right: 0,
-          backgroundColor: '#ffffff',
-          border: '2px solid #e9ecef',
-          borderRadius: '10px',
-          boxShadow: '0 4px 16px rgba(0,0,0,0.1)',
-          zIndex: 1000,
-          maxHeight: '200px',
-          overflowY: 'auto',
-          marginTop: '4px'
-        }}>
-          {/* Clear selection option */}
-          <div
-            style={{
-              padding: '12px 16px',
-              cursor: 'pointer',
-              borderBottom: '1px solid #f8f9fa',
-              transition: 'background-color 0.2s ease',
-              color: '#dc3545',
-              fontWeight: '500'
-            }}
-            onClick={() => handleWeekSelect('')}
-            onMouseEnter={(e) => e.target.style.backgroundColor = '#fff5f5'}
-            onMouseLeave={(e) => e.target.style.backgroundColor = '#ffffff'}
-          >
-            ✕ Clear selection
-          </div>
-          {availableWeeks.map((week) => (
-            <div
-              key={week}
-              style={{
-                padding: '12px 16px',
-                cursor: 'pointer',
-                borderBottom: '1px solid #f8f9fa',
-                transition: 'background-color 0.2s ease',
-                color: '#000000'
-              }}
-              onClick={() => handleWeekSelect(week)}
-              onMouseEnter={(e) => e.target.style.backgroundColor = '#f8f9fa'}
-              onMouseLeave={(e) => e.target.style.backgroundColor = '#ffffff'}
-            >
-              {week}
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
 export default function MyHomeworks() {
   const { data: systemConfig } = useSystemConfig();
+  const isNational = useNationalSystem();
   const isScoringEnabled = systemConfig?.scoring_system === true || systemConfig?.scoring_system === 'true';
   const isHomeworksEnabled = systemConfig?.homeworks === true || systemConfig?.homeworks === 'true';
   
@@ -164,9 +61,16 @@ export default function MyHomeworks() {
   const { data: profile } = useProfile();
   const [completedHomeworks, setCompletedHomeworks] = useState(new Set());
   const [errorMessage, setErrorMessage] = useState('');
-  const [studentWeeks, setStudentWeeks] = useState([]);
   const [onlineHomeworks, setOnlineHomeworks] = useState([]);
-  
+  const [notePopup, setNotePopup] = useState(null);
+  const [pdfViewer, setPdfViewer] = useState({ isOpen: false, url: '', name: '' });
+  const [deadlineClockTick, setDeadlineClockTick] = useState(0);
+
+  useEffect(() => {
+    const id = setInterval(() => setDeadlineClockTick((n) => n + 1), 15000);
+    return () => clearInterval(id);
+  }, []);
+
   // Check for error message in URL query
   useEffect(() => {
     if (router.query.error) {
@@ -183,59 +87,62 @@ export default function MyHomeworks() {
       const response = await apiClient.get('/api/homeworks/student');
       return response.data;
     },
-    // No auto refetch interval; fetch on mount/reconnect only (no window focus to prevent auto-refresh)
+    refetchInterval: 15000,
     refetchOnWindowFocus: false, // Disabled to prevent auto-refresh on window focus
-    refetchOnMount: true, // Refetch on mount
-    refetchOnReconnect: true, // Refetch on reconnect
+    refetchOnMount: true,
+    refetchOnReconnect: true,
   });
 
   const homeworks = homeworksData?.homeworks || [];
 
+  const centerFilteredHomeworks = useMemo(
+    () =>
+      homeworks
+        .filter((homework) => (homework.state || homework.account_state || 'Activated') !== 'Deactivated')
+        .filter((hw) => clientItemVisibleByCenter(hw.center, profile?.main_center)),
+    [homeworks, profile?.main_center]
+  );
+
   // Search and filter states
   const [searchInput, setSearchInput] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
-  const [filterWeek, setFilterWeek] = useState('');
-  const [filterWeekDropdownOpen, setFilterWeekDropdownOpen] = useState(false);
+  const [filterLesson, setFilterLesson] = useState('');
+  const [filterLessonDropdownOpen, setFilterLessonDropdownOpen] = useState(false);
 
-  // Extract week number from week string (e.g., "week 01" -> 1)
-  const extractWeekNumber = (weekString) => {
-    if (!weekString) return null;
-    const match = weekString.match(/week\s*(\d+)/i);
-    return match ? parseInt(match[1], 10) : null;
-  };
-
-  // Convert week number to week string (e.g., 1 -> "week 01")
-  const weekNumberToString = (weekNumber) => {
-    if (weekNumber === null || weekNumber === undefined) return '';
-    return `week ${String(weekNumber).padStart(2, '0')}`;
-  };
-
-  // Get available weeks from homeworks (only weeks that exist in the data and are Activated)
-  const getAvailableWeeks = () => {
-    const weekSet = new Set();
-    homeworks.forEach(homework => {
-      const effectiveState = homework.state || homework.account_state || 'Activated';
-      if (effectiveState === 'Deactivated') return;
-      if (homework.week !== undefined && homework.week !== null) {
-        weekSet.add(weekNumberToString(homework.week));
+  // Get available lessons from homeworks (only lessons that exist in homeworks and match student's course/courseType)
+  const getAvailableLessons = () => {
+    const lessonSet = new Set();
+    const studentCourse = (profile?.course || '').trim();
+    const studentCourseType = (profile?.courseType || '').trim();
+    
+    centerFilteredHomeworks.forEach(homework => {
+      if (homework.lesson && homework.lesson.trim()) {
+        // Check if homework matches student's course and courseType
+        const homeworkCourse = (homework.course || '').trim();
+        const homeworkCourseType = (homework.courseType || '').trim();
+        
+        // Course match: if homework course is "All", it matches any student course
+        const courseMatch = homeworkCourse.toLowerCase() === 'all' || 
+                           homeworkCourse.toLowerCase() === studentCourse.toLowerCase();
+        
+        // CourseType match: skip when national system; otherwise match as before
+        const courseTypeMatch = isNational ||
+                               !homeworkCourseType || 
+                               !studentCourseType ||
+                               homeworkCourseType.toLowerCase() === studentCourseType.toLowerCase();
+        
+        if (courseMatch && courseTypeMatch) {
+          lessonSet.add(homework.lesson);
+        }
       }
     });
-    return Array.from(weekSet).sort((a, b) => {
-      const aNum = extractWeekNumber(a);
-      const bNum = extractWeekNumber(b);
-      return (aNum || 0) - (bNum || 0);
-    });
+    return Array.from(lessonSet).sort();
   };
 
-  const availableWeeks = getAvailableWeeks();
+  const availableLessons = getAvailableLessons();
 
   // Filter homeworks based on search and filters
-  const filteredHomeworks = homeworks.filter(homework => {
-    // Hide deactivated homeworks
-    const effectiveState = homework.state || homework.account_state || 'Activated';
-    if (effectiveState === 'Deactivated') {
-      return false;
-    }
+  const filteredHomeworks = centerFilteredHomeworks.filter(homework => {
     // Search filter (by lesson name - case-insensitive)
     if (searchTerm.trim()) {
       const lessonName = homework.lesson_name || '';
@@ -244,10 +151,9 @@ export default function MyHomeworks() {
       }
     }
 
-    // Week filter
-    if (filterWeek) {
-      const weekNumber = extractWeekNumber(filterWeek);
-      if (homework.week !== weekNumber) {
+    // Lesson filter
+    if (filterLesson) {
+      if (homework.lesson !== filterLesson) {
         return false;
       }
     }
@@ -289,7 +195,7 @@ export default function MyHomeworks() {
       }
     },
     enabled: !!profile?.id,
-    // No auto refetch interval; rely on mount/reconnect + manual invalidation (no window focus to prevent auto-refresh)
+    refetchInterval: 15000,
     refetchOnWindowFocus: false, // Disabled to prevent auto-refresh on window focus
     refetchOnMount: true,
     refetchOnReconnect: true,
@@ -300,21 +206,36 @@ export default function MyHomeworks() {
 
   // Only show chart lessons that have at least one Activated homework
   const activeLessons = new Set(
-    homeworks
-      .filter(hw => (hw.state || hw.account_state || 'Activated') === 'Activated' && hw.lesson)
+    centerFilteredHomeworks
       .map(hw => hw.lesson)
+      .filter(Boolean)
   );
 
   const filteredChartData = Array.isArray(chartData)
     ? chartData.filter(item => {
-        const label = (item.week || '').toString().toLowerCase();
+        const label = (item.lesson_name || item.lesson || '').toString().toLowerCase();
         if (!label) return false;
         if (activeLessons.size === 0) return true;
         return Array.from(activeLessons).some(lesson =>
-          label.includes(String(lesson).toLowerCase())
+          label.includes(String(lesson).toLowerCase()) || String(lesson).toLowerCase().includes(label)
         );
       })
     : [];
+
+  // Fetch student's online_homeworks to check hwDone and degree
+  const fetchStudentData = async () => {
+    if (!profile?.id) return;
+    try {
+      const response = await apiClient.get(`/api/students/${profile.id}`);
+      if (response.data) {
+        if (Array.isArray(response.data.online_homeworks)) {
+          setOnlineHomeworks(response.data.online_homeworks);
+        }
+      }
+    } catch (err) {
+      console.error('Error fetching student data:', err);
+    }
+  };
 
   // Refetch chart data when returning to this page
   useEffect(() => {
@@ -323,6 +244,8 @@ export default function MyHomeworks() {
       if (profile?.id) {
         queryClient.invalidateQueries({ queryKey: ['homework-performance', profile.id] });
         queryClient.invalidateQueries({ queryKey: ['homeworks-student'] });
+        queryClient.invalidateQueries({ queryKey: ['profile'] });
+        fetchStudentData();
       }
     };
 
@@ -331,6 +254,8 @@ export default function MyHomeworks() {
       if (document.visibilityState === 'visible' && profile?.id) {
         refetchChart();
         queryClient.invalidateQueries({ queryKey: ['homeworks-student'] });
+        queryClient.invalidateQueries({ queryKey: ['profile'] });
+        fetchStudentData();
       }
     };
 
@@ -338,6 +263,8 @@ export default function MyHomeworks() {
     if (profile?.id) {
       queryClient.invalidateQueries({ queryKey: ['homework-performance', profile.id] });
       queryClient.invalidateQueries({ queryKey: ['homeworks-student'] });
+      queryClient.invalidateQueries({ queryKey: ['profile'] });
+      fetchStudentData();
     }
 
     // Listen for route changes
@@ -351,38 +278,26 @@ export default function MyHomeworks() {
     };
   }, [router, queryClient, profile?.id, refetchChart]);
 
-  // Fetch student's weeks data and online_homeworks to check hwDone and degree
   useEffect(() => {
-    if (!profile?.id) return;
-
-    const fetchStudentData = async () => {
-      try {
-        const response = await apiClient.get(`/api/students/${profile.id}`);
-        if (response.data) {
-          if (Array.isArray(response.data.weeks)) {
-            setStudentWeeks(response.data.weeks);
-          }
-          if (Array.isArray(response.data.online_homeworks)) {
-            setOnlineHomeworks(response.data.online_homeworks);
-          }
-          setWeeksLoaded(true); // Mark as loaded
-        }
-      } catch (err) {
-        console.error('Error fetching student data:', err);
-        setWeeksLoaded(true); // Mark as loaded even on error to prevent infinite waiting
-      }
-    };
-
     fetchStudentData();
+  }, [profile?.id]);
+
+  // Keep Done/Start buttons in sync with admin resets (same cadence as charts)
+  useEffect(() => {
+    if (!profile?.id) return undefined;
+    const id = setInterval(() => {
+      fetchStudentData();
+    }, 15000);
+    return () => clearInterval(id);
   }, [profile?.id]);
 
   // Check which homeworks exist in online_homeworks array
   useEffect(() => {
-    if (!profile?.id || homeworks.length === 0 || !Array.isArray(onlineHomeworks)) return;
+    if (!profile?.id || centerFilteredHomeworks.length === 0 || !Array.isArray(onlineHomeworks)) return;
 
     const checkCompletions = () => {
       const completed = new Set();
-      for (const homework of homeworks) {
+      for (const homework of centerFilteredHomeworks) {
         // Check if homework exists in online_homeworks array
         const exists = onlineHomeworks.some(ohw => {
           const hwId = ohw.homework_id?.toString();
@@ -397,58 +312,36 @@ export default function MyHomeworks() {
     };
 
     checkCompletions();
-  }, [profile?.id, homeworks, onlineHomeworks]);
+  }, [profile?.id, centerFilteredHomeworks, onlineHomeworks]);
 
-  // Helper function to check if hwDone indicates completion for a given week
+  // Helper function to check if hwDone indicates completion for a given lesson
   // Returns true if hwDone is true, "Not Completed", or "No Homework" (protected values)
-  const isHwDone = (weekNumber) => {
-    if (weekNumber === null || weekNumber === undefined) return false;
-    // Ensure both values are compared as numbers
-    const weekNum = typeof weekNumber === 'number' ? weekNumber : parseInt(weekNumber, 10);
-    if (isNaN(weekNum)) return false;
-    
-    const weekData = studentWeeks.find(w => {
-      const wWeek = typeof w.week === 'number' ? w.week : parseInt(w.week, 10);
-      return !isNaN(wWeek) && wWeek === weekNum;
-    });
-    
-    if (!weekData) return false;
+  const isHwDone = (lessonName) => {
+    if (!lessonName || !profile?.lessons) return false;
+    const lessonData = profile.lessons[lessonName];
+    if (!lessonData) return false;
     
     // Check for protected values that indicate some status (not just false)
     const protectedValues = [true, "Not Completed", "No Homework"];
-    return protectedValues.includes(weekData.hwDone);
+    return protectedValues.includes(lessonData.hwDone);
   };
 
   // Helper function to get hwDone status text for display
-  const getHwDoneStatus = (weekNumber) => {
-    if (weekNumber === null || weekNumber === undefined) return null;
-    const weekNum = typeof weekNumber === 'number' ? weekNumber : parseInt(weekNumber, 10);
-    if (isNaN(weekNum)) return null;
+  const getHwDoneStatus = (lessonName) => {
+    if (!lessonName || !profile?.lessons) return null;
+    const lessonData = profile.lessons[lessonName];
+    if (!lessonData) return null;
     
-    const weekData = studentWeeks.find(w => {
-      const wWeek = typeof w.week === 'number' ? w.week : parseInt(w.week, 10);
-      return !isNaN(wWeek) && wWeek === weekNum;
-    });
-    
-    if (!weekData) return null;
-    
-    return weekData.hwDone;
+    return lessonData.hwDone;
   };
 
-  // Helper function to get hwDegree for a given week and homework_id
-  const getHwDegree = (weekNumber, homeworkId = null) => {
-    // First, try to get from weeks array
-    if (weekNumber !== null && weekNumber !== undefined) {
-      const weekNum = typeof weekNumber === 'number' ? weekNumber : parseInt(weekNumber, 10);
-      if (!isNaN(weekNum)) {
-        const weekData = studentWeeks.find(w => {
-          const wWeek = typeof w.week === 'number' ? w.week : parseInt(w.week, 10);
-          return !isNaN(wWeek) && wWeek === weekNum;
-        });
-        
-        if (weekData?.hwDegree) {
-          return weekData.hwDegree;
-        }
+  // Helper function to get hwDegree for a given lesson and homework_id
+  const getHwDegree = (lessonName, homeworkId = null) => {
+    // First, try to get from lessons object
+    if (lessonName && profile?.lessons) {
+      const lessonData = profile.lessons[lessonName];
+      if (lessonData?.homework_degree) {
+        return lessonData.homework_degree;
       }
     }
     
@@ -468,206 +361,47 @@ export default function MyHomeworks() {
     return null;
   };
 
-  // Helper function to check if deadline has passed
-  const isDeadlinePassed = (deadlineDate) => {
-    if (!deadlineDate) return false;
-    
-    try {
-      // Parse date in local timezone to avoid timezone shift
-      let deadline;
-      if (typeof deadlineDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(deadlineDate)) {
-        // If it's a string in YYYY-MM-DD format, parse it in local timezone
-        const [year, month, day] = deadlineDate.split('-').map(Number);
-        deadline = new Date(year, month - 1, day);
-      } else if (deadlineDate instanceof Date) {
-        deadline = new Date(deadlineDate);
-      } else {
-        deadline = new Date(deadlineDate);
-      }
-      
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
-      deadline.setHours(0, 0, 0, 0);
-      
-      return deadline <= today; // Deadline passed if deadline <= today
-    } catch (e) {
-      return false;
-    }
-  };
-
-  // Track if we've loaded student weeks data at least once
-  const [weeksLoaded, setWeeksLoaded] = useState(false);
-  // Track which homeworks have already had deadline penalties applied (to prevent duplicate scoring)
-  const deadlinePenaltiesAppliedRef = useRef(new Set());
-  
-  // Check deadlines and update student weeks if needed
+  // After deadline: mark missed homework + apply scoring (server-side idempotent).
   useEffect(() => {
-    if (!profile?.id || homeworks.length === 0) return;
-    // Allow the check to proceed even if weeksLoaded is false - we'll treat studentWeeks as empty array
-    // The API will create the week if it doesn't exist
+    if (!profile?.id || centerFilteredHomeworks.length === 0) return;
 
     const checkDeadlines = async () => {
-      for (const homework of homeworks) {
-        // Only check if homework has deadline and is not completed
+      let profileInvalidated = false;
+
+      for (const homework of centerFilteredHomeworks) {
         if (
-          homework.deadline_type === 'with_deadline' &&
-          homework.deadline_date &&
-          !completedHomeworks.has(homework._id) &&
-          homework.week !== null &&
-          homework.week !== undefined
+          homework.deadline_type !== 'with_deadline' ||
+          !homework.deadline_date ||
+          completedHomeworks.has(homework._id) ||
+          !homework.lesson?.trim()
         ) {
-          if (isDeadlinePassed(homework.deadline_date)) {
-            const weekNum = typeof homework.week === 'number' ? homework.week : parseInt(homework.week, 10);
-            if (!isNaN(weekNum)) {
-              // Check current week data to see if we need to update
-              let weekData = studentWeeks.find(w => {
-                const wWeek = typeof w.week === 'number' ? w.week : parseInt(w.week, 10);
-                return !isNaN(wWeek) && wWeek === weekNum;
-              });
-              
-              // Ensure week exists - if not, create it with default schema
-              if (!weekData) {
-                try {
-                  // Create week with default schema by calling the hw API
-                  // The API will create the week if it doesn't exist
-                  await apiClient.post(`/api/students/${profile.id}/hw`, {
-                    week: weekNum,
-                    hwDone: false
-                  });
-                  // Refresh student data to get the newly created week
-                  const studentResponse = await apiClient.get(`/api/students/${profile.id}`);
-                  if (studentResponse.data && Array.isArray(studentResponse.data.weeks)) {
-                    setStudentWeeks(studentResponse.data.weeks);
-                    weekData = studentResponse.data.weeks.find(w => {
-                      const wWeek = typeof w.week === 'number' ? w.week : parseInt(w.week, 10);
-                      return !isNaN(wWeek) && wWeek === weekNum;
-                    });
-                  }
-                } catch (createErr) {
-                  console.error(`Error creating week ${weekNum}:`, createErr);
-                  continue; // Skip this homework if we can't create the week
-                }
-              }
-              
-              // Protected values that should never be overwritten
-              const protectedHwDoneValues = [true, "Not Completed", "No Homework"];
-              
-              // Create unique key for this homework deadline check
-              const deadlineKey = `homework_${homework._id}_week_${weekNum}`;
-              
-              // Only update if:
-              // 1. We haven't already applied deadline update for this homework (tracked in ref)
-              // 2. hwDone is NOT already false (deadline already applied)
-              // 3. Protected values (true, "Not Completed", "No Homework") should not be overwritten
-              const shouldApplyDeadlineUpdate = !deadlinePenaltiesAppliedRef.current.has(deadlineKey) &&
-                                                (!weekData || 
-                                                 (!protectedHwDoneValues.includes(weekData.hwDone) && 
-                                                  weekData.hwDone !== false));
-              
-              if (shouldApplyDeadlineUpdate) {
-                try {
-                  // Check history to see if deadline penalty was already applied (only if scoring is enabled)
-                  let alreadyApplied = false;
-                  if (isScoringEnabled) {
-                    try {
-                      const historyResponse = await apiClient.post('/api/scoring/get-last-history', {
-                        studentId: profile.id,
-                        type: 'homework',
-                        week: weekNum
-                      });
-                      
-                      if (historyResponse.data.found && historyResponse.data.history) {
-                        const lastHistory = historyResponse.data.history;
-                        // Check if this is a deadline penalty (hwDone: false) for this week
-                        if (lastHistory.data?.hwDone === false && lastHistory.process_week === weekNum) {
-                          // Check if it was applied recently (within last hour) to avoid duplicates
-                          const historyTime = new Date(lastHistory.timestamp);
-                          const now = new Date();
-                          const timeDiff = now - historyTime;
-                          if (timeDiff < 3600000) { // 1 hour
-                            alreadyApplied = true;
-                            console.log(`[DEADLINE] Deadline penalty already applied for homework ${homework._id}, week ${weekNum}`);
-                          }
-                        }
-                      }
-                    } catch (historyErr) {
-                      console.error('Error checking history for deadline penalty:', historyErr);
-                    }
-                  }
-                  
-                  if (!alreadyApplied) {
-                  // Mark as applied immediately to prevent duplicate calls
-                  deadlinePenaltiesAppliedRef.current.add(deadlineKey);
-                  
-                  console.log(`[DEADLINE] Setting hwDone to false for homework ${homework._id}, week ${weekNum}`);
-                  
-                    // Get previous homework state from history (only if scoring is enabled)
-                    let previousHwDone = null;
-                    if (isScoringEnabled) {
-                      try {
-                        const historyResponse = await apiClient.post('/api/scoring/get-last-history', {
-                          studentId: profile.id,
-                          type: 'homework',
-                          week: weekNum
-                        });
-                        
-                        if (historyResponse.data.found && historyResponse.data.history) {
-                          const lastHistory = historyResponse.data.history;
-                          if (lastHistory.data?.hwDone !== undefined) {
-                            previousHwDone = lastHistory.data.hwDone;
-                          }
-                        }
-                      } catch (historyErr) {
-                        console.error('Error getting homework history for deadline:', historyErr);
-                      }
-                    }
-                    
-                    // Update hwDone to false (always apply this, regardless of scoring system)
-                  await apiClient.put(`/api/students/${profile.id}`, {
-                    weeks_update: {
-                      week: weekNum,
-                      hwDone: false
-                    }
-                  });
-                    
-                    // Recalculate score with hwDone: false rule (only if scoring is enabled)
-                    if (isScoringEnabled) {
-                      try {
-                        await apiClient.post('/api/scoring/calculate', {
-                          studentId: profile.id,
-                          type: 'homework',
-                          week: weekNum,
-                          data: { 
-                            hwDone: false,
-                            previousHwDone: previousHwDone
-                          }
-                        });
-                        console.log(`[DEADLINE] Score recalculated for homework deadline penalty`);
-                      } catch (scoreErr) {
-                        console.error('Error calculating score for deadline penalty:', scoreErr);
-                      }
-                    }
-                  
-                  // Refetch student data to update state
-                  const response = await apiClient.get(`/api/students/${profile.id}`);
-                  if (response.data && Array.isArray(response.data.weeks)) {
-                    setStudentWeeks(response.data.weeks);
-                    }
-                  }
-                } catch (err) {
-                  console.error('Error updating student weeks:', err);
-                  // Remove from ref if update failed so it can be retried
-                  deadlinePenaltiesAppliedRef.current.delete(deadlineKey);
-                }
-              }
-            }
-          }
+          continue;
         }
+
+        if (!isDeadlinePassedEgypt(homework.deadline_date, homework.deadline_time)) {
+          continue;
+        }
+
+        try {
+          await apiClient.post('/api/scoring/apply-deadline', {
+            studentId: profile.id,
+            kind: 'homework',
+            itemId: homework._id.toString(),
+            lesson: homework.lesson.trim(),
+          });
+          profileInvalidated = true;
+        } catch (err) {
+          console.error(`[DEADLINE] Homework ${homework._id} apply-deadline failed:`, err);
+        }
+      }
+
+      if (profileInvalidated) {
+        queryClient.invalidateQueries(['profile']);
       }
     };
 
     checkDeadlines();
-  }, [profile?.id, homeworks, completedHomeworks, weeksLoaded]); // Removed studentWeeks from deps to prevent re-runs
+  }, [profile?.id, profile?.lessons, centerFilteredHomeworks, completedHomeworks, queryClient, deadlineClockTick]);
 
   if (isLoading) {
     return (
@@ -679,7 +413,7 @@ export default function MyHomeworks() {
           <Title backText="Back" href="/student_dashboard">
             <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
               <Image src="/books.svg" alt="Books" width={32} height={32} />
-              My Homeworks
+              My Homework
             </div>
           </Title>
           
@@ -716,7 +450,7 @@ export default function MyHomeworks() {
               margin: "0 auto 20px",
               animation: "spin 1s linear infinite"
             }} />
-            <p style={{ color: "#6c757d", fontSize: "1rem" }}>Loading homeworks...</p>
+            <p style={{ color: "#6c757d", fontSize: "1rem" }}>Loading homework...</p>
             <style jsx>{`
               @keyframes spin {
                 0% { transform: rotate(0deg); }
@@ -738,7 +472,7 @@ export default function MyHomeworks() {
         <Title backText="Back" href="/student_dashboard">
           <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
             <Image src="/books.svg" alt="Books" width={32} height={32} />
-            My Homeworks
+            My Homework
           </div>
         </Title>
 
@@ -756,7 +490,7 @@ export default function MyHomeworks() {
             fontWeight: '700',
             color: '#212529'
           }}>
-            Homework Performance by Week
+            Homework Performance by Lesson
           </h2>
           {isChartLoading ? (
             <div style={{
@@ -769,7 +503,7 @@ export default function MyHomeworks() {
               Loading chart data...
             </div>
           ) : (
-            <HomeworkPerformanceChart chartData={chartData} height={400} />
+            <HomeworkPerformanceChart chartData={filteredChartData} height={400} />
           )}
         </div>
 
@@ -784,7 +518,7 @@ export default function MyHomeworks() {
         </div>
 
         {/* Filters */}
-        {homeworks.length > 0 && (
+        {centerFilteredHomeworks.length > 0 && (
           <div className="filters-container" style={{
             background: 'white',
             borderRadius: 16,
@@ -801,20 +535,20 @@ export default function MyHomeworks() {
             }}>
               <div className="filter-group" style={{ flex: 1, minWidth: 180 }}>
                 <label className="filter-label" style={{ display: 'block', marginBottom: '8px', fontWeight: 600, color: '#495057', fontSize: '0.95rem' }}>
-                  Filter by Week
+                  Filter by Lesson
                 </label>
-                <StudentWeekSelect
-                  availableWeeks={availableWeeks}
-                  selectedWeek={filterWeek}
-                  onWeekChange={(week) => {
-                    setFilterWeek(week);
+                <StudentLessonSelect
+                  availableLessons={availableLessons}
+                  selectedLesson={filterLesson}
+                  onLessonChange={(lesson) => {
+                    setFilterLesson(lesson);
                   }}
-                  isOpen={filterWeekDropdownOpen}
+                  isOpen={filterLessonDropdownOpen}
                   onToggle={() => {
-                    setFilterWeekDropdownOpen(!filterWeekDropdownOpen);
+                    setFilterLessonDropdownOpen(!filterLessonDropdownOpen);
                   }}
-                  onClose={() => setFilterWeekDropdownOpen(false)}
-                  placeholder="Select Week"
+                  onClose={() => setFilterLessonDropdownOpen(false)}
+                  placeholder="Select Lesson"
                 />
               </div>
             </div>
@@ -831,7 +565,7 @@ export default function MyHomeworks() {
           {/* Homeworks List */}
           {filteredHomeworks.length === 0 ? (
             <div style={{ textAlign: 'center', padding: '40px', color: '#6c757d' }}>
-              {homeworks.length === 0 ? '❌ No homeworks available.' : 'No homeworks match your filters.'}
+              {centerFilteredHomeworks.length === 0 ? '❌ No homeworks available.' : '❌ No homeworks match your filters.'}
             </div>
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
@@ -859,9 +593,15 @@ export default function MyHomeworks() {
                 >
                   <div style={{ flex: 1 }}>
                     <div style={{ fontSize: '1.2rem', fontWeight: '600', marginBottom: '8px' }}>
-                      {[homework.week !== undefined && homework.week !== null ? `Week ${homework.week}` : null, homework.lesson_name].filter(Boolean).join(' • ')}
+                      {[homework.lesson, homework.lesson_name].filter(Boolean).join(' • ')}
                     </div>
-                    {homework.homework_type === 'pages_from_book' ? (
+                    {homework.homework_type === 'pdf' ? (
+                      <div style={{ padding: '12px 16px', backgroundColor: '#ffffff', border: '2px solid #e9ecef', borderRadius: '8px', fontSize: '0.95rem', color: '#495057', textAlign: 'left', display: 'inline-block', maxWidth: '350px' }}>
+                        <div style={{ fontWeight: '600', marginBottom: '4px' }}>
+                          {`File Name : ${homework.pdf_file_name || 'file'}.pdf`}
+                        </div>
+                      </div>
+                    ) : homework.homework_type === 'pages_from_book' ? (
                       <div style={{
                         padding: '12px 16px',
                         backgroundColor: '#ffffff',
@@ -899,21 +639,7 @@ export default function MyHomeworks() {
                               <span>•</span>
                               <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
                                 <Image src="/clock.svg" alt="Deadline" width={18} height={18} />
-                                {homework.deadline_date ? (() => {
-                                  try {
-                                    // Parse date in local timezone
-                                    let deadline;
-                                    if (typeof homework.deadline_date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(homework.deadline_date)) {
-                                      const [year, month, day] = homework.deadline_date.split('-').map(Number);
-                                      deadline = new Date(year, month - 1, day);
-                                    } else {
-                                      deadline = new Date(homework.deadline_date);
-                                    }
-                                    return `With deadline date : ${deadline.toLocaleDateString('en-US', { year: 'numeric', month: '2-digit', day: '2-digit' })}`;
-                                  } catch (e) {
-                                    return `With deadline date : ${homework.deadline_date}`;
-                                  }
-                                })() : 'With no deadline date'}
+                                {formatDeadlineCardLabel(homework.deadline_date, homework.deadline_time)}
                               </span>
                             </>
                           )}
@@ -921,10 +647,37 @@ export default function MyHomeworks() {
                       </div>
                     )}
                   </div>
-                  <div className="homework-buttons" style={{ display: 'flex', gap: '12px' }}>
+                  <div className="homework-buttons" style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+                    {homework.homework_type === 'pdf' && homework.pdf_url && isDownloadingAllowed(homework.allow_downloading) && (
+                      <button onClick={(e) => { e.stopPropagation(); downloadFileUrl(homework.pdf_url, `${homework.pdf_file_name || 'file'}.pdf`).catch((err) => alert(err.message || 'Download failed')); }} className="hw-action-btn"
+                        style={{ padding: '8px 16px', backgroundColor: '#32b750', color: 'white', border: 'none', borderRadius: '8px', cursor: 'pointer', fontSize: '0.9rem', fontWeight: '600', transition: 'all 0.2s ease', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}>
+                        <Image src="/pdf.svg" alt="PDF" width={18} height={18} style={{ display: 'inline-block' }} />
+                        Download PDF
+                      </button>
+                    )}
+                    {homework.homework_type === 'pdf' && homework.pdf_url && (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setPdfViewer({ isOpen: true, url: homework.pdf_url, name: `${homework.pdf_file_name || 'file'}.pdf` });
+                        }}
+                        className="hw-action-btn"
+                        style={{ padding: '8px 16px', backgroundColor: '#0d6efd', color: 'white', border: 'none', borderRadius: '8px', cursor: 'pointer', fontSize: '0.9rem', fontWeight: '600', transition: 'all 0.2s ease', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}
+                      >
+                        <Image src="/external-link.svg" alt="Open PDF" width={18} height={18} style={{ display: 'inline-block' }} />
+                        Open PDF
+                      </button>
+                    )}
+                    {homework.comment && (
+                      <button onClick={(e) => { e.stopPropagation(); setNotePopup(homework.comment); }} className="hw-action-btn"
+                        style={{ padding: '8px 16px', backgroundColor: '#1FA8DC', color: 'white', border: 'none', borderRadius: '8px', cursor: 'pointer', fontSize: '0.9rem', fontWeight: '600', transition: 'all 0.2s ease', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}>
+                        <Image src="/notes4.svg" alt="Notes" width={18} height={18} style={{ display: 'inline-block' }} />
+                        Notes
+                      </button>
+                    )}
                     {(() => {
                       // Get hwDone status from weeks database (for display purposes only)
-                      const hwDoneStatus = getHwDoneStatus(homework.week);
+                      const hwDoneStatus = getHwDoneStatus(homework.lesson);
                       
                       // IMPORTANT: Only hide Start button if homework exists in online_homeworks
                       // Don't hide Start button just because weeks array says hwDone is true
@@ -977,14 +730,40 @@ export default function MyHomeworks() {
                                 gap: '8px'
                               }}
                             >
-                              ✅ Done{getHwDegree(homework.week, homework._id) ? ` (${getHwDegree(homework.week, homework._id)})` : ''}
+                              ✅ Done{getHwDegree(homework.lesson, homework._id) ? ` (${getHwDegree(homework.lesson, homework._id)})` : ''}
                             </button>
                           </>
                         );
                       }
                       
+                      // Past deadline closes the item even if weeks still show "Not Completed"
+                      if (
+                        homework.deadline_type === 'with_deadline' &&
+                        homework.deadline_date &&
+                        isDeadlinePassedEgypt(homework.deadline_date, homework.deadline_time)
+                      ) {
+                        return (
+                          <button
+                            style={{
+                              padding: '8px 16px',
+                              backgroundColor: '#dc3545',
+                              color: 'white',
+                              border: 'none',
+                              borderRadius: '20px',
+                              cursor: 'default',
+                              fontSize: '0.9rem',
+                              fontWeight: '600',
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '8px'
+                            }}
+                          >
+                            ❌ Not Done
+                          </button>
+                        );
+                      }
+
                       // If hwDone is "Not Completed" or "No Homework", show that status
-                      // (but still allow Start button if not in online_homeworks)
                       if (hwDoneStatus === "Not Completed" || hwDoneStatus === "No Homework") {
                         return (
                           <button
@@ -1006,62 +785,14 @@ export default function MyHomeworks() {
                           </button>
                         );
                       }
-                      
-                      // Check if deadline has passed and homework not submitted
-                      if (homework.deadline_type === 'with_deadline' && 
-                          homework.deadline_date && 
-                          isDeadlinePassed(homework.deadline_date)) {
-                        return (
-                          <button
-                            style={{
-                              padding: '8px 16px',
-                              backgroundColor: '#dc3545',
-                              color: 'white',
-                              border: 'none',
-                              borderRadius: '20px',
-                              cursor: 'default',
-                              fontSize: '0.9rem',
-                              fontWeight: '600',
-                              display: 'flex',
-                              alignItems: 'center',
-                              gap: '8px'
-                            }}
-                          >
-                            ❌ Not Done
-                          </button>
-                        );
+
+                      if (homework.homework_type === 'pdf') {
+                        return null;
                       }
                       
-                      // Default: show Start button or pages_from_book display
-                      // (Even if weeks array says hwDone is true, if not in online_homeworks, show Start)
                       if (homework.homework_type === 'pages_from_book') {
-                        const hwStatus = getHwDoneStatus(homework.week);
-                        return (
-                          <button
-                            style={{
-                              padding: '8px 16px',
-                              backgroundColor: hwStatus === true ? '#28a745' : hwStatus === "No Homework" ? '#dc3545' : hwStatus === "Not Completed" ? '#ffc107' : '#dc3545',
-                              color: 'white',
-                              border: 'none',
-                              borderRadius: '20px',
-                              cursor: 'default',
-                              fontSize: '0.9rem',
-                              fontWeight: '600',
-                              display: 'flex',
-                              alignItems: 'center',
-                              gap: '8px',
-                              whiteSpace: 'nowrap'
-                            }}
-                          >
-                            {hwStatus === true 
-                              ? `✅ Done${getHwDegree(homework.week, homework._id) ? ` (${getHwDegree(homework.week, homework._id)})` : ''}` 
-                              : hwStatus === "No Homework" 
-                              ? '🚫 No Homework'
-                              : hwStatus === "Not Completed"
-                              ? '⚠️ Not Completed'
-                              : '❌ Not Done'}
-                          </button>
-                        );
+                        // For pages from book, hide state section (no Done/Not Done badge)
+                        return null;
                       }
                       
                       // Show Start button for questions type
@@ -1126,8 +857,11 @@ export default function MyHomeworks() {
           }
           .homework-buttons {
             width: 100%;
+            flex-direction: column;
           }
-          .homework-buttons button {
+          .homework-buttons button,
+          .homework-buttons a,
+          .homework-buttons .hw-action-btn {
             width: 100%;
             justify-content: center;
           }
@@ -1175,6 +909,34 @@ export default function MyHomeworks() {
           }
         }
       `}</style>
+
+      {/* Note Popup */}
+      {notePopup && (
+        <div onClick={() => setNotePopup(null)} style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(6px)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999, padding: '16px' }}>
+          <div onClick={(e) => e.stopPropagation()} style={{ background: 'linear-gradient(145deg, #ffffff 0%, #f8f9fa 100%)', borderRadius: '20px', padding: '0', maxWidth: '500px', width: '100%', position: 'relative', boxShadow: '0 25px 60px rgba(0,0,0,0.3)', overflow: 'hidden', maxHeight: '80vh', display: 'flex', flexDirection: 'column' }}>
+            <div style={{ background: 'linear-gradient(135deg, #1FA8DC 0%, #17a2b8 100%)', padding: '20px 24px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <Image src="/notes4.svg" alt="Notes" width={22} height={22} style={{ filter: 'brightness(0) invert(1)' }} />
+                <h3 style={{ margin: 0, fontSize: '1.2rem', color: 'white', fontWeight: '700' }}>Note</h3>
+              </div>
+              <button onClick={() => setNotePopup(null)} style={{ background: '#dc3545', color: 'white', border: 'none', borderRadius: '50%', width: '32px', height: '32px', cursor: 'pointer', fontSize: '18px', fontWeight: '700', display: 'flex', alignItems: 'center', justifyContent: 'center', transition: 'all 0.2s', padding: 0, lineHeight: 1 }}
+                onMouseEnter={(e) => { e.currentTarget.style.background = '#c82333'; e.currentTarget.style.transform = 'scale(1.1)'; }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = '#dc3545'; e.currentTarget.style.transform = 'scale(1)'; }}
+                onMouseDown={(e) => e.currentTarget.style.transform = 'scale(0.95)'}
+                onMouseUp={(e) => e.currentTarget.style.transform = 'scale(1.1)'}>✕</button>
+            </div>
+            <div style={{ padding: '24px', overflowY: 'auto', flex: 1 }}>
+              <div style={{ fontSize: '1rem', lineHeight: '1.8', color: '#495057', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{notePopup}</div>
+            </div>
+          </div>
+        </div>
+      )}
+      <PdfViewerModal
+        isOpen={pdfViewer.isOpen}
+        fileUrl={pdfViewer.url}
+        fileName={pdfViewer.name}
+        onClose={() => setPdfViewer({ isOpen: false, url: '', name: '' })}
+      />
     </div>
   );
 }

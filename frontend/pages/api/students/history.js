@@ -68,153 +68,118 @@ export default async function handler(req, res) {
     const user = await authMiddleware(req);
     console.log('✅ User authenticated:', user.assistant_id || user.id);
     
-    // Optimized approach: Use aggregation pipeline to join data at database level
-    console.log('📊 Building optimized aggregation pipeline...');
+    // Optimized approach: Get history records and join with students
+    console.log('📊 Fetching history records...');
     
-    const pipeline = [
-      // Match all history records
-      { $match: {} },
-      
-      // Lookup students data with projection to only get needed fields
-      {
-        $lookup: {
-          from: 'students',
-          localField: 'studentId',
-          foreignField: 'id',
-          as: 'student',
-          pipeline: [
-            {
-              $project: {
-                id: 1,
-                name: 1,
-                grade: 1,
-                school: 1,
-                phone: 1,
-                parentsPhone: 1,
-                main_center: 1,
-                main_comment: 1,
-                comment: 1,
-                weeks: 1
-              }
-            }
-          ]
-        }
-      },
-      
-      // Unwind student array (should be single student)
-      { $unwind: '$student' },
-      
-      // Add computed fields for the specific week
-      {
-        $addFields: {
-          weekData: {
-            $let: {
-              vars: {
-                weekIndex: { $subtract: ['$week', 1] },
-                studentWeeks: '$student.weeks'
-              },
-              in: {
-                $cond: {
-                  if: {
-                    $and: [
-                      { $isArray: '$$studentWeeks' },
-                      { $gte: ['$$weekIndex', 0] },
-                      { $lt: ['$$weekIndex', { $size: '$$studentWeeks' }] }
-                    ]
-                  },
-                  then: { $arrayElemAt: ['$$studentWeeks', '$$weekIndex'] },
-                  else: null
-                }
-              }
-            }
+    // Get all history records (with lesson field)
+    const historyRecords = await db.collection('history')
+      .find({})
+      .sort({ studentId: 1, lesson: 1 })
+      .toArray();
+    
+    console.log(`✅ Found ${historyRecords.length} history records`);
+    
+    // Get unique student IDs from history
+    const studentIds = [...new Set(historyRecords.map(record => record.studentId))];
+    console.log(`📋 Processing ${studentIds.length} unique students`);
+    
+    // Get all students with their lessons data
+    const students = await db.collection('students')
+      .find(
+        { id: { $in: studentIds } },
+        {
+          projection: {
+            id: 1,
+            name: 1,
+            gender: 1,
+            grade: 1,
+            course: 1,
+            courseType: 1,
+            school: 1,
+            phone: 1,
+            parentsPhone: 1,
+            main_center: 1,
+            main_comment: 1,
+            comment: 1,
+            lessons: 1
           }
         }
-      },
-      
-      // Filter out records where week data doesn't exist or student didn't attend
-      {
-        $match: {
-          'weekData.attended': true
-        }
-      },
-      
-      // Project the final structure
-      {
-        $project: {
-          studentId: 1,
-          week: 1,
-          student: {
-            id: '$student.id',
-            name: '$student.name',
-            grade: '$student.grade',
-            school: '$student.school',
-            phone: '$student.phone',
-            parentsPhone: '$student.parentsPhone',
-            main_center: '$student.main_center',
-            main_comment: { $ifNull: ['$student.main_comment', '$student.comment'] },
-            weeks: '$student.weeks'
-          },
-          historyRecord: {
-            studentId: 1,
-            week: { $ifNull: ['$week', 1] }, // Ensure week is always present
-            main_center: '$student.main_center',
-            center: { $ifNull: ['$weekData.lastAttendanceCenter', 'n/a'] },
-            attendanceDate: { $ifNull: ['$weekData.lastAttendance', 'n/a'] },
-            hwDone: { $ifNull: ['$weekData.hwDone', false] },
-            hwDegree: { $ifNull: ['$weekData.hwDegree', null] },
-            quizDegree: { $ifNull: ['$weekData.quizDegree', null] },
-            message_state: { $ifNull: ['$weekData.message_state', false] }
-          }
-        }
-      },
-      
-      // Sort by student ID and week
-      { $sort: { 'student.id': 1, week: 1 } }
-    ];
+      )
+      .toArray();
     
-    console.log('🚀 Executing aggregation pipeline...');
-    const aggregationResult = await db.collection('history').aggregate(pipeline).toArray();
-    console.log(`✅ Aggregation completed: ${aggregationResult.length} records`);
+    console.log(`✅ Fetched ${students.length} students`);
     
-    // Debug: Check first few records for week data
-    if (aggregationResult.length > 0) {
-      console.log('🔍 Sample record structure:', JSON.stringify(aggregationResult[0], null, 2));
-    }
+    // Create a map for quick student lookup
+    const studentMap = new Map();
+    students.forEach(student => {
+      studentMap.set(student.id, student);
+    });
     
     // Group by student to match the expected frontend format
     const studentHistoryMap = new Map();
     
-    // Process results in batches to avoid memory issues
+    // Process history records in batches
     const batchSize = 100;
-    for (let i = 0; i < aggregationResult.length; i += batchSize) {
-      const batch = aggregationResult.slice(i, i + batchSize);
+    for (let i = 0; i < historyRecords.length; i += batchSize) {
+      const batch = historyRecords.slice(i, i + batchSize);
       
-      batch.forEach(item => {
-        const studentId = item.student.id;
+      batch.forEach(historyRecord => {
+        const studentId = historyRecord.studentId;
+        const student = studentMap.get(studentId);
         
+        if (!student) {
+          console.warn(`⚠️ Student ${studentId} not found for history record`);
+          return;
+        }
+        
+        // Get lesson name from history record (support both lesson and week for backward compatibility)
+        const lessonName = historyRecord.lesson || (historyRecord.week ? `Week ${historyRecord.week}` : 'Unknown Lesson');
+        
+        // Get lesson data from student.lessons object
+        let lessonData = null;
+        if (student.lessons && typeof student.lessons === 'object' && !Array.isArray(student.lessons)) {
+          lessonData = student.lessons[lessonName] || null;
+        }
+        
+        // Only include records where student attended the lesson
+        if (!lessonData || lessonData.attended !== true) {
+          return;
+        }
+        
+        // Initialize student in map if not present
         if (!studentHistoryMap.has(studentId)) {
           studentHistoryMap.set(studentId, {
-            id: item.student.id,
-            name: item.student.name,
-            grade: item.student.grade,
-            school: item.student.school,
-            phone: item.student.phone,
-            parentsPhone: item.student.parentsPhone,
-            main_comment: item.student.main_comment || '',
-            weeks: Array.isArray(item.student.weeks) ? item.student.weeks : [],
-          historyRecords: []
-        });
-      }
-      
-      // Ensure week is properly set in historyRecord
-      const historyRecord = {
-        ...item.historyRecord,
-        week: item.historyRecord.week || 1 // Fallback to week 1 if not present
-      };
-      
-      studentHistoryMap.get(studentId).historyRecords.push(historyRecord);
-    });
-  }
+            id: student.id,
+            name: student.name,
+            gender: student.gender || null,
+            grade: student.grade,
+            course: student.course || student.grade, // Prioritize course over grade
+            courseType: student.courseType || null,
+            school: student.school,
+            phone: student.phone,
+            parentsPhone: student.parentsPhone,
+            main_comment: student.main_comment || student.comment || '',
+            lessons: (student.lessons && typeof student.lessons === 'object' && !Array.isArray(student.lessons)) ? student.lessons : {},
+            historyRecords: []
+          });
+        }
+        
+        // Create history record with lesson data
+        const record = {
+          studentId: studentId,
+          lesson: lessonName,
+          main_center: student.main_center || 'N/A',
+          center: lessonData.lastAttendanceCenter || 'n/a',
+          lastAttendance: lessonData.lastAttendance || 'n/a', // Use lastAttendance instead of attendanceDate
+          hwDone: lessonData.hwDone !== undefined ? lessonData.hwDone : false,
+          hwDegree: lessonData.homework_degree || null,
+          quizDegree: lessonData.quizDegree || null,
+          message_state: lessonData.message_state !== undefined ? lessonData.message_state : false
+        };
+        
+        studentHistoryMap.get(studentId).historyRecords.push(record);
+      });
+    }
     
     // Convert map to array and sort by student ID
     const result = Array.from(studentHistoryMap.values()).sort((a, b) => a.id - b.id);

@@ -1,13 +1,16 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import { useRouter } from "next/router";
 import Title from '../../../../components/Title';
-import HomeworkPerformanceChart from '../../../../components/HomeworkPerformanceChart';
+import HwChart from '../../../../components/HwChart';
 import { useStudents, useStudent } from '../../../../lib/api/students';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import apiClient from '../../../../lib/axios';
 import Image from 'next/image';
+import { useNationalSystem, getCourseFieldLabels } from '../../../../lib/api/system';
 
 export default function PreviewStudentHomeworks() {
+  const isNational = useNationalSystem();
+  const courseLabels = getCourseFieldLabels(isNational);
   const router = useRouter();
   const queryClient = useQueryClient();
   const [studentId, setStudentId] = useState("");
@@ -37,36 +40,7 @@ export default function PreviewStudentHomeworks() {
     enabled: !!searchId && !!student,
   });
 
-  // Fetch all homeworks to check state for filtering
-  const { data: allHomeworksData } = useQuery({
-    queryKey: ['all-homeworks'],
-    queryFn: async () => {
-      const response = await apiClient.get('/api/homeworks');
-      return response.data;
-    },
-    staleTime: Infinity,
-    refetchOnWindowFocus: false,
-    refetchOnReconnect: false,
-    refetchOnMount: false,
-  });
-
-  const allHomeworks = allHomeworksData?.homeworks || [];
-
-  // Get active weeks from Activated homeworks
-  const activeWeeks = useMemo(() => {
-    const weekSet = new Set();
-    allHomeworks.forEach(homework => {
-      const itemState = homework.state || homework.account_state || 'Activated';
-      if (itemState === 'Activated') {
-        if (homework.week !== undefined && homework.week !== null) {
-          weekSet.add(homework.week.toString());
-        }
-      }
-    });
-    return weekSet;
-  }, [allHomeworks]);
-
-  // Fetch homework performance chart data using API endpoint
+  // Same chart source as Student Info: performance API + lessons.homework_degree fallback
   const { data: performanceData, isLoading: isChartLoading } = useQuery({
     queryKey: ['homework-performance', searchId],
     queryFn: async () => {
@@ -87,21 +61,15 @@ export default function PreviewStudentHomeworks() {
     retry: 1,
   });
 
-  const rawChartData = performanceData?.chartData || [];
-
-  // Filter chart data to only include Activated weeks
-  const chartData = useMemo(() => {
-    if (!Array.isArray(rawChartData) || rawChartData.length === 0) return [];
-    if (activeWeeks.size === 0) return rawChartData; // If no active weeks, show all
-    
-    return rawChartData.filter(item => {
-      const label = (item.week || item.weekNumber || '').toString().toLowerCase();
-      if (!label) return false;
-      return Array.from(activeWeeks).some(week =>
-        label.includes(String(week).toLowerCase())
-      );
-    });
-  }, [rawChartData, activeWeeks]);
+  const chartData = performanceData?.chartData ?? [];
+  const homeworkLessons = useMemo(() => {
+    const lessons = student?.lessons;
+    if (!lessons) return [];
+    return Object.keys(lessons).map((key) => ({
+      lesson: key,
+      ...(lessons[key] || {}),
+    }));
+  }, [student?.lessons]);
 
   // Reset homework mutation
   const resetHomeworkMutation = useMutation({
@@ -113,8 +81,10 @@ export default function PreviewStudentHomeworks() {
     },
     onSuccess: () => {
       refetchHomeworks();
-      // Invalidate and refetch chart data
       queryClient.invalidateQueries({ queryKey: ['homework-performance', searchId] });
+      queryClient.invalidateQueries({ queryKey: ['students'] });
+      queryClient.invalidateQueries({ queryKey: ['student-with-rankings'] });
+      queryClient.invalidateQueries({ queryKey: ['scoring-history'] });
       setResettingId(null);
     },
     onError: (err) => {
@@ -529,7 +499,7 @@ export default function PreviewStudentHomeworks() {
         <Title backText="Back" href="/dashboard/manage_online_system">
           <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
             <Image src="/books.svg" alt="Preview Homeworks" width={32} height={32} />
-            Preview Student Homeworks
+            Preview Student Homework
           </div>
         </Title>
 
@@ -593,7 +563,7 @@ export default function PreviewStudentHomeworks() {
                     {s.name} (ID: {s.id})
                   </div>
                   <div style={{ fontSize: "0.9rem", color: "#6c757d" }}>
-                    {s.grade} • {s.main_center}
+                    {[s.course, !isNational && s.courseType, s.main_center].filter(Boolean).join(' • ')}
                   </div>
                 </button>
               ))}
@@ -615,17 +585,29 @@ export default function PreviewStudentHomeworks() {
                   <div className="detail-label">Full Name</div>
                   <div className="detail-value">{student.name}</div>
                 </div>
+                {courseLabels.showGradeField && (
                 <div className="detail-item">
                   <div className="detail-label">Grade</div>
                   <div className="detail-value">{student.grade}</div>
                 </div>
+                )}
+                <div className="detail-item">
+                  <div className="detail-label">{courseLabels.course}</div>
+                  <div className="detail-value">{student.course || 'N/A'}</div>
+                </div>
+                {courseLabels.showCourseType && student.courseType && (
+                  <div className="detail-item">
+                    <div className="detail-label">Course Type</div>
+                    <div className="detail-value" style={{ textTransform: 'capitalize' }}>{student.courseType}</div>
+                  </div>
+                )}
                 <div className="detail-item">
                   <div className="detail-label">Student Phone</div>
-                  <div className="detail-value" style={{ fontFamily: 'monospace' }}>{student.phone}</div>
+                  <div className="detail-value">{student.phone || 'N/A'}</div>
                 </div>
                 <div className="detail-item">
-                  <div className="detail-label">Parent's Phone</div>
-                  <div className="detail-value" style={{ fontFamily: 'monospace' }}>{student.parents_phone}</div>
+                  <div className="detail-label">Parent Phone</div>
+                  <div className="detail-value">{student.parents_phone || student.parentsPhone || 'N/A'}</div>
                 </div>
               </div>
             </div>
@@ -634,7 +616,7 @@ export default function PreviewStudentHomeworks() {
             {!isLoading && student && (
               <div className="homeworks-container" style={{ marginBottom: '20px' }}>
                 <h3 style={{ marginBottom: '24px', fontSize: '1.3rem', fontWeight: '600', color: '#212529' }}>
-                  Homework Performance by Week
+                  Homework Performance by Lesson
                 </h3>
                 {isChartLoading ? (
                   <div style={{
@@ -647,7 +629,11 @@ export default function PreviewStudentHomeworks() {
                     Loading chart data...
                   </div>
                 ) : (
-                  <HomeworkPerformanceChart chartData={chartData} height={400} />
+                  <HwChart
+                    lessons={homeworkLessons}
+                    chartData={chartData}
+                    chartLoading={isChartLoading}
+                  />
                 )}
               </div>
             )}
@@ -667,13 +653,13 @@ export default function PreviewStudentHomeworks() {
                     margin: "0 auto 20px",
                     animation: "spin 1s linear infinite"
                   }} />
-                  <p style={{ color: "#6c757d", fontSize: "1rem" }}>Loading homeworks...</p>
+                  <p style={{ color: "#6c757d", fontSize: "1rem" }}>Loading homework...</p>
                 </div>
               </div>
             ) : homeworks.length === 0 ? (
               <div className="homeworks-container">
                 <div style={{ textAlign: 'center', padding: '40px', color: '#6c757d', fontSize: '1rem' }}>
-                  This student has no online homeworks
+                  This student has no online homework
                 </div>
               </div>
             ) : (
@@ -701,7 +687,7 @@ export default function PreviewStudentHomeworks() {
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '16px' }}>
                           <div style={{ flex: 1, minWidth: '200px' }}>
                             <div style={{ fontSize: '1.2rem', fontWeight: '600', marginBottom: '8px' }}>
-                              {hwResult.week !== undefined && hwResult.week !== null ? `Week ${hwResult.week} • ` : ''}{homework.lesson_name}
+                              {homework.lesson ? `${homework.lesson} • ` : ''}{homework.lesson_name}
                             </div>
                             <div style={{ color: '#6c757d', fontSize: '0.95rem', marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
                               <span>{homework.questions || 0} Question{homework.questions !== 1 ? 's' : ''}</span>

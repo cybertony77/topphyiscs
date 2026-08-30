@@ -1,55 +1,106 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import { useRouter } from "next/router";
 import Title from '../../../../components/Title';
-import AttendanceWeekSelect from '../../../../components/AttendanceWeekSelect';
-import GradeSelect from '../../../../components/GradeSelect';
-import AccountStateSelect from '../../../../components/AccountStateSelect';
+import AttendanceLessonSelect from '../../../../components/AttendancelessonSelect';
+import CourseSelect from '../../../../components/CourseSelect';
+import CourseTypeSelect from '../../../../components/CourseTypeSelect';
+import CenterSelect from '../../../../components/CenterSelect';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import apiClient from '../../../../lib/axios';
+import { useSystemConfig , useNationalSystem, getCourseFieldLabels} from '../../../../lib/api/system';
 import Image from 'next/image';
 import ZoomableImage from '../../../../components/ZoomableImage';
+import AccountStateSelect from '../../../../components/AccountStateSelect';
+import ImportExistingOnlineItemModal from '../../../../components/ImportExistingOnlineItemModal';
+import { formatHomeworkPickerLabel } from '../../../../lib/importOnlineItemLabels';
+import { buildHomeworkImportFormState } from '../../../../lib/importOnlineFormState';
+import { fetchImportedQuestionImageUrls } from '../../../../lib/fetchImportedQuestionImageUrls';
+import { centersMatchDuplicateClient } from '../../../../lib/onlineItemDuplicate';
+import {
+  newQuestionClientKey,
+  reindexCompositeKeysAfterQuestionRemoved,
+  reindexQuestionErrorsAfterQuestionRemoved,
+  reindexDragOverAfterQuestionRemoved,
+} from '../../../../lib/onlineItemQuestionFormHelpers';
+import {
+  createEmptyMcqQuestion,
+  getQuestionType,
+  isEssayQuestion,
+  normalizeLoadedQuestion,
+  normalizeValidCorrectAnswers,
+  QUESTION_TYPE_ESSAY,
+  switchQuestionType,
+} from '../../../../lib/onlineQuestionTypes';
+import QuestionTypeTabs from '../../../../components/online/QuestionTypeTabs';
+import EssayValidAnswersEditor from '../../../../components/online/EssayValidAnswersEditor';
+import DeadlineTimeRow from '../../../../components/DeadlineTimeRow';
+import AllowDownloadingRadio from '../../../../components/AllowDownloadingRadio';
+import UseDesmosInQuestionRadio from '../../../../components/online/UseDesmosInQuestionRadio';
+import {
+  getEgyptYmdToday,
+  isDeadlineStrictlyInFutureEgypt,
+  normalizeDeadlineTimeField,
+  parseDeadlineTime,
+} from '../../../../lib/deadlineTimeEgypt';
+import { isHomeworkFormReady } from '../../../../lib/onlineItemFormReady';
 
-// Extract week number from week string (e.g., "week 01" -> 1)
-function extractWeekNumber(weekString) {
-  if (!weekString) return null;
-  const match = weekString.match(/week\s*(\d+)/i);
-  return match ? parseInt(match[1], 10) : null;
+
+function createDefaultMcqQuestion(desmosEnabled) {
+  return {
+    ...createEmptyMcqQuestion(),
+    use_desmos: desmosEnabled ? true : false,
+  };
 }
 
 export default function AddHomework() {
+  const isNational = useNationalSystem();
+  const courseLabels = getCourseFieldLabels(isNational);
   const router = useRouter();
   const queryClient = useQueryClient();
+  const { data: systemConfig } = useSystemConfig();
+  const desmosEnabled =
+    systemConfig?.desmos_integrations === true || systemConfig?.desmos_integrations === 'true';
   const [formData, setFormData] = useState({
     lesson_name: '',
-    deadline_type: 'no_deadline', // 'no_deadline' or 'with_deadline'
+    comment: '',
+    deadline_type: 'no_deadline',
     deadline_date: '',
-    homework_type: 'questions', // 'questions' or 'pages_from_book'
+    deadline_time: null,
+    homework_type: 'questions',
     book_name: '',
     from_page: '',
     to_page: '',
     timer_type: 'no_timer',
     timer: null,
     shuffle_questions_and_answers: false,
-    questions: [{
-      question_text: '',
-      question_picture: null,
-      answers: ['A', 'B', 'C', 'D'],
-      answer_texts: ['', '', '', ''], // Text for each answer option
-      correct_answer: '',
-      question_explanation: '' // Explanation for the question (optional)
-    }]
+    show_details_after_submitting: false,
+    pdf_file_name: '',
+    pdf_url: '',
+    allow_downloading: true,
+    questions: [createDefaultMcqQuestion(desmosEnabled)]
   });
-  const [activeTab, setActiveTab] = useState(formData.homework_type || 'questions'); // 'questions' or 'pages_from_book'
-  const [selectedGrade, setSelectedGrade] = useState('');
-  const [gradeDropdownOpen, setGradeDropdownOpen] = useState(false);
-  const [selectedWeek, setSelectedWeek] = useState('');
-  const [weekDropdownOpen, setWeekDropdownOpen] = useState(false);
+  const [activeTab, setActiveTab] = useState(formData.homework_type || 'questions');
+  const [pdfUploading, setPdfUploading] = useState(false);
+  const [pdfUploadProgress, setPdfUploadProgress] = useState(0);
+  const [pdfUploadError, setPdfUploadError] = useState('');
+  const pdfFileInputRef = useRef(null);
+  const [selectedCourse, setSelectedCourse] = useState('');
+  const [courseDropdownOpen, setCourseDropdownOpen] = useState(false);
+  const [selectedCourseType, setSelectedCourseType] = useState('');
+  const [courseTypeDropdownOpen, setCourseTypeDropdownOpen] = useState(false);
+  const [selectedLesson, setSelectedLesson] = useState('');
+  const [lessonDropdownOpen, setLessonDropdownOpen] = useState(false);
+  const [selectedCenter, setSelectedCenter] = useState('');
+  const [centerDropdownOpen, setCenterDropdownOpen] = useState(false);
+  const [accountState, setAccountState] = useState('Activated');
   const [errors, setErrors] = useState({});
   const [uploadingImages, setUploadingImages] = useState({});
   const [imagePreviews, setImagePreviews] = useState({});
   const [dragOverIndex, setDragOverIndex] = useState(null);
   const errorTimeoutRef = useRef(null);
-  const [accountState, setAccountState] = useState('Activated');
+  const [importModalOpen, setImportModalOpen] = useState(false);
+  const [importSelectedId, setImportSelectedId] = useState('');
+  const [importApplyLoading, setImportApplyLoading] = useState(false);
 
   // Fetch all homeworks for duplicate validation
   const { data: homeworksData } = useQuery({
@@ -58,9 +109,59 @@ export default function AddHomework() {
       const response = await apiClient.get('/api/homeworks');
       return response.data;
     },
+    staleTime: Infinity,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+    refetchOnMount: false,
   });
 
   const homeworks = homeworksData?.homeworks || [];
+
+  const importHomeworkOptions = useMemo(
+    () =>
+      homeworks.map((hw) => ({
+        value: String(hw._id),
+        label: formatHomeworkPickerLabel(hw),
+      })),
+    [homeworks]
+  );
+
+  const isFormReady = useMemo(
+    () => isHomeworkFormReady({ formData, selectedCourse, selectedLesson, accountState }),
+    [formData, selectedCourse, selectedLesson, accountState]
+  );
+
+  const handleImportApply = async () => {
+    if (!importSelectedId) return;
+    const hw = homeworks.find((h) => String(h._id) === importSelectedId);
+    if (!hw) return;
+    const built = buildHomeworkImportFormState(hw);
+    if (!built) return;
+    setImportApplyLoading(true);
+    try {
+      setFormData(built.formData);
+      setSelectedCourse(built.selectedCourse);
+      setSelectedCourseType(built.selectedCourseType);
+      setSelectedLesson(built.selectedLesson);
+      setSelectedCenter(built.selectedCenter);
+      setAccountState(built.accountState);
+      setActiveTab(built.activeTab);
+      setErrors({});
+      setImagePreviews({});
+      if (built.formData.homework_type === 'questions' && built.formData.questions?.length) {
+        const urls = await fetchImportedQuestionImageUrls(
+          built.formData.questions,
+          'homeworks',
+          apiClient
+        );
+        setImagePreviews(urls);
+      }
+      setImportModalOpen(false);
+      setImportSelectedId('');
+    } finally {
+      setImportApplyLoading(false);
+    }
+  };
 
   // Auto-hide errors after 6 seconds
   useEffect(() => {
@@ -98,26 +199,126 @@ export default function AddHomework() {
   });
 
   // Handle image upload
-  const handleImageUpload = async (questionIndex, file) => {
+  const getQuestionPictures = (question) => {
+    if (!question || typeof question !== 'object') return [null];
+    const pictures = [];
+    pictures[0] = question.question_picture || null;
+    Object.keys(question)
+      .filter((key) => /^question_picture_\d+$/.test(key))
+      .sort((a, b) => Number(a.split('_').pop()) - Number(b.split('_').pop()))
+      .forEach((key) => {
+        const idx = Number(key.split('_').pop()) - 1;
+        if (idx >= 1) pictures[idx] = question[key] || null;
+      });
+    return pictures.length ? pictures.map((pic) => pic || null) : [null];
+  };
+
+  const buildQuestionPicturesPayload = (pictures) => {
+    const payload = { question_picture: pictures[0] || null };
+    for (let i = 1; i < pictures.length; i++) {
+      payload[`question_picture_${i + 1}`] = pictures[i] || null;
+    }
+    return payload;
+  };
+
+  const updateQuestionPictures = (questionIndex, pictures) => {
+    setFormData((prev) => {
+      const newQuestions = [...prev.questions];
+      const currentQuestion = { ...newQuestions[questionIndex] };
+      Object.keys(currentQuestion).forEach((key) => {
+        if (/^question_picture_\d+$/.test(key)) {
+          delete currentQuestion[key];
+        }
+      });
+      const picturePayload = buildQuestionPicturesPayload(pictures);
+      newQuestions[questionIndex] = { ...currentQuestion, ...picturePayload };
+      return { ...prev, questions: newQuestions };
+    });
+  };
+
+  /** After removing a middle/extra slot, shift UI state keys so slot N matches image N (parse keys with lastIndexOf to support qIdx 10+). */
+  const reindexQuestionImageSlotKeys = (prev, questionIndex, removedImageIndex) => {
+    const next = {};
+    for (const [key, val] of Object.entries(prev)) {
+      const lastUs = key.lastIndexOf('_');
+      if (lastUs <= 0) {
+        next[key] = val;
+        continue;
+      }
+      const q = Number(key.slice(0, lastUs));
+      const idx = Number(key.slice(lastUs + 1));
+      if (Number.isNaN(q) || Number.isNaN(idx)) {
+        next[key] = val;
+        continue;
+      }
+      if (q !== questionIndex) {
+        next[key] = val;
+        continue;
+      }
+      if (idx === removedImageIndex) continue;
+      if (idx > removedImageIndex) {
+        next[`${questionIndex}_${idx - 1}`] = val;
+      } else {
+        next[key] = val;
+      }
+    }
+    return next;
+  };
+
+  const reindexQuestionImageErrors = (prev, questionIndex, removedImageIndex) => {
+    const next = { ...prev };
+    const errPrefix = `question_${questionIndex}_image_`;
+    delete next[`question_${questionIndex}_image_${removedImageIndex}`];
+    const movers = Object.keys(next)
+      .filter((k) => k.startsWith(errPrefix))
+      .map((k) => {
+        const idx = Number(k.slice(errPrefix.length));
+        return { k, idx };
+      })
+      .filter(({ idx }) => !Number.isNaN(idx) && idx > removedImageIndex)
+      .sort((a, b) => a.idx - b.idx);
+    for (const { k, idx } of movers) {
+      const v = next[k];
+      delete next[k];
+      next[`question_${questionIndex}_image_${idx - 1}`] = v;
+    }
+    return next;
+  };
+
+  const reindexDragOverForQuestion = (dragOverIndex, questionIndex, removedImageIndex) => {
+    if (dragOverIndex == null || dragOverIndex === '') return dragOverIndex;
+    const key = String(dragOverIndex);
+    const lastUs = key.lastIndexOf('_');
+    if (lastUs <= 0) return dragOverIndex;
+    const q = Number(key.slice(0, lastUs));
+    const idx = Number(key.slice(lastUs + 1));
+    if (Number.isNaN(q) || Number.isNaN(idx) || q !== questionIndex) return dragOverIndex;
+    if (idx === removedImageIndex) return null;
+    if (idx > removedImageIndex) return `${questionIndex}_${idx - 1}`;
+    return dragOverIndex;
+  };
+
+  const handleImageUpload = async (questionIndex, imageIndex, file) => {
     if (!file) return;
+    const imageKey = `${questionIndex}_${imageIndex}`;
 
     // Allowed image MIME types
     const ALLOWED_MIME_TYPES = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/svg+xml', 'image/webp', 'image/x-icon', 'image/vnd.microsoft.icon'];
     
     // Validate file type
     if (!file.type || !ALLOWED_MIME_TYPES.includes(file.type)) {
-      setErrors(prev => ({ ...prev, [`question_${questionIndex}_image`]: '❌ Invalid file type. Only image formats (JPEG/JPG, PNG, GIF, SVG, WEBP, ICO) are allowed.' }));
+      setErrors(prev => ({ ...prev, [`question_${questionIndex}_image_${imageIndex}`]: '❌ Invalid file type. Only image formats (JPEG/JPG, PNG, GIF, SVG, WEBP, ICO) are allowed.' }));
       return;
     }
 
     // Validate file size (10 MB)
     const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
     if (file.size > MAX_FILE_SIZE) {
-      setErrors(prev => ({ ...prev, [`question_${questionIndex}_image`]: '❌ Sorry, Max image size is 10 MB, Please try another picture' }));
+      setErrors(prev => ({ ...prev, [`question_${questionIndex}_image_${imageIndex}`]: '❌ Sorry, Max image size is 10 MB, Please try another picture' }));
       // Clear preview if exists
       setImagePreviews(prev => {
         const newPreviews = { ...prev };
-        delete newPreviews[questionIndex];
+        delete newPreviews[imageKey];
         return newPreviews;
       });
       return;
@@ -126,15 +327,15 @@ export default function AddHomework() {
     // Create preview
     const reader = new FileReader();
     reader.onloadend = () => {
-      setImagePreviews(prev => ({ ...prev, [questionIndex]: reader.result }));
+      setImagePreviews(prev => ({ ...prev, [imageKey]: reader.result }));
     };
     reader.readAsDataURL(file);
 
     // Upload to Cloudinary
-    setUploadingImages(prev => ({ ...prev, [questionIndex]: true }));
+    setUploadingImages(prev => ({ ...prev, [imageKey]: true }));
     setErrors(prev => {
       const newErrors = { ...prev };
-      delete newErrors[`question_${questionIndex}_image`];
+      delete newErrors[`question_${questionIndex}_image_${imageIndex}`];
       return newErrors;
     });
     
@@ -154,14 +355,10 @@ export default function AddHomework() {
 
       if (response.data.success && response.data.public_id) {
         const newPublicId = response.data.public_id;
-        setFormData(prev => {
-          const newQuestions = [...prev.questions];
-          newQuestions[questionIndex] = {
-            ...newQuestions[questionIndex],
-            question_picture: newPublicId
-          };
-          return { ...prev, questions: newQuestions };
-        });
+        const currentPictures = getQuestionPictures(formData.questions[questionIndex]);
+        const nextPictures = [...currentPictures];
+        nextPictures[imageIndex] = newPublicId;
+        updateQuestionPictures(questionIndex, nextPictures);
       } else {
         throw new Error('Upload failed');
       }
@@ -185,43 +382,56 @@ export default function AddHomework() {
         errorMessage = `❌ ${err.message}`;
       }
       
-      setErrors(prev => ({ ...prev, [`question_${questionIndex}_image`]: errorMessage }));
+      setErrors(prev => ({ ...prev, [`question_${questionIndex}_image_${imageIndex}`]: errorMessage }));
       setImagePreviews(prev => {
         const newPreviews = { ...prev };
-        delete newPreviews[questionIndex];
+        delete newPreviews[imageKey];
         return newPreviews;
       });
     } finally {
       setUploadingImages(prev => {
         const newUploading = { ...prev };
-        delete newUploading[questionIndex];
+        delete newUploading[imageKey];
         return newUploading;
       });
     }
   };
 
+  const addImageContainer = (questionIndex) => {
+    const currentPictures = getQuestionPictures(formData.questions[questionIndex]);
+    updateQuestionPictures(questionIndex, [...currentPictures, null]);
+  };
+
   // Handle remove image
-  const handleRemoveImage = (questionIndex) => {
-    setFormData(prev => {
-      const newQuestions = [...prev.questions];
-      newQuestions[questionIndex] = {
-        ...newQuestions[questionIndex],
-        question_picture: null
-      };
-      return { ...prev, questions: newQuestions };
-    });
+  const handleRemoveImage = (questionIndex, imageIndex) => {
+    const currentPictures = getQuestionPictures(formData.questions[questionIndex]);
+    const nextPictures = [...currentPictures];
+    nextPictures[imageIndex] = null;
+    updateQuestionPictures(questionIndex, nextPictures);
+    const imageKey = `${questionIndex}_${imageIndex}`;
     setImagePreviews(prev => {
       const newPreviews = { ...prev };
-      delete newPreviews[questionIndex];
+      delete newPreviews[imageKey];
       return newPreviews;
     });
   };
 
+  const removeImageContainer = (questionIndex, imageIndex) => {
+    const currentPictures = getQuestionPictures(formData.questions[questionIndex]);
+    if (imageIndex === 0 || currentPictures.length <= 1) return;
+    const nextPictures = currentPictures.filter((_, idx) => idx !== imageIndex);
+    updateQuestionPictures(questionIndex, nextPictures);
+    setImagePreviews((prev) => reindexQuestionImageSlotKeys(prev, questionIndex, imageIndex));
+    setUploadingImages((prev) => reindexQuestionImageSlotKeys(prev, questionIndex, imageIndex));
+    setErrors((prev) => reindexQuestionImageErrors(prev, questionIndex, imageIndex));
+    setDragOverIndex((d) => reindexDragOverForQuestion(d, questionIndex, imageIndex));
+  };
+
   // Drag and drop handlers
-  const handleDragOver = (e, questionIndex) => {
+  const handleDragOver = (e, questionIndex, imageIndex) => {
     e.preventDefault();
     e.stopPropagation();
-    setDragOverIndex(questionIndex);
+    setDragOverIndex(`${questionIndex}_${imageIndex}`);
   };
 
   const handleDragLeave = (e) => {
@@ -230,14 +440,14 @@ export default function AddHomework() {
     setDragOverIndex(null);
   };
 
-  const handleDrop = (e, questionIndex) => {
+  const handleDrop = (e, questionIndex, imageIndex) => {
     e.preventDefault();
     e.stopPropagation();
     setDragOverIndex(null);
     
     const file = e.dataTransfer.files?.[0];
     if (file) {
-      handleImageUpload(questionIndex, file);
+      handleImageUpload(questionIndex, imageIndex, file);
     }
   };
 
@@ -336,35 +546,44 @@ export default function AddHomework() {
     });
   };
 
+  const setQuestionType = (questionIndex, nextType) => {
+    setFormData((prev) => {
+      const newQuestions = [...prev.questions];
+      newQuestions[questionIndex] = switchQuestionType(newQuestions[questionIndex], nextType);
+      return { ...prev, questions: newQuestions };
+    });
+    setErrors((prev) => {
+      const next = { ...prev };
+      delete next[`question_${questionIndex}_answers`];
+      delete next[`question_${questionIndex}_correct`];
+      delete next[`question_${questionIndex}_valid`];
+      return next;
+    });
+  };
+
   const addQuestion = () => {
     setFormData(prev => ({
       ...prev,
-      questions: [...prev.questions, {
-        question_text: '',
-        question_picture: null,
-        answers: ['A', 'B', 'C', 'D'],
-        answer_texts: ['', '', '', ''],
-        correct_answer: '',
-        question_explanation: ''
-      }]
+      questions: [...prev.questions, createDefaultMcqQuestion(desmosEnabled)]
     }));
   };
 
   const removeQuestion = (questionIndex) => {
+    const i = Number(questionIndex);
+    if (Number.isNaN(i) || i < 0) return;
     if (formData.questions.length === 1) {
       setErrors({ general: '❌ At least one question is required' });
       return;
     }
-    
+
     setFormData(prev => ({
       ...prev,
-      questions: prev.questions.filter((_, idx) => idx !== questionIndex)
+      questions: prev.questions.filter((_, idx) => idx !== i)
     }));
-    setImagePreviews(prev => {
-      const newPreviews = { ...prev };
-      delete newPreviews[questionIndex];
-      return newPreviews;
-    });
+    setImagePreviews(prev => reindexCompositeKeysAfterQuestionRemoved(prev, i));
+    setUploadingImages(prev => reindexCompositeKeysAfterQuestionRemoved(prev, i));
+    setErrors(prev => reindexQuestionErrorsAfterQuestionRemoved(prev, i));
+    setDragOverIndex((d) => reindexDragOverAfterQuestionRemoved(d, i));
   };
 
   const handleSubmit = (e) => {
@@ -378,14 +597,14 @@ export default function AddHomework() {
       return;
     }
 
-    // Validate grade
-    if (!selectedGrade || selectedGrade.trim() === '') {
-      newErrors.grade = '❌ Grade is required';
+    // Validate course
+    if (!selectedCourse || selectedCourse.trim() === '') {
+      newErrors.course = `❌ ${courseLabels.course} is required`;
     }
 
-    // Validate week
-    if (!selectedWeek || selectedWeek.trim() === '') {
-      newErrors.week = '❌ Homework week is required';
+    // Validate lesson
+    if (!selectedLesson || selectedLesson.trim() === '') {
+      newErrors.lesson = '❌ Lesson is required';
     }
 
     // Validate lesson name
@@ -393,13 +612,15 @@ export default function AddHomework() {
       newErrors.lesson_name = '❌ Lesson name is required';
     }
 
-    // Validate homework state
-    if (!accountState || accountState.trim() === '') {
-      newErrors.accountState = '❌ Account State is required';
-    }
-
     // Validate homework type
-    if (formData.homework_type === 'pages_from_book') {
+    if (formData.homework_type === 'pdf') {
+      if (!formData.pdf_file_name || formData.pdf_file_name.trim() === '') {
+        newErrors.pdf_file_name = '❌ PDF file name is required';
+      }
+      if (!formData.pdf_url || formData.pdf_url.trim() === '') {
+        newErrors.pdf_url = '❌ PDF file is required';
+      }
+    } else if (formData.homework_type === 'pages_from_book') {
       if (!formData.book_name || formData.book_name.trim() === '') {
         newErrors.book_name = '❌ Book name is required';
       }
@@ -423,15 +644,21 @@ export default function AddHomework() {
       formData.questions.forEach((q, qIdx) => {
         // Each question must have at least question text OR image (or both)
         const hasQuestionText = q.question_text && q.question_text.trim() !== '';
-        const hasQuestionImage = q.question_picture;
+        const hasQuestionImage = getQuestionPictures(q).some((pic) => !!pic);
         if (!hasQuestionText && !hasQuestionImage) {
           newErrors[`question_${qIdx}_text_or_image`] = '❌ Question must have at least question text or image (or both)';
         }
-        if (!q.answers || q.answers.length < 2) {
-          newErrors[`question_${qIdx}_answers`] = '❌ At least 2 answers (A and B) are required';
-        }
-        if (!q.correct_answer) {
-          newErrors[`question_${qIdx}_correct`] = '❌ Please select the correct answer';
+        if (isEssayQuestion(q)) {
+          if (normalizeValidCorrectAnswers(q.valid_correct_answers).length < 1) {
+            newErrors[`question_${qIdx}_valid`] = '❌ At least one valid correct answer is required';
+          }
+        } else {
+          if (!q.answers || q.answers.length < 2) {
+            newErrors[`question_${qIdx}_answers`] = '❌ At least 2 answers (A and B) are required';
+          }
+          if (!q.correct_answer) {
+            newErrors[`question_${qIdx}_correct`] = '❌ Please select the correct answer';
+          }
         }
       });
     }
@@ -443,15 +670,18 @@ export default function AddHomework() {
       if (!formData.deadline_date) {
         newErrors.deadline_date = '❌ Deadline date is required';
       } else {
-        const selectedDate = new Date(formData.deadline_date);
-        const today = new Date();
-        today.setHours(0, 0, 0, 0);
-        if (selectedDate <= today) {
-          newErrors.deadline_date = '❌ Deadline date must be in the future';
+        const rawT = formData.deadline_time;
+        if (rawT != null && String(rawT).trim() !== '' && !parseDeadlineTime(String(rawT).trim())) {
+          newErrors.deadline_time = '❌ Invalid deadline time (use format like 04:30 AM)';
+        } else {
+          const normT = normalizeDeadlineTimeField('with_deadline', rawT);
+          if (!isDeadlineStrictlyInFutureEgypt(formData.deadline_date, normT)) {
+            newErrors.deadline_date = '❌ Deadline must be in the future (Egypt time)';
+          }
         }
       }
     }
-    
+
     // Validate shuffle_questions_and_answers is required
     if (formData.shuffle_questions_and_answers === undefined || formData.shuffle_questions_and_answers === null) {
       newErrors.shuffle_questions_and_answers = '❌ Shuffle Questions and Answers is required';
@@ -462,25 +692,34 @@ export default function AddHomework() {
       newErrors.show_details_after_submitting = '❌ Show details after submitting is required';
     }
 
+    // Validate account state
+    if (!accountState || accountState.trim() === '') {
+      newErrors.accountState = '❌ Account State is required';
+    }
+
     if (Object.keys(newErrors).length > 0) {
       setErrors(newErrors);
       return;
     }
 
-    // Extract week number from week string
-    const weekNumber = extractWeekNumber(selectedWeek);
-    if (!weekNumber) {
-      newErrors.week = '❌ Invalid week selection';
-      setErrors(newErrors);
-      return;
-    }
-
-    // Check for duplicate grade and week combination
+    // Check for duplicate course, courseType, lesson, and center combination
+    const courseTrimmed = selectedCourse.trim();
+    const courseTypeTrimmed = selectedCourseType ? selectedCourseType.trim() : '';
+    const lessonTrimmed = selectedLesson.trim();
+    
     const duplicateHomework = homeworks.find(
-      homework => homework.grade === selectedGrade.trim() && homework.week === weekNumber
+      homework => {
+        const hwCourse = (homework.course || '').trim();
+        const hwCourseType = (homework.courseType || '').trim();
+        const hwLesson = (homework.lesson || '').trim();
+        return hwCourse === courseTrimmed && 
+               (hwCourseType || '') === courseTypeTrimmed && 
+               hwLesson === lessonTrimmed &&
+               centersMatchDuplicateClient(selectedCenter, homework.center);
+      }
     );
     if (duplicateHomework) {
-      newErrors.general = '❌ A homework with this grade and week already exists';
+      newErrors.general = '❌ A homework with this course, course type, lesson, and center already exists';
       setErrors(newErrors);
       
       // Clear error after 6 seconds
@@ -500,36 +739,69 @@ export default function AddHomework() {
     // Prepare data for API
     const submitData = {
       lesson_name: formData.lesson_name.trim(),
-      grade: selectedGrade.trim(),
-      week: weekNumber,
+      comment: formData.comment ? formData.comment.trim() : '',
+      course: courseTrimmed,
+      courseType: courseTypeTrimmed || null,
+      center: selectedCenter.trim() || null,
+      lesson: lessonTrimmed,
       deadline_type: formData.deadline_type,
       deadline_date: formData.deadline_type === 'with_deadline' ? formData.deadline_date : null,
+      deadline_time:
+        formData.deadline_type === 'with_deadline'
+          ? normalizeDeadlineTimeField('with_deadline', formData.deadline_time)
+          : null,
       homework_type: formData.homework_type,
       timer: formData.homework_type === 'questions' && formData.timer_type === 'with_timer' ? parseInt(formData.timer) : null,
       shuffle_questions_and_answers: formData.homework_type === 'questions' ? formData.shuffle_questions_and_answers : false,
       show_details_after_submitting: formData.homework_type === 'questions' ? formData.show_details_after_submitting : false,
     };
 
-    // Attach state (Activated/Deactivated)
-    submitData.state = accountState && accountState !== '' ? accountState : 'Activated';
+    if (accountState) {
+      submitData.state = accountState;
+    }
 
-    if (formData.homework_type === 'pages_from_book') {
+    if (formData.homework_type === 'pdf') {
+      submitData.pdf_file_name = formData.pdf_file_name.trim();
+      submitData.pdf_url = formData.pdf_url.trim();
+      submitData.allow_downloading = formData.allow_downloading !== false;
+    } else if (formData.homework_type === 'pages_from_book') {
       submitData.book_name = formData.book_name.trim();
       submitData.from_page = parseInt(formData.from_page);
       submitData.to_page = parseInt(formData.to_page);
     } else if (formData.homework_type === 'questions') {
-      submitData.questions = formData.questions.map(q => ({
-        question_text: q.question_text || '',
-        question_picture: q.question_picture,
-        answers: q.answers,
-        answer_texts: q.answer_texts || [],
-        correct_answer: q.correct_answer,
-        question_explanation: q.question_explanation || ''
-      }));
+      submitData.questions = formData.questions.map(({ _clientKey, ...q }) => {
+        const type = getQuestionType(q);
+        const base = {
+          question_type: type,
+          question_text: q.question_text || '',
+          ...buildQuestionPicturesPayload(getQuestionPictures(q)),
+          question_explanation: q.question_explanation || '',
+          use_desmos: q.use_desmos === true || q.use_desmos === 'true',
+        };
+        if (type === QUESTION_TYPE_ESSAY) {
+          return {
+            ...base,
+            valid_correct_answers: normalizeValidCorrectAnswers(q.valid_correct_answers),
+            answers: [],
+            answer_texts: [],
+            correct_answer: '',
+          };
+        }
+        return {
+          ...base,
+          answers: q.answers,
+          answer_texts: q.answer_texts || [],
+          correct_answer: q.correct_answer,
+          valid_correct_answers: [],
+        };
+      });
     }
 
     createHomeworkMutation.mutate(submitData);
   };
+
+  const isUploading = Object.keys(uploadingImages).length > 0;
+  const isSaveDisabled = !isFormReady || createHomeworkMutation.isPending || isUploading;
 
   return (
     <div style={{ 
@@ -551,73 +823,177 @@ export default function AddHomework() {
           boxShadow: '0 8px 32px rgba(0,0,0,0.1)'
         }}>
           <form onSubmit={handleSubmit}>
-            {/* Homework Grade */}
+            {/* Import from existing homework (copy into form; does not save) */}
+            <div
+              style={{
+                marginBottom: '24px',
+                padding: '18px',
+                borderRadius: '14px',
+                background: 'linear-gradient(135deg, #f0f9ff 0%, #e0f2fe 100%)',
+                border: '1.5px solid #bae6fd',
+                textAlign: 'center',
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+              }}
+            >
+              <div style={{ fontWeight: 700, color: '#0c4a6e', marginBottom: '8px', fontSize: '1rem', width: '100%' }}>
+                Import from another homework
+              </div>
+              <p style={{ margin: '0 0 14px', fontSize: '0.88rem', color: '#0369a1', lineHeight: 1.45, maxWidth: '520px' }}>
+                Copy fields and questions from an existing homework into this form. You can edit before saving — nothing is stored until you submit.
+              </p>
+              <button
+                type="button"
+                onClick={() => {
+                  setImportSelectedId('');
+                  setImportModalOpen(true);
+                }}
+                style={{
+                  padding: '12px 20px',
+                  borderRadius: '10px',
+                  border: 'none',
+                  background: 'linear-gradient(135deg, #1FA8DC 0%, #0284c7 100%)',
+                  color: '#fff',
+                  fontWeight: 700,
+                  fontSize: '0.95rem',
+                  cursor: 'pointer',
+                  boxShadow: '0 4px 12px rgba(14, 165, 233, 0.35)',
+                  width: '100%',
+                  maxWidth: '320px',
+                }}
+              >
+                Choose homework to import…
+              </button>
+            </div>
+
+            {/* Homework {courseLabels.course} */}
             <div style={{ marginBottom: '20px' }}>
               <label style={{ display: 'block', marginBottom: '8px', fontWeight: '600', textAlign: 'left' }}>
-                Homework Grade <span style={{ color: 'red' }}>*</span>
+                Homework {courseLabels.course} <span style={{ color: 'red' }}>*</span>
               </label>
-              <GradeSelect
-                selectedGrade={selectedGrade}
-                onGradeChange={(grade) => {
-                  setSelectedGrade(grade);
-                  if (errors.grade) {
-                    setErrors({ ...errors, grade: '' });
+              <CourseSelect
+                selectedGrade={selectedCourse}
+                onGradeChange={(course) => {
+                  setSelectedCourse(course);
+                  if (errors.course) {
+                    setErrors({ ...errors, course: '' });
                   }
                 }}
-                isOpen={gradeDropdownOpen}
-                onToggle={() => setGradeDropdownOpen(!gradeDropdownOpen)}
-                onClose={() => setGradeDropdownOpen(false)}
+                isOpen={courseDropdownOpen}
+                onToggle={() => {
+                  setCourseDropdownOpen(!courseDropdownOpen);
+                  setCourseTypeDropdownOpen(false);
+                  setLessonDropdownOpen(false);
+                  setCenterDropdownOpen(false);
+                }}
+                onClose={() => setCourseDropdownOpen(false)}
+                showAllOption={true}
                 required={true}
               />
-              {errors.grade && (
+              {errors.course && (
                 <div style={{ color: '#dc3545', fontSize: '0.875rem', marginTop: '4px' }}>
-                  {errors.grade}
+                  {errors.course}
                 </div>
               )}
             </div>
 
-            {/* Homework Week */}
-            <div style={{ marginBottom: '20px' }}>
+            {/* Homework Course Type */}
+            {courseLabels.showCourseType && (
+<div style={{ marginBottom: '20px' }}>
               <label style={{ display: 'block', marginBottom: '8px', fontWeight: '600', textAlign: 'left' }}>
-                Homework Week <span style={{ color: 'red' }}>*</span>
+                Homework Course Type
               </label>
-              <AttendanceWeekSelect
-                selectedWeek={selectedWeek}
-                onWeekChange={(week) => {
-                  setSelectedWeek(week);
-                  if (errors.week) {
-                    setErrors({ ...errors, week: '' });
+              <CourseTypeSelect
+                selectedCourseType={selectedCourseType}
+                onCourseTypeChange={(courseType) => {
+                  setSelectedCourseType(courseType);
+                  if (errors.courseType) {
+                    setErrors({ ...errors, courseType: '' });
                   }
                 }}
-                isOpen={weekDropdownOpen}
-                onToggle={() => setWeekDropdownOpen(!weekDropdownOpen)}
-                onClose={() => setWeekDropdownOpen(false)}
-                required={true}
-                placeholder="Select Homework Week"
+                isOpen={courseTypeDropdownOpen}
+                onToggle={() => {
+                  setCourseTypeDropdownOpen(!courseTypeDropdownOpen);
+                  setCourseDropdownOpen(false);
+                  setLessonDropdownOpen(false);
+                  setCenterDropdownOpen(false);
+                }}
+                onClose={() => setCourseTypeDropdownOpen(false)}
               />
-              {errors.week && (
+              {errors.courseType && (
                 <div style={{ color: '#dc3545', fontSize: '0.875rem', marginTop: '4px' }}>
-                  {errors.week}
+                  {errors.courseType}
+                </div>
+              )}
+            </div>
+)}
+
+            {/* Homework Center (optional) */}
+            <div style={{ marginBottom: '20px' }}>
+              <label style={{ display: 'block', marginBottom: '8px', fontWeight: '600', textAlign: 'left' }}>
+                Homework Center
+              </label>
+              <CenterSelect
+                selectedCenter={selectedCenter}
+                onCenterChange={setSelectedCenter}
+                required={false}
+                isOpen={centerDropdownOpen}
+                onToggle={() => {
+                  setCenterDropdownOpen(!centerDropdownOpen);
+                  setCourseDropdownOpen(false);
+                  setCourseTypeDropdownOpen(false);
+                  setLessonDropdownOpen(false);
+                }}
+                onClose={() => setCenterDropdownOpen(false)}
+              />
+            </div>
+
+            {/* Homework Lesson */}
+            <div style={{ marginBottom: '20px' }}>
+              <label style={{ display: 'block', marginBottom: '8px', fontWeight: '600', textAlign: 'left' }}>
+                Homework Lesson <span style={{ color: 'red' }}>*</span>
+              </label>
+              <AttendanceLessonSelect
+                selectedLesson={selectedLesson}
+                onLessonChange={(lesson) => {
+                  setSelectedLesson(lesson);
+                  if (errors.lesson) {
+                    setErrors({ ...errors, lesson: '' });
+                  }
+                }}
+                isOpen={lessonDropdownOpen}
+                onToggle={() => {
+                  setLessonDropdownOpen(!lessonDropdownOpen);
+                  setCourseDropdownOpen(false);
+                  setCourseTypeDropdownOpen(false);
+                  setCenterDropdownOpen(false);
+                }}
+                onClose={() => setLessonDropdownOpen(false)}
+                required={true}
+                placeholder="Select Homework Lesson"
+              />
+              {errors.lesson && (
+                <div style={{ color: '#dc3545', fontSize: '0.875rem', marginTop: '4px' }}>
+                  {errors.lesson}
                 </div>
               )}
             </div>
 
-            {/* Homework State */}
-            <div style={{ marginBottom: '20px' }}>
-              <AccountStateSelect
-                value={accountState}
-                onChange={setAccountState}
-                label="Homework State"
-                placeholder="Select State"
-                required={true}
-                error={errors.accountState}
-              />
-              {errors.accountState && (
-                <div style={{ color: '#dc3545', fontSize: '0.875rem', marginTop: '4px' }}>
-                  {errors.accountState}
-                </div>
-              )}
-            </div>
+            {/* Homeworks State */}
+            <AccountStateSelect
+              value={accountState}
+              onChange={setAccountState}
+              label="Homeworks State"
+              placeholder="Select Homeworks State"
+              required={true}
+              error={errors.accountState}
+            />
+            {errors.accountState && (
+              <div style={{ color: '#dc3545', fontSize: '0.875rem', marginTop: '4px' }}>
+                {errors.accountState}
+              </div>
+            )}
 
             {/* Lesson Name */}
             <div style={{ marginBottom: '20px' }}>
@@ -645,7 +1021,30 @@ export default function AddHomework() {
               )}
             </div>
 
-            {/* Tabs Container (Questions / Pages from Book) */}
+            {/* Comment (Optional) */}
+            <div style={{ marginBottom: '20px' }}>
+              <label style={{ display: 'block', marginBottom: '8px', fontWeight: '600', textAlign: 'left' }}>
+                Comment (Optional)
+              </label>
+              <textarea
+                name="comment"
+                value={formData.comment}
+                onChange={handleInputChange}
+                placeholder="Add a comment or note..."
+                rows={3}
+                style={{
+                  width: '100%',
+                  padding: '12px 16px',
+                  border: '2px solid #e9ecef',
+                  borderRadius: '10px',
+                  fontSize: '1rem',
+                  resize: 'vertical',
+                  fontFamily: 'inherit'
+                }}
+              />
+            </div>
+
+            {/* Tabs Container (Questions / Pages from Book / PDF) */}
             <div style={{ marginBottom: '20px' }}>
               <div style={{ display: 'flex', gap: '8px', borderBottom: '2px solid #e9ecef', marginBottom: '20px' }}>
                 <button
@@ -657,7 +1056,9 @@ export default function AddHomework() {
                       homework_type: 'questions',
                       book_name: '',
                       from_page: '',
-                      to_page: ''
+                      to_page: '',
+                      pdf_file_name: '',
+                      pdf_url: ''
                     });
                   }}
                   style={{
@@ -681,16 +1082,20 @@ export default function AddHomework() {
                     setFormData({ 
                       ...formData, 
                       homework_type: 'pages_from_book',
-    questions: [{
-      question_text: '',
-      question_picture: null,
-      answers: ['A', 'B', 'C', 'D'],
-      answer_texts: ['', '', '', ''],
-      correct_answer: '',
-      question_explanation: ''
-    }],
+                      questions: [{
+                        _clientKey: newQuestionClientKey(),
+                        question_text: '',
+                        question_picture: null,
+                        answers: ['A', 'B', 'C', 'D'],
+                        answer_texts: ['', '', '', ''],
+                        correct_answer: '',
+                        question_explanation: '',
+                        use_desmos: desmosEnabled ? true : false
+                      }],
                       timer_type: 'no_timer',
-                      timer: null
+                      timer: null,
+                      pdf_file_name: '',
+                      pdf_url: ''
                     });
                   }}
                   style={{
@@ -707,7 +1112,196 @@ export default function AddHomework() {
                 >
                   Pages from Book
                 </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActiveTab('pdf');
+                    setFormData({ 
+                      ...formData, 
+                      homework_type: 'pdf',
+                      questions: [{
+                        _clientKey: newQuestionClientKey(),
+                        question_text: '',
+                        question_picture: null,
+                        answers: ['A', 'B', 'C', 'D'],
+                        answer_texts: ['', '', '', ''],
+                        correct_answer: '',
+                        question_explanation: '',
+                        use_desmos: desmosEnabled ? true : false
+                      }],
+                      book_name: '',
+                      from_page: '',
+                      to_page: '',
+                      timer_type: 'no_timer',
+                      timer: null
+                    });
+                  }}
+                  style={{
+                    padding: '12px 24px',
+                    border: 'none',
+                    borderBottom: activeTab === 'pdf' ? '3px solid #1FA8DC' : '3px solid transparent',
+                    backgroundColor: 'transparent',
+                    color: activeTab === 'pdf' ? '#1FA8DC' : '#6c757d',
+                    fontWeight: activeTab === 'pdf' ? '600' : '500',
+                    cursor: 'pointer',
+                    fontSize: '1rem',
+                    transition: 'all 0.2s ease'
+                  }}
+                >
+                  PDF
+                </button>
               </div>
+
+              {/* PDF Content */}
+              {activeTab === 'pdf' && (
+                <div style={{ padding: '20px', border: '2px solid #e9ecef', borderRadius: '12px', backgroundColor: '#f8f9fa' }}>
+                  <div style={{ marginBottom: '16px' }}>
+                    <label style={{ display: 'block', marginBottom: '8px', fontWeight: '600', textAlign: 'left' }}>
+                      File Name <span style={{ color: 'red' }}>*</span>
+                    </label>
+                    <input
+                      type="text"
+                      value={formData.pdf_file_name}
+                      onChange={(e) => setFormData({ ...formData, pdf_file_name: e.target.value })}
+                      placeholder="Enter PDF File Name"
+                      style={{
+                        width: '100%',
+                        padding: '12px 16px',
+                        border: errors.pdf_file_name ? '2px solid #dc3545' : '2px solid #e9ecef',
+                        borderRadius: '10px',
+                        fontSize: '1rem'
+                      }}
+                    />
+                    {errors.pdf_file_name && (
+                      <div style={{ color: '#dc3545', fontSize: '0.875rem', marginTop: '4px' }}>
+                        {errors.pdf_file_name}
+                      </div>
+                    )}
+                    <AllowDownloadingRadio
+                      name="allow_downloading_hw_add"
+                      value={formData.allow_downloading !== false}
+                      onChange={(v) => setFormData({ ...formData, allow_downloading: v })}
+                    />
+                  </div>
+                  <div style={{ marginBottom: '16px' }}>
+                    <label style={{ display: 'block', marginBottom: '8px', fontWeight: '600', textAlign: 'left' }}>
+                      Upload PDF <span style={{ color: 'red' }}>*</span>
+                    </label>
+
+                    {!formData.pdf_url && !pdfUploading && !pdfUploadError && (
+                      <div
+                        onClick={() => pdfFileInputRef.current?.click()}
+                        style={{
+                          border: errors.pdf_url ? '2px dashed #dc3545' : '2px dashed #ccc',
+                          borderRadius: '8px',
+                          padding: '32px 20px',
+                          textAlign: 'center',
+                          cursor: 'pointer',
+                          backgroundColor: '#fff',
+                          transition: 'border-color 0.2s ease',
+                        }}
+                        onMouseOver={(e) => { if (!errors.pdf_url) e.currentTarget.style.borderColor = '#1FA8DC'; }}
+                        onMouseOut={(e) => { if (!errors.pdf_url) e.currentTarget.style.borderColor = '#ccc'; }}
+                      >
+                        <div style={{ fontSize: '2rem', marginBottom: '8px', color: '#999' }}>+</div>
+                        <div style={{ color: '#666', fontSize: '0.95rem' }}>Click to select a PDF file</div>
+                        <div style={{ color: '#999', fontSize: '0.8rem', marginTop: '4px' }}>PDF (max 100MB)</div>
+                      </div>
+                    )}
+
+                    {pdfUploading && (
+                      <div style={{ border: '2px solid #1FA8DC', borderRadius: '8px', padding: '20px', backgroundColor: '#fff' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
+                          <span style={{ color: '#333', fontSize: '0.9rem', fontWeight: '500' }}>Uploading PDF...</span>
+                          <span style={{ color: '#1FA8DC', fontSize: '0.85rem', fontWeight: '600' }}>{pdfUploadProgress}%</span>
+                        </div>
+                        <div style={{ width: '100%', height: '8px', backgroundColor: '#e9ecef', borderRadius: '4px', overflow: 'hidden' }}>
+                          <div style={{ width: `${pdfUploadProgress}%`, height: '100%', backgroundColor: '#1FA8DC', borderRadius: '4px', transition: 'width 0.3s ease' }} />
+                        </div>
+                      </div>
+                    )}
+
+                    {formData.pdf_url && !pdfUploading && (
+                      <div style={{
+                        border: '2px solid #28a745',
+                        borderRadius: '8px',
+                        padding: '16px 20px',
+                        backgroundColor: '#f0fff4',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                      }}>
+                        <div>
+                          <div style={{ color: '#28a745', fontWeight: '600', fontSize: '0.9rem' }}>✅ Uploaded successfully</div>
+                          <div style={{ color: '#666', fontSize: '0.85rem', marginTop: '2px' }}>{formData.pdf_file_name || 'PDF file'}</div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => { setFormData(prev => ({ ...prev, pdf_url: '' })); if (pdfFileInputRef.current) pdfFileInputRef.current.value = ''; }}
+                          style={{ padding: '6px 12px', backgroundColor: '#dc3545', color: 'white', border: 'none', borderRadius: '6px', fontSize: '0.8rem', cursor: 'pointer' }}
+                        >
+                          ❌ Remove
+                        </button>
+                      </div>
+                    )}
+
+                    {pdfUploadError && !pdfUploading && !formData.pdf_url && (
+                      <div style={{ border: '2px solid #dc3545', borderRadius: '8px', padding: '16px 20px', backgroundColor: '#fff5f5' }}>
+                        <div style={{ color: '#dc3545', fontWeight: '500', fontSize: '0.9rem', marginBottom: '8px' }}>
+                          ❌ Upload failed: {pdfUploadError}
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => { setPdfUploadError(''); if (pdfFileInputRef.current) pdfFileInputRef.current.value = ''; }}
+                          style={{ padding: '6px 14px', backgroundColor: '#1FA8DC', color: 'white', border: 'none', borderRadius: '6px', fontSize: '0.85rem', cursor: 'pointer' }}
+                        >
+                          Try Again
+                        </button>
+                      </div>
+                    )}
+
+                    <input
+                      ref={pdfFileInputRef}
+                      type="file"
+                      accept=".pdf,application/pdf"
+                      style={{ display: 'none' }}
+                      onChange={async (e) => {
+                        const file = e.target.files[0];
+                        if (!file) return;
+                        if (file.type !== 'application/pdf') { setPdfUploadError('Only PDF files are allowed'); return; }
+                        if (file.size > 100 * 1024 * 1024) { setPdfUploadError('File size exceeds 100MB limit'); return; }
+                        setPdfUploadError('');
+                        setPdfUploading(true);
+                        setPdfUploadProgress(0);
+                        try {
+                          const { uploadToR2Direct } = await import('../../../../lib/r2DirectUpload');
+                          const result = await uploadToR2Direct(file, {
+                            prefix: 'pdfs/HW-PDFs',
+                            onProgress: (percent) => setPdfUploadProgress(percent),
+                          });
+                          if (result?.url) {
+                            setPdfUploadProgress(100);
+                            setFormData(prev => ({ ...prev, pdf_url: result.url }));
+                            setErrors(prev => { const n = { ...prev }; delete n.pdf_url; return n; });
+                          } else {
+                            throw new Error('Upload failed');
+                          }
+                        } catch (err) {
+                          setPdfUploadError(err.response?.data?.error || err.message || 'Failed to upload PDF');
+                        } finally {
+                          setPdfUploading(false);
+                        }
+                      }}
+                    />
+
+                    {errors.pdf_url && !pdfUploadError && (
+                      <div style={{ color: '#dc3545', fontSize: '0.875rem', marginTop: '4px' }}>
+                        {errors.pdf_url}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
 
               {/* Pages from Book Content */}
               {activeTab === 'pages_from_book' && (
@@ -804,7 +1398,7 @@ export default function AddHomework() {
                         name="deadline_type"
                         value="no_deadline"
                         checked={formData.deadline_type === 'no_deadline'}
-                        onChange={(e) => setFormData({ ...formData, deadline_type: e.target.value, deadline_date: '' })}
+                        onChange={(e) => setFormData({ ...formData, deadline_type: e.target.value, deadline_date: '', deadline_time: null })}
                         style={{ marginRight: '10px', width: '18px', height: '18px', cursor: 'pointer' }}
                       />
                       <span style={{ fontWeight: '500' }}>No Deadline Date</span>
@@ -832,8 +1426,14 @@ export default function AddHomework() {
                     <input
                       type="date"
                       value={formData.deadline_date}
-                      onChange={(e) => setFormData({ ...formData, deadline_date: e.target.value })}
-                      min={new Date().toISOString().split('T')[0]}
+                      onChange={(e) =>
+                        setFormData({
+                          ...formData,
+                          deadline_date: e.target.value,
+                          deadline_time: e.target.value ? formData.deadline_time : null,
+                        })
+                      }
+                      min={getEgyptYmdToday()}
                       style={{
                         width: '100%',
                         padding: '12px 16px',
@@ -860,6 +1460,13 @@ export default function AddHomework() {
                       <div style={{ color: '#dc3545', fontSize: '0.875rem', marginTop: '4px' }}>
                         {errors.deadline_date}
                       </div>
+                    )}
+                    {formData.deadline_date && (
+                      <DeadlineTimeRow
+                        value={formData.deadline_time}
+                        onChange={(t) => setFormData((prev) => ({ ...prev, deadline_time: t }))}
+                        error={errors.deadline_time}
+                      />
                     )}
                   </div>
                 )}
@@ -990,7 +1597,7 @@ export default function AddHomework() {
 
             {/* Questions Content */}
             {activeTab === 'questions' && formData.questions.map((question, qIdx) => (
-              <div key={qIdx} className="question-section" style={{ marginBottom: '32px', padding: '20px', border: '2px solid #e9ecef', borderRadius: '12px' }}>
+              <div key={question._clientKey || qIdx} className="question-section" style={{ marginBottom: '32px', padding: '20px', border: '2px solid #e9ecef', borderRadius: '12px' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
                   <label style={{ fontWeight: '600', fontSize: '1.1rem', textAlign: 'left' }}>
                     Question {qIdx + 1}
@@ -998,7 +1605,13 @@ export default function AddHomework() {
                   {formData.questions.length > 1 && (
                     <button
                       type="button"
-                      onClick={() => removeQuestion(qIdx)}
+                      data-q-index={qIdx}
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        const raw = e.currentTarget.getAttribute('data-q-index');
+                        removeQuestion(raw != null && raw !== '' ? Number(raw) : qIdx);
+                      }}
                       style={{
                         padding: '6px 12px',
                         backgroundColor: '#dc3545',
@@ -1010,9 +1623,7 @@ export default function AddHomework() {
                         fontWeight: '600',
                         display: 'flex',
                         alignItems: 'center',
-                        justifyContent: 'center',
-                        gap: '6px',
-                        textAlign: 'center'
+                        gap: '6px'
                       }}
                     >
                       <Image src="/trash2.svg" alt="Remove" width={18} height={18} style={{ display: 'inline-block' }} />
@@ -1021,201 +1632,73 @@ export default function AddHomework() {
                   )}
                 </div>
 
-                {/* Question Image Upload (first) */}
+                <QuestionTypeTabs
+                  value={getQuestionType(question)}
+                  onChange={(type) => setQuestionType(qIdx, type)}
+                />
+
+                {/* Question Image Uploads */}
                 <div style={{ marginBottom: '16px' }}>
-                  <label style={{ display: 'block', marginBottom: '8px', fontWeight: '600', textAlign: 'left' }}>
-                    Question Image
-                  </label>
                   <div style={{ fontSize: '0.875rem', color: '#6c757d', marginBottom: '8px' }}>
                     Max size: 10 MB
                   </div>
-                  {question.question_picture || imagePreviews[qIdx] ? (
-                    <div
-                      className="question-image-container"
-                      style={{
-                        position: 'relative',
-                        width: '100%',
-                        transition: 'all 0.3s ease'
-                      }}
-                    >
-                      <ZoomableImage
-                        src={imagePreviews[qIdx] || `/api/profile-picture/student/${question.question_picture}`}
-                        alt="Question"
-                      />
-                      {/* Trash icon overlay - shown on hover */}
-                      <div
-                        className="question-image-trash"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleRemoveImage(qIdx);
-                        }}
-                        style={{
-                          position: 'absolute',
-                          top: '50%',
-                          left: '50%',
-                          transform: 'translate(-50%, -50%)',
-                          width: 72,
-                          height: 72,
-                          borderRadius: '50%',
-                          background: '#dc3545',
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                          opacity: 0,
-                          transition: 'opacity 0.3s ease',
-                          zIndex: 100,
-                          cursor: 'pointer',
-                          pointerEvents: 'none'
-                        }}
-                        onMouseEnter={(e) => {
-                          e.currentTarget.style.opacity = '1';
-                          e.currentTarget.style.pointerEvents = 'auto';
-                        }}
-                        onMouseLeave={(e) => {
-                          e.currentTarget.style.opacity = '0';
-                          e.currentTarget.style.pointerEvents = 'none';
-                        }}
-                        title="Click to remove image"
-                      >
-                        <svg
-                          width="32"
-                          height="32"
-                          viewBox="0 0 24 24"
-                          fill="none"
-                          stroke="white"
-                          strokeWidth="2"
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                        >
-                          <polyline points="3 6 5 6 21 6"></polyline>
-                          <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
-                          <line x1="10" y1="11" x2="10" y2="17"></line>
-                          <line x1="14" y1="11" x2="14" y2="17"></line>
-                        </svg>
-                      </div>
-                      {/* Uploading spinner overlay */}
-                      {uploadingImages[qIdx] && (
-                        <div
-                          style={{
-                            position: 'absolute',
-                            top: '50%',
-                            left: '50%',
-                            transform: 'translate(-50%, -50%)',
-                            width: 64,
-                            height: 64,
-                            borderRadius: '50%',
-                            background: 'rgba(0, 0, 0, 0.7)',
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                            zIndex: 20
-                          }}
-                        >
-                          <div
-                            style={{
-                              width: '40px',
-                              height: '40px',
-                              border: '4px solid rgba(255, 255, 255, 0.3)',
-                              borderTop: '4px solid white',
-                              borderRadius: '50%',
-                              animation: 'spin 1s linear infinite'
-                            }}
-                          />
+                  {(() => {
+                    const questionPictures = getQuestionPictures(question);
+                    return questionPictures.map((questionImage, imageIdx) => {
+                    const isLastImageSlot = imageIdx === questionPictures.length - 1;
+                    const imageKey = `${qIdx}_${imageIdx}`;
+                    const hasImage = !!questionImage || !!imagePreviews[imageKey];
+                    return (
+                      <div key={imageKey} style={{ marginBottom: '16px' }}>
+                        <label style={{ display: 'block', marginBottom: '8px', fontWeight: '600', textAlign: 'left' }}>
+                          {imageIdx === 0 ? 'Question Image' : `Question Image ${imageIdx + 1}`}
+                        </label>
+                        {hasImage ? (
+                          <div className="question-image-container" style={{ position: 'relative', width: '100%', transition: 'all 0.3s ease' }}>
+                            <ZoomableImage src={imagePreviews[imageKey] || `/api/profile-picture/student/${questionImage}`} alt="Question" />
+                            <div className="question-image-trash" onClick={(e) => { e.stopPropagation(); handleRemoveImage(qIdx, imageIdx); }} style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', width: 72, height: 72, borderRadius: '50%', background: '#dc3545', display: 'flex', alignItems: 'center', justifyContent: 'center', opacity: 0, transition: 'opacity 0.3s ease', zIndex: 100, cursor: 'pointer', pointerEvents: 'none' }}>
+                              <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path><line x1="10" y1="11" x2="10" y2="17"></line><line x1="14" y1="11" x2="14" y2="17"></line></svg>
+                            </div>
+                            {uploadingImages[imageKey] && (
+                              <div style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', width: 64, height: 64, borderRadius: '50%', background: 'rgba(0, 0, 0, 0.7)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 20 }}>
+                                <div style={{ width: '40px', height: '40px', border: '4px solid rgba(255, 255, 255, 0.3)', borderTop: '4px solid white', borderRadius: '50%', animation: 'spin 1s linear infinite' }} />
+                              </div>
+                            )}
+                          </div>
+                        ) : (
+                          <div onDragOver={(e) => handleDragOver(e, qIdx, imageIdx)} onDragLeave={handleDragLeave} onDrop={(e) => handleDrop(e, qIdx, imageIdx)} style={{ border: `2px dashed ${dragOverIndex === imageKey ? '#1FA8DC' : '#e9ecef'}`, borderRadius: '12px', padding: '40px 20px', textAlign: 'center', backgroundColor: dragOverIndex === imageKey ? '#f0f8ff' : 'white', transition: 'all 0.3s ease', cursor: uploadingImages[imageKey] ? 'not-allowed' : 'pointer' }}>
+                            <div style={{ marginBottom: '16px' }}><svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#1FA8DC" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ margin: '0 auto', display: 'block' }}><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg></div>
+                            <p style={{ margin: '0 0 12px 0', fontSize: '1rem', fontWeight: '500', color: '#333' }}>Drag your file here</p>
+                            <p style={{ margin: '0 0 16px 0', fontSize: '0.875rem', color: '#6c757d' }}>or</p>
+                            <input type="file" accept="image/*" onChange={(e) => { const file = e.target.files?.[0]; if (file) handleImageUpload(qIdx, imageIdx, file); }} style={{ display: 'none' }} id={`question-image-${qIdx}-${imageIdx}`} disabled={uploadingImages[imageKey]} />
+                            <label htmlFor={`question-image-${qIdx}-${imageIdx}`} style={{ display: 'inline-block', padding: '12px 24px', backgroundColor: uploadingImages[imageKey] ? '#6c757d' : '#1FA8DC', color: 'white', borderRadius: '8px', cursor: uploadingImages[imageKey] ? 'not-allowed' : 'pointer', fontSize: '0.9rem', fontWeight: '600', opacity: uploadingImages[imageKey] ? 0.7 : 1, transition: 'all 0.2s ease' }}>
+                              {uploadingImages[imageKey] ? 'Uploading...' : 'Browse'}
+                            </label>
+                          </div>
+                        )}
+                        <div className="image-buttons-container" style={{ display: 'flex', gap: '8px', alignItems: 'center', justifyContent: 'flex-end', flexWrap: 'wrap', width: '100%', marginTop: '8px' }}>
+                          {imageIdx > 0 && (
+                            <button type="button" onClick={() => removeImageContainer(qIdx, imageIdx)} style={{ padding: '8px 16px', backgroundColor: '#dc3545', color: 'white', border: 'none', borderRadius: '8px', cursor: 'pointer', fontSize: '0.9rem', fontWeight: '600', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                              <Image src="/trash2.svg" alt="Remove" width={18} height={18} style={{ display: 'inline-block' }} />
+                              Remove
+                            </button>
+                          )}
+                          {isLastImageSlot && (
+                          <button type="button" onClick={() => addImageContainer(qIdx)} style={{ padding: '8px 16px', backgroundColor: '#28a745', color: 'white', border: 'none', borderRadius: '8px', cursor: 'pointer', fontSize: '0.9rem', fontWeight: '600', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                            <Image src="/plus.svg" alt="Add" width={18} height={18} style={{ display: 'inline-block' }} />
+                            Add
+                          </button>
+                          )}
                         </div>
-                      )}
-                    </div>
-                  ) : (
-                    <div
-                      onDragOver={(e) => handleDragOver(e, qIdx)}
-                      onDragLeave={handleDragLeave}
-                      onDrop={(e) => handleDrop(e, qIdx)}
-                      style={{
-                        border: `2px dashed ${dragOverIndex === qIdx ? '#1FA8DC' : '#e9ecef'}`,
-                        borderRadius: '12px',
-                        padding: '40px 20px',
-                        textAlign: 'center',
-                        backgroundColor: dragOverIndex === qIdx ? '#f0f8ff' : 'white',
-                        transition: 'all 0.3s ease',
-                        cursor: uploadingImages[qIdx] ? 'not-allowed' : 'pointer'
-                      }}
-                    >
-                      <div style={{ marginBottom: '16px' }}>
-                        <svg
-                          width="48"
-                          height="48"
-                          viewBox="0 0 24 24"
-                          fill="none"
-                          stroke="#1FA8DC"
-                          strokeWidth="2"
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                          style={{ margin: '0 auto', display: 'block' }}
-                        >
-                          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-                          <polyline points="17 8 12 3 7 8"></polyline>
-                          <line x1="12" y1="3" x2="12" y2="15"></line>
-                        </svg>
+                        {errors[`question_${qIdx}_image_${imageIdx}`] && (
+                          <div style={{ color: '#dc3545', fontSize: '0.875rem', marginTop: '4px' }}>
+                            {errors[`question_${qIdx}_image_${imageIdx}`]}
+                          </div>
+                        )}
                       </div>
-                      <p style={{ 
-                        margin: '0 0 12px 0', 
-                        fontSize: '1rem', 
-                        fontWeight: '500',
-                        color: '#333'
-                      }}>
-                        Drag your file here
-                      </p>
-                      <p style={{ 
-                        margin: '0 0 16px 0', 
-                        fontSize: '0.875rem', 
-                        color: '#6c757d'
-                      }}>
-                        or
-                      </p>
-                      <input
-                        type="file"
-                        accept="image/*"
-                        onChange={(e) => {
-                          const file = e.target.files?.[0];
-                          if (file) handleImageUpload(qIdx, file);
-                        }}
-                        style={{ display: 'none' }}
-                        id={`question-image-${qIdx}`}
-                        disabled={uploadingImages[qIdx]}
-                      />
-                      <label
-                        htmlFor={`question-image-${qIdx}`}
-                        style={{
-                          display: 'inline-block',
-                          padding: '12px 24px',
-                          backgroundColor: uploadingImages[qIdx] ? '#6c757d' : '#1FA8DC',
-                          color: 'white',
-                          borderRadius: '8px',
-                          cursor: uploadingImages[qIdx] ? 'not-allowed' : 'pointer',
-                          fontSize: '0.9rem',
-                          fontWeight: '600',
-                          opacity: uploadingImages[qIdx] ? 0.7 : 1,
-                          transition: 'all 0.2s ease'
-                        }}
-                        onMouseEnter={(e) => {
-                          if (!uploadingImages[qIdx]) {
-                            e.target.style.backgroundColor = '#0d5a7a';
-                          }
-                        }}
-                        onMouseLeave={(e) => {
-                          if (!uploadingImages[qIdx]) {
-                            e.target.style.backgroundColor = '#1FA8DC';
-                          }
-                        }}
-                      >
-                        {uploadingImages[qIdx] ? 'Uploading...' : 'Browse'}
-                      </label>
-                    </div>
-                  )}
-                  {errors[`question_${qIdx}_image`] && (
-                    <div style={{ color: '#dc3545', fontSize: '0.875rem', marginTop: '4px' }}>
-                      {errors[`question_${qIdx}_image`]}
-                    </div>
-                  )}
+                    );
+                  });
+                  })()}
                 </div>
 
                 {/* Question Text Input (after image) */}
@@ -1245,13 +1728,22 @@ export default function AddHomework() {
                   )}
                 </div>
 
-                {/* Answers */}
+                {/* Answers (MCQ) / Valid Correct Answers (Essay) */}
+                {isEssayQuestion(question) ? (
+                  <EssayValidAnswersEditor
+                    questionIndex={qIdx}
+                    values={question.valid_correct_answers || []}
+                    error={errors[`question_${qIdx}_valid`]}
+                    onChange={(next) => handleQuestionChange(qIdx, 'valid_correct_answers', next)}
+                  />
+                ) : (
+                <>
                 <div style={{ marginBottom: '16px' }}>
                   <label style={{ display: 'block', marginBottom: '12px', fontWeight: '600', textAlign: 'left' }}>
                     Answers
                   </label>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                    {question.answers.map((answerLetter, aIdx) => {
+                    {(question.answers || []).map((answerLetter, aIdx) => {
                       const isLastAnswer = aIdx === question.answers.length - 1;
                       const hasTrashButton = aIdx >= 2;
                       const showAddButton = isLastAnswer && (aIdx === 1 || hasTrashButton);
@@ -1302,12 +1794,11 @@ export default function AddHomework() {
                             />
                           </div>
                           
-                          <div className="answer-buttons-container" style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap', width: '100%', marginTop: '8px' }}>
+                          <div className="answer-buttons-container" style={{ display: 'flex', gap: '8px', alignItems: 'center', justifyContent: 'flex-end', flexWrap: 'wrap', width: '100%', marginTop: '8px' }}>
                             {hasTrashButton && (
                               <button
                                 type="button"
                                 onClick={() => removeAnswer(qIdx, aIdx)}
-                                className="remove-option-btn"
                                 style={{
                                   padding: '8px 16px',
                                   backgroundColor: '#dc3545',
@@ -1319,20 +1810,17 @@ export default function AddHomework() {
                                   fontWeight: '600',
                                   display: 'flex',
                                   alignItems: 'center',
-                                  justifyContent: 'center',
-                                  gap: '6px',
-                                  textAlign: 'center'
+                                  gap: '6px'
                                 }}
                               >
                                 <Image src="/trash2.svg" alt="Remove" width={18} height={18} style={{ display: 'inline-block' }} />
-                                Remove Option
+                                Remove
                               </button>
                             )}
                             {showAddButton && (
                               <button
                                 type="button"
                                 onClick={() => addAnswer(qIdx)}
-                                className="add-option-btn"
                                 style={{
                                   padding: '8px 16px',
                                   backgroundColor: '#28a745',
@@ -1344,9 +1832,7 @@ export default function AddHomework() {
                                   fontWeight: '600',
                                   display: 'flex',
                                   alignItems: 'center',
-                                  justifyContent: 'center',
-                                  gap: '6px',
-                                  textAlign: 'center'
+                                  gap: '6px'
                                 }}
                               >
                                 <Image src="/plus.svg" alt="Add" width={18} height={18} style={{ display: 'inline-block' }} />
@@ -1366,7 +1852,7 @@ export default function AddHomework() {
                     Correct Answer <span style={{ color: 'red' }}>*</span>
                   </label>
                   <div className="correct-answer-radio" style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                    {question.answers.map((answerLetter, aIdx) => {
+                    {(question.answers || []).map((answerLetter, aIdx) => {
                       const answerText = question.answer_texts && question.answer_texts[aIdx] ? question.answer_texts[aIdx] : '';
                       return (
                         <label key={aIdx} style={{ display: 'flex', alignItems: 'center', cursor: 'pointer', padding: '12px', borderRadius: '8px', border: question.correct_answer === answerLetter.toLowerCase() ? '2px solid #28a745' : '2px solid #e9ecef', backgroundColor: question.correct_answer === answerLetter.toLowerCase() ? '#f0fff4' : 'white' }}>
@@ -1408,6 +1894,14 @@ export default function AddHomework() {
                     </div>
                   )}
                 </div>
+                </>
+                )}
+
+                <UseDesmosInQuestionRadio
+                  name={`use_desmos_${qIdx}`}
+                  value={question.use_desmos === true || question.use_desmos === 'true'}
+                  onChange={(next) => handleQuestionChange(qIdx, 'use_desmos', next)}
+                />
 
                 {/* Question Explanation */}
                 <div style={{ marginBottom: '16px' }}>
@@ -1436,11 +1930,10 @@ export default function AddHomework() {
 
             {/* Add Question Button (only show when questions tab is active) */}
             {activeTab === 'questions' && (
-              <div className="add-question-container" style={{ marginBottom: '24px', display: 'flex', justifyContent: 'flex-end' }}>
+              <div style={{ marginBottom: '24px', display: 'flex', justifyContent: 'flex-end' }}>
                 <button
                   type="button"
                   onClick={addQuestion}
-                  className="add-question-btn"
                   style={{
                     padding: '12px 24px',
                     backgroundColor: '#28a745',
@@ -1453,8 +1946,7 @@ export default function AddHomework() {
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'center',
-                    gap: '6px',
-                    textAlign: 'center'
+                    gap: '6px'
                   }}
                 >
                   <Image src="/plus.svg" alt="Add" width={20} height={20} style={{ display: 'inline-block' }} />
@@ -1484,21 +1976,17 @@ export default function AddHomework() {
             <div className="submit-buttons" style={{ display: 'flex', gap: '12px', justifyContent: 'center' }}>
               <button
                 type="submit"
-                disabled={createHomeworkMutation.isPending || Object.keys(uploadingImages).length > 0}
+                disabled={isSaveDisabled}
                 style={{
                   padding: '12px 24px',
                   background: 'linear-gradient(135deg, #28a745 0%, #20c997 100%)',
                   color: 'white',
                   border: 'none',
                   borderRadius: '8px',
-                  cursor: (createHomeworkMutation.isPending || Object.keys(uploadingImages).length > 0) ? 'not-allowed' : 'pointer',
+                  cursor: isSaveDisabled ? 'not-allowed' : 'pointer',
                   fontSize: '1rem',
                   fontWeight: '600',
-                  opacity: (createHomeworkMutation.isPending || Object.keys(uploadingImages).length > 0) ? 0.7 : 1,
-                  textAlign: 'center',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center'
+                  opacity: isSaveDisabled ? 0.7 : 1
                 }}
               >
                 {createHomeworkMutation.isPending ? 'Saving...' : 'Save'}
@@ -1516,11 +2004,7 @@ export default function AddHomework() {
                   cursor: createHomeworkMutation.isPending ? 'not-allowed' : 'pointer',
                   fontSize: '1rem',
                   fontWeight: '600',
-                  opacity: createHomeworkMutation.isPending ? 0.7 : 1,
-                  textAlign: 'center',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center'
+                  opacity: createHomeworkMutation.isPending ? 0.7 : 1
                 }}
               >
                 Cancel
@@ -1529,6 +2013,22 @@ export default function AddHomework() {
           </form>
         </div>
       </div>
+
+      <ImportExistingOnlineItemModal
+        open={importModalOpen}
+        onClose={() => {
+          if (!importApplyLoading) setImportModalOpen(false);
+        }}
+        title="Import homework"
+        description="Pick a homework to copy into this form. Edit anything before saving."
+        options={importHomeworkOptions}
+        selectedValue={importSelectedId}
+        onSelectedValueChange={setImportSelectedId}
+        onApply={handleImportApply}
+        applyLabel="Load"
+        emptyMessage="No homeworks found in the system."
+        applyLoading={importApplyLoading}
+      />
 
       <style jsx>{`
         @keyframes spin {
@@ -1553,6 +2053,33 @@ export default function AddHomework() {
           .form-container {
             padding: 16px !important;
           }
+          .answer-buttons-container {
+            flex-direction: row !important;
+            flex-wrap: wrap !important;
+            margin-top: 8px !important;
+          }
+          .answer-buttons-container button {
+          }
+          .image-buttons-container button {
+          }
+          .add-question-container {
+            flex-direction: row !important;
+            flex-wrap: wrap !important;
+            justify-content: flex-end !important;
+          }
+          .add-question-container button {
+          }
+          .question-section > div:first-child {
+            flex-direction: column !important;
+            align-items: stretch !important;
+            gap: 12px !important;
+          }
+          .question-section > div:first-child button {
+            align-self: flex-end !important;
+            width: auto !important;
+            max-width: 100% !important;
+            flex: 0 1 auto !important;
+          }
           .submit-buttons {
             flex-direction: column;
             gap: 10px;
@@ -1560,53 +2087,11 @@ export default function AddHomework() {
           .submit-buttons button {
             width: 100%;
           }
-          .answer-option-row {
-            flex-direction: column !important;
-            align-items: stretch !important;
-            gap: 8px !important;
+          .answer-input-row {
+            align-items: flex-end !important;
           }
-          .answer-option-row > div:first-child {
-            align-self: flex-start !important;
-          }
-          .answer-option-row input {
-            width: 100% !important;
-          }
-          .answer-buttons-container {
-            width: 100% !important;
-            display: flex !important;
-            gap: 8px !important;
-            flex-wrap: wrap !important;
-          }
-          .answer-buttons-container .add-option-btn,
-          .answer-buttons-container .remove-option-btn {
-            flex: 1 1 calc(50% - 4px) !important;
-            min-width: calc(50% - 4px) !important;
-            padding: 10px 12px !important;
-            font-size: 0.85rem !important;
-            justify-content: center !important;
-            text-align: center !important;
-          }
-          .add-question-container {
-            width: 100% !important;
-            justify-content: center !important;
-          }
-          .add-question-btn {
-            width: 100% !important;
-            padding: 12px 16px !important;
-            justify-content: center !important;
-            text-align: center !important;
-          }
-          .question-section > div:first-child {
-            flex-direction: column !important;
-            align-items: flex-start !important;
-            gap: 12px !important;
-          }
-          .question-section > div:first-child button {
-            width: 100% !important;
-            padding: 10px 16px !important;
-            margin-top: 8px !important;
-            justify-content: center !important;
-            text-align: center !important;
+          .answer-buttons {
+            margin-top: 0 !important;
           }
         }
         @media (max-width: 480px) {
@@ -1619,6 +2104,29 @@ export default function AddHomework() {
           }
           .form-container {
             padding: 12px !important;
+          }
+          .answer-buttons-container {
+            flex-direction: row !important;
+            flex-wrap: wrap !important;
+          }
+          .answer-buttons-container button {
+          }
+          .image-buttons-container button {
+          }
+          @media (max-width: 360px) {
+            .answer-buttons-container {
+              flex-direction: column !important;
+            }
+            .answer-buttons-container button {
+              flex: 1 1 100% !important;
+              width: 100% !important;
+              max-width: 100% !important;
+            }
+            .image-buttons-container button {
+              flex: 1 1 100% !important;
+              width: 100% !important;
+              max-width: 100% !important;
+            }
           }
           .question-section {
             padding: 16px !important;

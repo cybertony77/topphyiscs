@@ -2,6 +2,11 @@ import { MongoClient } from 'mongodb';
 import fs from 'fs';
 import path from 'path';
 import { authMiddleware } from '../../../../lib/authMiddleware';
+import {
+  createDefaultStudentLesson,
+  getStudentLesson,
+  mergeStudentLesson,
+} from '../../../../lib/studentLessons';
 
 // Load environment variables from env.config
 function loadEnvConfig() {
@@ -31,13 +36,45 @@ function loadEnvConfig() {
 }
 
 const envConfig = loadEnvConfig();
-const JWT_SECRET = envConfig.JWT_SECRET || process.env.JWT_SECRET || 'topphysics_secret';
 const MONGO_URI = envConfig.MONGO_URI || process.env.MONGO_URI || 'mongodb://localhost:27017/topphysics';
 const DB_NAME = envConfig.DB_NAME || process.env.DB_NAME || 'topphysics';
 
-console.log('🔗 Using Mongo URI:', MONGO_URI);
+function isPaymentSystemEnabled() {
+  // Re-read env each request so toggling SYSTEM_PAYMENT_SYSTEM applies without restart
+  const live = loadEnvConfig();
+  return live.SYSTEM_PAYMENT_SYSTEM === 'true' || process.env.SYSTEM_PAYMENT_SYSTEM === 'true';
+}
 
-// Auth middleware is now imported from shared utility
+function formatEgyptAttendance(center) {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Africa/Cairo',
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true,
+  }).formatToParts(new Date());
+  const getPart = (type) => parts.find((part) => part.type === type)?.value || '';
+  const hour = getPart('hour').replace(/^0/, '');
+  return `${getPart('day')}/${getPart('month')}/${getPart('year')} in ${center || 'Unknown Center'} at ${hour}:${getPart('minute')} ${getPart('dayPeriod')}`;
+}
+
+function normalizePayment(payment) {
+  const src = Array.isArray(payment) ? payment[0] : payment;
+  if (!src || typeof src !== 'object') {
+    return { numberOfSessions: 0, cost: null, paymentComment: null, date: null };
+  }
+  const sessions = Number(src.numberOfSessions);
+  return {
+    numberOfSessions: Number.isFinite(sessions) ? sessions : 0,
+    cost: src.cost ?? null,
+    paymentComment: src.paymentComment ?? null,
+    date: src.date ?? null,
+  };
+}
+
+console.log('🔗 Using Mongo URI:', MONGO_URI);
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
@@ -46,15 +83,15 @@ export default async function handler(req, res) {
   
   const { id } = req.query;
   const student_id = parseInt(id);
-  const { attended, lastAttendance, lastAttendanceCenter, attendanceWeek } = req.body;
+  const { attended, lastAttendance, lastAttendanceCenter, attendanceLesson } = req.body;
   
-  if (attendanceWeek === undefined || attendanceWeek === null) {
-    console.log('❌ attendanceWeek missing in request body for student', student_id);
-    return res.status(400).json({ error: 'attendanceWeek is required' });
+  if (attendanceLesson === undefined || attendanceLesson === null) {
+    console.log('❌ attendanceLesson missing in request body for student', student_id);
+    return res.status(400).json({ error: 'attendanceLesson is required' });
   }
   
   console.log('🎯 Toggling attendance for student:', student_id);
-  console.log('📅 Attendance data:', { attended, lastAttendance, lastAttendanceCenter, attendanceWeek });
+  console.log('📅 Attendance data:', { attended, lastAttendance, lastAttendanceCenter, attendanceLesson });
   
   let client;
   try {
@@ -79,109 +116,183 @@ export default async function handler(req, res) {
       return res.status(403).json({ error: 'Student account is deactivated' });
     }
     
-    // Determine which week to update
-    const weekNumber = attendanceWeek || 1;
-    const weekIndex = weekNumber - 1; // Convert to array index
+    // Load lessons from database
+    const lessonsFromDB = await db.collection('lessons').find({}).sort({ id: 1 }).toArray();
+    const lessonNames = lessonsFromDB.map(l => l.name);
     
-    // Ensure the target week exists; if not, create weeks up to that index with default schema
-    const ensureWeeksExist = async () => {
-      const currentLength = Array.isArray(student.weeks) ? student.weeks.length : 0;
-      if (currentLength > weekIndex) return; // already exists
-
-      const start = currentLength + 1; // weeks are 1-based
-      const end = weekNumber; // inclusive
-      const additions = [];
-      for (let w = start; w <= end; w++) {
-        additions.push({
-          week: w,
-          attended: false,
-          lastAttendance: null,
-          lastAttendanceCenter: null,
-          hwDone: false,
-          hwDegree: null,
-          quizDegree: null,
-          comment: null,
-          message_state: false,
-        });
-      }
-      if (additions.length > 0) {
-        console.log(`🧩 Creating missing weeks ${start}..${end} for student ${student_id}`);
+    // Determine which lesson to update
+    const lessonName = attendanceLesson || (lessonNames.length > 0 ? lessonNames[0] : 'Lesson 1');
+    
+    // Ensure the target lesson exists; if not, create it with default schema.
+    // IMPORTANT: never use dotted paths like `lessons.${name}` — dots in lesson
+    // names (e.g. "1. tester") would nest incorrectly in MongoDB.
+    const ensureLessonExists = async () => {
+      console.log(`🔍 Current student lessons structure:`, typeof student.lessons, student.lessons);
+      
+      // Handle case where lessons might be an array (old format) or undefined
+      if (!student.lessons || Array.isArray(student.lessons)) {
+        console.log(`🔄 Converting lessons from array to object format for student ${student_id}`);
+        student.lessons = {};
         await db.collection('students').updateOne(
           { id: student_id },
-          { $push: { weeks: { $each: additions } } }
+          { $set: { lessons: {} } }
         );
-        // Refresh student in-memory reference minimally by extending weeks length
-        student.weeks = (student.weeks || []).concat(additions);
+      }
+      
+      if (!getStudentLesson(student.lessons, lessonName)) {
+        console.log(`🧩 Creating missing lesson "${lessonName}" for student ${student_id}`);
+        const nextLessons = mergeStudentLesson(
+          student.lessons,
+          lessonName,
+          createDefaultStudentLesson(lessonName)
+        );
+        await db.collection('students').updateOne(
+          { id: student_id },
+          { $set: { lessons: nextLessons } }
+        );
+        student.lessons = nextLessons;
       }
     };
 
-    await ensureWeeksExist();
-    
+    await ensureLessonExists();
+
+    const PAYMENT_SYSTEM_ENABLED = isPaymentSystemEnabled();
+    const payment = normalizePayment(student.payment);
+    // Keep payment as a proper object in DB (never an array / missing)
+    if (!student.payment || typeof student.payment !== 'object' || Array.isArray(student.payment)) {
+      await db.collection('students').updateOne(
+        { id: student_id },
+        { $set: { payment } }
+      );
+      student.payment = payment;
+    } else {
+      student.payment = { ...student.payment, numberOfSessions: payment.numberOfSessions };
+    }
+
     if (attended) {
-      // Mark as attended
-      const updateQuery = {
-        [`weeks.${weekIndex}.week`]: weekNumber,
-        [`weeks.${weekIndex}.attended`]: true,
-        [`weeks.${weekIndex}.lastAttendance`]: lastAttendance || null,
-        [`weeks.${weekIndex}.lastAttendanceCenter`]: lastAttendanceCenter || null
-      };
+      // Check if student has available sessions or if this lesson is already paid (only if payment system is enabled)
+      const currentSessions = payment.numberOfSessions;
+      const existingLesson = getStudentLesson(student.lessons, lessonName);
+      const isLessonPaid = existingLesson && existingLesson.paid === true;
       
+      if (PAYMENT_SYSTEM_ENABLED && currentSessions <= 0 && !isLessonPaid) {
+        console.log('❌ Student has no available sessions and lesson is not paid:', student_id);
+        return res.status(400).json({ error: 'No available sessions' });
+      }
+      
+      // Store the complete attendance timestamp using the Cairo timezone.
+      const attendanceTimestamp = formatEgyptAttendance(lastAttendanceCenter);
+      const attendanceDateOnly = attendanceTimestamp.split(' in ')[0];
+
+      const lessonPatch = {
+        attended: true,
+        lastAttendance: attendanceTimestamp,
+        lastAttendanceCenter: lastAttendanceCenter || null,
+        attendanceDate: attendanceDateOnly,
+      };
+
+      let sessionDelta = 0;
+      if (PAYMENT_SYSTEM_ENABLED) {
+        lessonPatch.paid = true;
+        if (!isLessonPaid && currentSessions > 0) {
+          sessionDelta = -1;
+        }
+      }
+
+      const nextLessons = mergeStudentLesson(student.lessons, lessonName, lessonPatch);
+      
+      console.log('🔧 Updating lessons map for lesson:', lessonName, 'sessionDelta:', sessionDelta);
+      const updateDoc = sessionDelta !== 0
+        ? { $set: { lessons: nextLessons }, $inc: { 'payment.numberOfSessions': sessionDelta } }
+        : { $set: { lessons: nextLessons } };
+
       const result = await db.collection('students').updateOne(
         { id: student_id },
-        { $set: updateQuery }
+        updateDoc
       );
+      
+      console.log('🔧 Database update result:', result);
       
       if (result.matchedCount === 0) {
         console.log('❌ Failed to update student:', student_id);
         return res.status(404).json({ error: 'Student not found' });
       }
-      console.log('✅ Student marked as attended for week', weekNumber);
+
+      const nextSessions = currentSessions + sessionDelta;
+      console.log('✅ Student marked as attended for lesson', lessonName, 'sessions:', nextSessions);
       
-      // Create simplified history record (only studentId and week)
+      // Create simplified history record (only studentId and lesson)
       const historyRecord = {
         studentId: student.id,
-        week: weekNumber
+        lesson: lessonName
       };
       
       console.log('📝 Creating simplified history record:', historyRecord);
       const historyResult = await db.collection('history').insertOne(historyRecord);
       console.log('✅ History record created with ID:', historyResult.insertedId);
+
+      return res.json({
+        success: true,
+        payment: { ...payment, numberOfSessions: nextSessions },
+        sessionDelta,
+      });
       
     } else {
       // Mark as not attended (unattend)
       // Also reset hw and quiz since student didn't attend
-      const updateQuery = {
-        [`weeks.${weekIndex}.week`]: weekNumber,
-        [`weeks.${weekIndex}.attended`]: false,
-        [`weeks.${weekIndex}.lastAttendance`]: null,
-        [`weeks.${weekIndex}.lastAttendanceCenter`]: null,
-        [`weeks.${weekIndex}.hwDone`]: false,
-        [`weeks.${weekIndex}.hwDegree`]: null,
-        [`weeks.${weekIndex}.quizDegree`]: null,
-        [`weeks.${weekIndex}.comment`]: null,
-        [`weeks.${weekIndex}.message_state`]: false
-      };
+      const currentSessions = payment.numberOfSessions;
+      const existingLesson = getStudentLesson(student.lessons, lessonName);
+      const wasLessonPaid = existingLesson && existingLesson.paid === true;
+      
+      const nextLessons = mergeStudentLesson(student.lessons, lessonName, {
+        attended: false,
+        lastAttendance: null,
+        lastAttendanceCenter: null,
+        attendanceDate: null,
+        hwDone: false,
+        quizDegree: null,
+        comment: null,
+        message_state: false,
+        homework_degree: null,
+        paid: false,
+      });
+
+      let sessionDelta = 0;
+      // Restore one session if payment is on and this lesson had consumed a session
+      if (PAYMENT_SYSTEM_ENABLED && wasLessonPaid) {
+        sessionDelta = 1;
+      }
+
+      const updateDoc = sessionDelta !== 0
+        ? { $set: { lessons: nextLessons }, $inc: { 'payment.numberOfSessions': sessionDelta } }
+        : { $set: { lessons: nextLessons } };
       
       const result = await db.collection('students').updateOne(
         { id: student_id },
-        { $set: updateQuery }
+        updateDoc
       );
       
       if (result.matchedCount === 0) {
         console.log('❌ Failed to update student:', student_id);
         return res.status(404).json({ error: 'Student not found' });
       }
-      console.log('✅ Student marked as not attended for week', weekNumber);
+
+      const nextSessions = currentSessions + sessionDelta;
+      console.log('✅ Student marked as not attended for lesson', lessonName, 'sessions:', nextSessions);
       
-      // Remove simplified history record for this student and week
+      // Remove simplified history record for this student and lesson
       const historyDeleteResult = await db.collection('history').deleteMany({
         studentId: student_id,
-        week: weekNumber
+        lesson: lessonName
       });
       console.log('🗑️ Removed', historyDeleteResult.deletedCount, 'history records');
+
+      return res.json({
+        success: true,
+        payment: { ...payment, numberOfSessions: nextSessions },
+        sessionDelta,
+      });
     }
-    
-    res.json({ success: true });
   } catch (error) {
     console.error('❌ Error in attend endpoint:', error);
     if (error.message.includes('Unauthorized') || error.message.includes('Invalid token')) {
@@ -193,4 +304,4 @@ export default async function handler(req, res) {
   } finally {
     if (client) await client.close();
   }
-} 
+}

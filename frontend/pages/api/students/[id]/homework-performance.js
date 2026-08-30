@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import { authMiddleware } from '../../../../lib/authMiddleware';
 import { verifySignature } from '../../../../lib/hmac';
+import { itemCenterMatchesStudentMainCenter } from '../../../../lib/studentCenterMatch';
 
 function loadEnvConfig() {
   try {
@@ -33,6 +34,7 @@ function loadEnvConfig() {
 const envConfig = loadEnvConfig();
 const MONGO_URI = envConfig.MONGO_URI || process.env.MONGO_URI;
 const DB_NAME = envConfig.DB_NAME || process.env.DB_NAME;
+const NATIONAL_SYSTEM = envConfig.NATIONAL_SYSTEM === 'true' || process.env.NATIONAL_SYSTEM === 'true';
 
 export default async function handler(req, res) {
   if (req.method !== 'GET') {
@@ -83,10 +85,13 @@ export default async function handler(req, res) {
       return res.status(404).json({ error: 'Student not found' });
     }
 
-    // Get student's grade
-    const studentGrade = student.grade;
-    if (!studentGrade) {
-      // If student has no grade, return empty array
+    // Get student's course and courseType
+    const studentCourse = student.course;
+    const studentCourseType = student.courseType;
+    const studentMainCenter = student.main_center;
+    
+    if (!studentCourse) {
+      // If student has no course, return empty array
       return res.json({ 
         success: true,
         chartData: []
@@ -121,13 +126,14 @@ export default async function handler(req, res) {
       }
     });
 
-    // ALWAYS load from weeks array as well (even if online_homeworks exists)
+    // ALWAYS load from lessons object as well (even if online_homeworks exists)
     // This ensures we get all homework data, including legacy entries
-    const weeks = student.weeks || [];
-    weeks.forEach(weekData => {
-      if (weekData.week && weekData.hwDegree) {
-        // Parse hwDegree format like "3 / 3" or "8 / 10" or "50 / 120"
-        const hwDegreeStr = String(weekData.hwDegree).trim();
+    const lessons = student.lessons || {};
+    Object.keys(lessons).forEach(lessonName => {
+      const lessonData = lessons[lessonName];
+      if (lessonData && lessonData.homework_degree) {
+        // Parse homework_degree format like "3 / 3" or "8 / 10" or "50 / 120"
+        const hwDegreeStr = String(lessonData.homework_degree).trim();
         const match = hwDegreeStr.match(/^(\d+(?:\.\d+)?)\s*\/\s*(\d+(?:\.\d+)?)$/);
         
         if (match) {
@@ -136,46 +142,70 @@ export default async function handler(req, res) {
           const percentage = total > 0 ? Math.round((obtained / total) * 100) : 0;
           const result = hwDegreeStr; // Keep original format "50 / 120"
           
-          // Store by week number as key
+          // Store by lesson name as key
           // Only override if not already set from online_homeworks
-          if (!resultMap[`week_${weekData.week}`]) {
-            resultMap[`week_${weekData.week}`] = { percentage, result };
+          if (!resultMap[`lesson_${lessonName}`]) {
+            resultMap[`lesson_${lessonName}`] = { percentage, result };
           }
         }
       }
     });
 
-    // Get ALL homeworks for this student's grade (not just completed ones)
-    const normalizedStudentGrade = studentGrade.toLowerCase().replace(/\./g, '').trim();
+    // Get ALL homeworks for this student's course and courseType (not just completed ones)
+    const studentCourseTrimmed = (studentCourse || '').trim();
+    const studentCourseTypeTrimmed = (studentCourseType || '').trim();
     const allHomeworks = await db.collection('homeworks').find({}).toArray();
     
-    // Filter homeworks by normalized grade
-    const filteredHomeworks = allHomeworks.filter(hw => {
-      if (!hw.grade || !hw.week) return false; // Only include homeworks with grade and week
-      const normalizedHwGrade = hw.grade.toLowerCase().replace(/\./g, '').trim();
-      return normalizedHwGrade === normalizedStudentGrade;
+    // Only consider activated homeworks for performance calculations
+    const activeHomeworks = allHomeworks.filter(hw => {
+      const hwState = (hw.state || hw.account_state || 'Activated');
+      return hwState !== 'Deactivated';
+    });
+    
+    // Filter homeworks by course, courseType, and type (only include questions)
+    const filteredHomeworks = activeHomeworks.filter(hw => {
+      if (!hw.course || !hw.lesson) return false;
+      const hwType = (hw.homework_type || 'questions').toLowerCase();
+      if (hwType !== 'questions') return false;
+      const hwCourse = (hw.course || '').trim();
+      const hwCourseType = (hw.courseType || '').trim();
+      
+      // Course match: if homework course is "All", it matches any student course
+      const courseMatch = hwCourse.toLowerCase() === 'all' || 
+                         hwCourse.toLowerCase() === studentCourseTrimmed.toLowerCase();
+      
+      // CourseType match: skip when national system
+      const courseTypeMatch = NATIONAL_SYSTEM ||
+                             !hwCourseType || 
+                             !studentCourseTypeTrimmed ||
+                             hwCourseType.toLowerCase() === studentCourseTypeTrimmed.toLowerCase();
+
+      const centerMatch = itemCenterMatchesStudentMainCenter(hw.center, studentMainCenter);
+      
+      return courseMatch && courseTypeMatch && centerMatch;
     });
 
-    // Group all homeworks by week - show result directly from DB (no aggregation)
-    // If multiple homeworks in same week, prioritize completed ones
-    const weekDataMap = {};
+    // Group all homeworks by lesson - show result directly from DB (no aggregation)
+    // If multiple homeworks in same lesson, prioritize completed ones
+    const lessonDataMap = {};
     
     filteredHomeworks.forEach(homework => {
-      const week = homework.week;
+      const lessonName = homework.lesson;
+      if (!lessonName) return;
+      
       // Normalize homework._id to string for matching
       const hwIdStr = homework._id.toString();
       // Find result data - should match since we stored both formats
       let resultData = resultMap[hwIdStr];
       
-      // If no result from online_homeworks, check weeks fallback
+      // If no result from online_homeworks, check lessons fallback
       if (!resultData) {
-        resultData = resultMap[`week_${week}`];
+        resultData = resultMap[`lesson_${lessonName}`];
       }
       
-      if (!weekDataMap[week]) {
-        weekDataMap[week] = {
-          weekNumber: week,
-          week: `Week ${week}`,
+      if (!lessonDataMap[lessonName]) {
+        lessonDataMap[lessonName] = {
+          lesson_name: lessonName,
           percentage: 0,
           result: '0 / 0'
         };
@@ -185,46 +215,46 @@ export default async function handler(req, res) {
       // Prioritize completed results (non-zero percentage) over incomplete ones
       if (resultData) {
         const isCompleted = resultData.percentage > 0;
-        const currentIsCompleted = weekDataMap[week].percentage > 0;
+        const currentIsCompleted = lessonDataMap[lessonName].percentage > 0;
         
         // Use this result if: it's completed, or if current is not completed
         if (isCompleted || !currentIsCompleted) {
-          weekDataMap[week].percentage = resultData.percentage;
-          weekDataMap[week].result = resultData.result; // Show result from DB as-is
+          lessonDataMap[lessonName].percentage = resultData.percentage;
+          lessonDataMap[lessonName].result = resultData.result; // Show result from DB as-is
         }
       }
     });
 
-    // ALSO add weeks data that don't have corresponding homeworks in the database
-    // This ensures all weeks with hwDegree are shown in the chart
-    weeks.forEach(weekData => {
-      if (weekData.week && weekData.hwDegree) {
-        // Check if this week already has data from filteredHomeworks
-        if (!weekDataMap[weekData.week]) {
-          // Parse hwDegree format like "50 / 120"
-          const hwDegreeStr = String(weekData.hwDegree).trim();
-          const match = hwDegreeStr.match(/^(\d+(?:\.\d+)?)\s*\/\s*(\d+(?:\.\d+)?)$/);
-          
-          if (match) {
-            const obtained = parseFloat(match[1]);
-            const total = parseFloat(match[2]);
-            const percentage = total > 0 ? Math.round((obtained / total) * 100) : 0;
-            
-            weekDataMap[weekData.week] = {
-              weekNumber: weekData.week,
-              week: `Week ${weekData.week}`,
-              percentage: percentage,
-              result: hwDegreeStr
-            };
-          }
-        }
+    // Always include lessons with a recorded homework_degree (scan/manual/legacy),
+    // even when there is no matching activated "questions" homework for course/center.
+    Object.keys(lessons).forEach(lessonName => {
+      const lessonData = lessons[lessonName];
+      if (!lessonData || !lessonData.homework_degree) return;
+
+      const hwDegreeStr = String(lessonData.homework_degree).trim();
+      const match = hwDegreeStr.match(/^(\d+(?:\.\d+)?)\s*\/\s*(\d+(?:\.\d+)?)$/);
+      if (!match) return;
+
+      const obtained = parseFloat(match[1]);
+      const total = parseFloat(match[2]);
+      const percentage = total > 0 ? Math.round((obtained / total) * 100) : 0;
+      const existing = lessonDataMap[lessonName];
+      const existingEmpty = !existing || existing.percentage === 0 || existing.result === '0 / 0';
+
+      // Prefer an existing completed online result; otherwise use lesson.homework_degree
+      if (existingEmpty) {
+        lessonDataMap[lessonName] = {
+          lesson_name: lessonName,
+          percentage,
+          result: hwDegreeStr
+        };
       }
     });
 
-
-    // Convert to array and sort by week number
-    const chartData = Object.values(weekDataMap)
-      .sort((a, b) => a.weekNumber - b.weekNumber);
+    // Convert to array, keep only lessons with real results, sort by lesson name
+    const chartData = Object.values(lessonDataMap)
+      .filter((item) => item.percentage > 0 || (item.result && item.result !== '0 / 0'))
+      .sort((a, b) => a.lesson_name.localeCompare(b.lesson_name));
 
     // Always return success with chartData (empty array if no data)
     res.json({ 

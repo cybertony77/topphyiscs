@@ -3,11 +3,14 @@ import { useRouter } from "next/router";
 import Image from 'next/image';
 import CenterSelect from "../../components/CenterSelect";
 import BackToDashboard from "../../components/BackToDashboard";
+import CourseSelect from '../../components/CourseSelect';
 import GradeSelect from '../../components/GradeSelect';
+import CourseTypeSelect from '../../components/CourseTypeSelect';
 import AccountStateSelect from '../../components/AccountStateSelect';
 import GenderSelect from '../../components/GenderSelect';
 import Title from '../../components/Title';
-import { useStudents, useStudent, useUpdateStudent } from '../../lib/api/students';
+import { useStudents, useStudent, useUpdateStudent, useCheckStudentPhone } from '../../lib/api/students';
+import { useNationalSystem, getCourseFieldLabels } from '../../lib/api/system';
 import PhoneInput from 'react-phone-input-2';
 import 'react-phone-input-2/lib/style.css';
 import { formatPhoneForDB, validateEgyptPhone, handleEgyptPhoneKeyDown } from '../../lib/phoneUtils';
@@ -23,6 +26,8 @@ function normalizeGrade(grade) {
 }
 
 export default function EditStudent() {
+  const isNational = useNationalSystem();
+  const courseLabels = getCourseFieldLabels(isNational);
   const containerRef = useRef(null);
   const [studentId, setStudentId] = useState("");
   const [searchId, setSearchId] = useState(""); // Separate state for search
@@ -34,11 +39,28 @@ export default function EditStudent() {
   const [genderDropdownOpen, setGenderDropdownOpen] = useState(false);
   const [searchResults, setSearchResults] = useState([]); // Store multiple search results
   const [showSearchResults, setShowSearchResults] = useState(false); // Show/hide search results
+  const [hasExistingEmail, setHasExistingEmail] = useState(false); // Show email field only if users.email exists
 
   // React Query hooks
   const { data: allStudents } = useStudents();
   const { data: student, isLoading: studentLoading, error: studentError } = useStudent(searchId, { enabled: !!searchId });
   const updateStudentMutation = useUpdateStudent();
+  const phoneCheck = useCheckStudentPhone(formData.phone, searchId || null, { enabled: isNational });
+  const phoneReady = formatPhoneForDB(formData.phone).length >= 11;
+  const originalPhoneNormalized = formatPhoneForDB(originalStudent?.phone || '');
+  const currentPhoneNormalized = formatPhoneForDB(formData.phone || '');
+  const phoneUnchanged = Boolean(originalPhoneNormalized) && originalPhoneNormalized === currentPhoneNormalized;
+  const phoneTaken =
+    isNational &&
+    phoneReady &&
+    !phoneUnchanged &&
+    !phoneCheck.isLoading &&
+    phoneCheck.data?.exists === true;
+  const phoneAvailable =
+    isNational &&
+    phoneReady &&
+    !phoneCheck.isLoading &&
+    (phoneUnchanged || phoneCheck.data?.exists === false);
   useEffect(() => {
     if (error) {
       const timer = setTimeout(() => setError(""), 5000);
@@ -63,18 +85,25 @@ export default function EditStudent() {
   // Set original student and form data when student data loads
   useEffect(() => {
     if (student && !originalStudent) {
+      console.log('🔍 Student data received from API:', student);
+      const existingEmail = (student.email && String(student.email).trim()) || '';
+      setHasExistingEmail(!!existingEmail);
       const studentData = {
-        name: student.name,
-        grade: normalizeGrade(student.grade),
-        phone: student.phone,
-        parents_phone: student.parents_phone,
-        main_center: student.main_center,
-        school: student.school || "",
+        name: student.name || "",
         age: student.age || "",
+        email: existingEmail,
         gender: student.gender || "",
+        grade: student.grade || "", // Actual grade (e.g. "1st Secondary")
+        course: student.course || "", // Course (EST/SAT/ACT)
+        courseType: student.courseType || "basics",
+        phone: student.phone || "",
+        parents_phone: (student.parentsPhone || student.parentsPhone1 || student.parents_phone || ''), // Support both old and new
+        main_center: student.main_center || "",
+        school: student.school || "",
         comment: student.main_comment || student.comment || "",
         account_state: student.account_state || "Activated"
       };
+      console.log('📝 Form data being set:', studentData);
       setOriginalStudent({ ...studentData });
       setFormData({ ...studentData }); // Also set the form data
     }
@@ -120,6 +149,7 @@ export default function EditStudent() {
     setError("");
     setSuccess(false);
     setOriginalStudent(null);
+    setHasExistingEmail(false);
     setSearchResults([]);
     setShowSearchResults(false);
     
@@ -193,6 +223,7 @@ export default function EditStudent() {
     if (!value.trim()) {
       setFormData({});
       setOriginalStudent(null);
+      setHasExistingEmail(false);
       setError("");
       setSuccess(false);
       setSearchResults([]);
@@ -233,6 +264,20 @@ export default function EditStudent() {
         }
         return;
       }
+      // Email: include when changed (validated on submit)
+      if (key === 'email') {
+        if (formData[key] !== originalStudent[key]) {
+          changes[key] = formData[key];
+        }
+        return;
+      }
+      // School is optional in the non-national system and may be cleared.
+      if (key === 'school') {
+        if (formData[key] !== originalStudent[key]) {
+          changes[key] = formData[key];
+        }
+        return;
+      }
       // Only include fields that have actually changed and are not undefined/null/empty
       if (formData[key] !== originalStudent[key] &&
           formData[key] !== undefined &&
@@ -251,10 +296,46 @@ export default function EditStudent() {
     return Object.keys(formData).some(key => formData[key] !== originalStudent[key]);
   };
 
+  const isPhoneFilled = (phone) => {
+    const formatted = formatPhoneForDB(phone);
+    return Boolean(formatted && formatted.length > 2);
+  };
+
+  const areRequiredFieldsFilled = () => {
+    if (!formData || !originalStudent) return false;
+    if (!String(formData.name || '').trim()) return false;
+    if (!String(formData.gender || '').trim()) return false;
+    if (!isNational && !String(formData.grade || '').trim()) return false;
+    if (!String(formData.course || '').trim()) return false;
+    if (!isNational && !String(formData.courseType || '').trim()) return false;
+    if (isNational && !String(formData.school || '').trim()) return false;
+    if (!isPhoneFilled(formData.phone) || !isPhoneFilled(formData.parents_phone)) return false;
+    if (!String(formData.main_center || '').trim()) return false;
+    if (!String(formData.account_state || '').trim()) return false;
+    if (hasExistingEmail && !String(formData.email || '').trim()) return false;
+    return true;
+  };
+
+  const canSubmit =
+    hasChanges() &&
+    areRequiredFieldsFilled() &&
+    !updateStudentMutation.isPending &&
+    !phoneTaken &&
+    !(isNational && phoneReady && !phoneUnchanged && phoneCheck.isLoading);
+
   const handleEdit = async (e) => {
     e.preventDefault();
     setError("");
     setSuccess(false);
+
+    if (isNational && phoneTaken) {
+      setError("This phone number is already used by another student");
+      return;
+    }
+    if (isNational && phoneReady && !phoneUnchanged && (phoneCheck.isLoading || !phoneCheck.data)) {
+      setError("Please wait while we check the phone number");
+      return;
+    }
     
     // Check if there are any changes
     if (!hasChanges()) {
@@ -263,41 +344,47 @@ export default function EditStudent() {
     }
     
     const changedFields = getChangedFields();
+
+    // Validate email if it was changed (field only shown when student already has one)
+    if (Object.prototype.hasOwnProperty.call(changedFields, 'email')) {
+      const nextEmail = typeof changedFields.email === 'string' ? changedFields.email.trim() : '';
+      if (!nextEmail) {
+        setError("Email cannot be empty");
+        return;
+      }
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(nextEmail)) {
+        setError("Please enter a valid email address");
+        return;
+      }
+      changedFields.email = nextEmail;
+    }
     
     // Validate phone numbers if they were changed
     if (changedFields.phone) {
       const studentPhone = formatPhoneForDB(changedFields.phone);
-      // Check if it's valid (not just country code)
       if (!studentPhone || studentPhone.length <= 2) {
         setError("Please enter a valid student phone number");
         return;
       }
-      changedFields.phone = studentPhone; // Save with country code
-    }
-    
-    // Validate gender if it was changed (required)
-    if (changedFields.gender !== undefined) {
-      if (!changedFields.gender || changedFields.gender.trim() === '') {
-        setError("Please select a gender");
-        return;
-      }
+      changedFields.phone = studentPhone;
     }
     
     if (changedFields.parents_phone) {
       const parentPhone = formatPhoneForDB(changedFields.parents_phone);
-      // Check if it's valid (not just country code)
       if (!parentPhone || parentPhone.length <= 2) {
         setError("Please enter a valid parent phone number");
         return;
       }
-      changedFields.parents_phone = parentPhone; // Save with country code
+      changedFields.parents_phone = parentPhone;
     }
     
     // Check if student phone number is the same as parent phone number
-    const currentStudentPhone = changedFields.phone || originalStudent.phone;
-    const currentParentPhone = changedFields.parents_phone || originalStudent.parents_phone;
+    const currentStudentPhone = formatPhoneForDB(changedFields.phone || originalStudent.phone || '');
+    const currentParentPhone = formatPhoneForDB(changedFields.parents_phone || originalStudent.parents_phone || '');
     
-    if (currentStudentPhone === currentParentPhone) {
+    // Check if student phone number is the same as parent phone number
+    if (currentStudentPhone && currentParentPhone && currentStudentPhone === currentParentPhone) {
       setError("Student phone number cannot be the same as parent phone number");
       return;
     }
@@ -311,22 +398,17 @@ export default function EditStudent() {
     const updatedStudent = { ...changedFields };
     
     // Handle special field transformations
-    if (changedFields.grade) {
-      updatedStudent.grade = changedFields.grade.toLowerCase().replace(/\./g, '');
-    }
-    if (Object.prototype.hasOwnProperty.call(changedFields, 'age')) {
-      // Handle empty string or null age - set to null in database
-      if (changedFields.age === '' || changedFields.age === null || changedFields.age === undefined) {
-        updatedStudent.age = null;
-      } else {
-        updatedStudent.age = Number(changedFields.age);
-      }
-    }
+    // grade and course are now separate fields - send them as-is
     // Normalize comment: empty string -> null, trim non-empty
     if (Object.prototype.hasOwnProperty.call(changedFields, 'comment')) {
       const c = changedFields.comment;
       updatedStudent.main_comment = (typeof c === 'string' && c.trim() === '') ? null : (typeof c === 'string' ? c.trim() : c);
       delete updatedStudent.comment;
+    }
+
+    if (isNational) {
+      updatedStudent.grade = null;
+      updatedStudent.courseType = null;
     }
     
     console.log('🚀 Final payload being sent:', updatedStudent);
@@ -340,7 +422,7 @@ export default function EditStudent() {
           setOriginalStudent({ ...formData });
         },
         onError: (err) => {
-          setError("Failed to edit student.");
+          setError(err?.response?.data?.error || "Failed to edit student.");
         }
       }
     );
@@ -463,18 +545,16 @@ export default function EditStudent() {
         }
         .form-group label {
           display: block;
-          margin-bottom: 10px;
+          margin-bottom: 8px;
           font-weight: 600;
           color: #495057;
           font-size: 0.95rem;
-          text-transform: uppercase;
-          letter-spacing: 0.5px;
         }
         .form-input {
           width: 100%;
-          padding: 16px 18px;
+          padding: 14px 16px;
           border: 2px solid #e9ecef;
-          border-radius: 12px;
+          border-radius: 10px;
           font-size: 1rem;
           transition: all 0.3s ease;
           box-sizing: border-box;
@@ -483,9 +563,9 @@ export default function EditStudent() {
         }
         .form-input:focus {
           outline: none;
-          border-color: #1FA8DC;
+          border-color: #87CEEB;
           background: white;
-          box-shadow: 0 0 0 3px rgba(31, 168, 220, 0.1);
+          box-shadow: 0 0 0 3px rgba(135, 206, 235, 0.1);
         }
         .form-input::placeholder {
           color: #adb5bd;
@@ -508,20 +588,54 @@ export default function EditStudent() {
           justify-content: center;
           gap: 8px;
         }
-        .submit-btn:hover {
+        .submit-btn:hover:not(:disabled) {
           transform: translateY(-3px);
           box-shadow: 0 8px 25px rgba(40, 167, 69, 0.4);
           background: linear-gradient(135deg, #1e7e34 0%, #17a2b8 100%);
         }
-        .submit-btn:active {
+        .submit-btn:active:not(:disabled) {
           transform: translateY(-1px);
           box-shadow: 0 4px 16px rgba(40, 167, 69, 0.3);
         }
         .submit-btn:disabled {
-          opacity: 0.6;
+          background: linear-gradient(135deg, #9aa5b1 0%, #b0b8c1 100%);
+          color: rgba(255, 255, 255, 0.85);
+          opacity: 0.7;
           cursor: not-allowed;
           transform: none;
-          box-shadow: 0 2px 8px rgba(40, 167, 69, 0.2);
+          box-shadow: none;
+          filter: grayscale(0.35);
+        }
+        .phone-feedback {
+          margin-top: 8px;
+          font-size: 0.9rem;
+          padding: 8px 12px;
+          border-radius: 6px;
+          font-weight: 500;
+        }
+        .phone-feedback.checking {
+          background: #f8f9fa;
+          color: #6c757d;
+          border: 1px solid #dee2e6;
+        }
+        .phone-feedback.taken {
+          background: #f8d7da;
+          color: #721c24;
+          border: 1px solid #f5c6cb;
+        }
+        .phone-feedback.available {
+          background: #d4edda;
+          color: #155724;
+          border: 1px solid #c3e6cb;
+        }
+        .error-border {
+          border-color: #dc3545 !important;
+          box-shadow: 0 0 0 3px rgba(220, 53, 69, 0.1) !important;
+        }
+        :global(.phone-error .form-control),
+        :global(.phone-input.error-border) {
+          border-color: #dc3545 !important;
+          box-shadow: 0 0 0 3px rgba(220, 53, 69, 0.1) !important;
         }
         .form-row {
           display: grid;
@@ -677,7 +791,7 @@ export default function EditStudent() {
                   {student.name} (ID: {student.id})
                 </div>
                 <div style={{ fontSize: "0.9rem", color: "#6c757d" }}>
-                  {student.grade} • {student.main_center}
+                  {[student.course, student.courseType, student.main_center].filter(Boolean).join(' • ')}
                 </div>
               </button>
             ))}
@@ -700,7 +814,7 @@ export default function EditStudent() {
           
           <form onSubmit={handleEdit}>
             <div className="form-group">
-              <label>Full Name</label>
+              <label>Full Name <span style={{color: 'red'}}>*</span></label>
               <input
                 className="form-input"
                 name="name"
@@ -723,6 +837,20 @@ export default function EditStudent() {
                 onChange={handleChange}
               />
             </div>
+            {hasExistingEmail && (
+              <div className="form-group">
+                <label>Email</label>
+                <input
+                  className="form-input"
+                  name="email"
+                  type="email"
+                  placeholder="Enter student's email"
+                  value={formData.email || ''}
+                  onChange={handleChange}
+                  autoComplete="off"
+                />
+              </div>
+            )}
             <div className="form-group">
               <label>Gender <span style={{color: 'red'}}>*</span></label>
               <GenderSelect
@@ -737,57 +865,100 @@ export default function EditStudent() {
                 onClose={() => setGenderDropdownOpen(false)}
               />
             </div>
-            <div className="form-row">
+            {courseLabels.showGradeField && (
+            <div className="form-group">
+              <label>Grade <span style={{color: 'red'}}>*</span></label>
+              <GradeSelect
+                selectedGrade={formData.grade || ''}
+                onGradeChange={(grade) => handleChange({ target: { name: 'grade', value: grade } })}
+                isOpen={openDropdown === 'grade'}
+                onToggle={() => setOpenDropdown(openDropdown === 'grade' ? null : 'grade')}
+                onClose={() => setOpenDropdown(null)}
+              />
+            </div>
+            )}
               <div className="form-group">
-                <label>Grade</label>
-                <GradeSelect 
-                  selectedGrade={formData.grade || ''} 
-                  onGradeChange={(grade) => handleChange({ target: { name: 'grade', value: grade } })} 
-                  isOpen={openDropdown === 'grade'}
-                  onToggle={() => setOpenDropdown(openDropdown === 'grade' ? null : 'grade')}
+              <label>{courseLabels.course} <span style={{color: 'red'}}>*</span></label>
+              <CourseSelect 
+                  selectedGrade={formData.course || ''} 
+                onGradeChange={(course) => handleChange({ target: { name: 'course', value: course } })} 
+                required 
+                isOpen={openDropdown === 'course'}
+                onToggle={() => setOpenDropdown(openDropdown === 'course' ? null : 'course')}
+                onClose={() => setOpenDropdown(null)}
+              />
+            </div>
+            {courseLabels.showCourseType && (
+            <div className="form-group">
+              <label>Course Type <span style={{color: 'red'}}>*</span></label>
+              <CourseTypeSelect 
+                selectedCourseType={formData.courseType || ''} 
+                onCourseTypeChange={(courseType) => handleChange({ target: { name: 'courseType', value: courseType } })} 
+                required 
+                isOpen={openDropdown === 'courseType'}
+                onToggle={() => setOpenDropdown(openDropdown === 'courseType' ? null : 'courseType')}
                   onClose={() => setOpenDropdown(null)}
                 />
               </div>
+            )}
               <div className="form-group">
-                <label>School</label>
+                <label>School {isNational && <span style={{color: 'red'}}>*</span>}</label>
                 <input
                   className="form-input"
                   name="school"
                   placeholder="Enter student's school"
                   value={formData.school || ''}
                   onChange={handleChange}
+                  required={isNational}
                   autocomplete="off"
                 />
-              </div>
             </div>
-            <div className="form-row">
               <div className="form-group">
-                <label>Student Phone</label>
+              <label>Phone <span style={{color: 'red'}}>*</span></label>
                 <PhoneInput
                   country="eg"
                   enableSearch
                   value={formData.phone || ''}
                   onChange={(value) => {
                     const validation = validateEgyptPhone(value);
-                    setFormData({ ...formData, phone: validation.value });
+                  handleChange({ target: { name: 'phone', value: validation.value } });
                   }}
                   onKeyDown={(e) => handleEgyptPhoneKeyDown(e, formData.phone)}
-                  containerClass="phone-container"
-                  inputClass="phone-input"
+                  containerClass={`phone-container ${phoneTaken ? 'phone-error' : ''}`}
+                  inputClass={`phone-input ${phoneTaken ? 'error-border' : ''}`}
                   buttonClass="phone-flag-btn"
                   dropdownClass="phone-dropdown"
                   placeholder="Enter Phone Number"
                 />
+                {phoneReady && (
+                  <div>
+                    {!phoneUnchanged && phoneCheck.isLoading && (
+                      <div className="phone-feedback checking">
+                        🔍 Checking availability...
+                      </div>
+                    )}
+                    {phoneTaken && (
+                      <div className="phone-feedback taken">
+                        ❌ This phone number is already used, use another one
+                      </div>
+                    )}
+                    {phoneAvailable && (
+                      <div className="phone-feedback available">
+                        ✅ This phone number is available
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
               <div className="form-group">
-                <label>Parent's Phone (Whatsapp)</label>
+              <label>Parent's Phone (Whatsapp) <span style={{color: 'red'}}>*</span></label>
                 <PhoneInput
                   country="eg"
                   enableSearch
                   value={formData.parents_phone || ''}
                   onChange={(value) => {
                     const validation = validateEgyptPhone(value);
-                    setFormData({ ...formData, parents_phone: validation.value });
+                  handleChange({ target: { name: 'parents_phone', value: validation.value } });
                   }}
                   onKeyDown={(e) => handleEgyptPhoneKeyDown(e, formData.parents_phone)}
                   containerClass="phone-container"
@@ -797,13 +968,12 @@ export default function EditStudent() {
                   placeholder="Enter Parent Number"
                 />
               </div>
-            </div>
-            <div className="form-group" style={{ width: '100%' }}>
-              <label>Main Center</label>
+            <div className="form-group">
+              <label>Main Center <span style={{color: 'red'}}>*</span></label>
               <CenterSelect 
                 selectedCenter={formData.main_center || ''} 
                 onCenterChange={(center) => handleChange({ target: { name: 'main_center', value: center } })} 
-                style={{ width: '100%' }}
+                required 
                 isOpen={openDropdown === 'center'}
                 onToggle={() => setOpenDropdown(openDropdown === 'center' ? null : 'center')}
                 onClose={() => setOpenDropdown(null)}
@@ -812,10 +982,10 @@ export default function EditStudent() {
             <AccountStateSelect
               value={formData.account_state || 'Activated'}
               onChange={(value) => handleChange({ target: { name: 'account_state', value } })}
-              required={false}
+              required={true}
             />
             <div className="form-group">
-              <label>Main Comment</label>
+              <label>Hidden Comment (Optional)</label>
               <textarea
                 className="form-input"
                 name="comment"
@@ -826,7 +996,19 @@ export default function EditStudent() {
                 style={{ resize: 'vertical' }}
               />
             </div>
-            <button type="submit" className="submit-btn" disabled={!hasChanges() || updateStudentMutation.isPending}>
+            <button
+              type="submit"
+              className="submit-btn"
+              disabled={!canSubmit}
+              title={
+                !areRequiredFieldsFilled()
+                  ? 'Fill all required fields to enable'
+                  : !hasChanges()
+                    ? 'Make a change to enable update'
+                    : 'Update student'
+              }
+              aria-disabled={!canSubmit}
+            >
               {updateStudentMutation.isPending ? "Saving..." : "✏️ Update Student"}
             </button>
           </form>

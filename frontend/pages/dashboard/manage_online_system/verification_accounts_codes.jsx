@@ -10,6 +10,8 @@ import { useVACPaginated } from '../../../lib/api/vac';
 import LoadingSkeleton from '../../../components/LoadingSkeleton';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import apiClient from '../../../lib/axios';
+import { useProfile } from '../../../lib/api/auth';
+import { useWaCooldown } from '../../../lib/waCooldown';
 
 export function InputWithButton({ onButtonClick, onKeyDown, ...props }) {
   const theme = useMantineTheme();
@@ -52,6 +54,14 @@ export function InputWithButton({ onButtonClick, onKeyDown, ...props }) {
 export default function VerificationAccountsCodes() {
   const router = useRouter();
   const containerRef = useRef(null);
+  const { data: profile } = useProfile();
+  const senderId = profile?.id || profile?.username || profile?.email || null;
+  const {
+    cooldownLeft: waCooldownLeft,
+    cooldownStudentId: waCooldownTarget,
+    startCooldown: startWaCooldown,
+    isCoolingDown: waCoolingDown,
+  } = useWaCooldown(senderId, 'vac-manage');
   const [searchInput, setSearchInput] = useState("");
   const [searchTerm, setSearchTerm] = useState("");
   const [currentPage, setCurrentPage] = useState(1);
@@ -421,6 +431,7 @@ export default function VerificationAccountsCodes() {
 
   // Handle WhatsApp send
   const handleSendWhatsApp = (vac) => {
+    if (waCoolingDown) return;
     if (!vac.phone) {
       alert('Student phone number not available');
       return;
@@ -464,34 +475,28 @@ Best regards
       return;
     }
     
-    // Validate country code: if number starts with 012, 011, 010, or 015, allow without country code
-    // Otherwise, require country code (starts with 20 for Egypt)
-    const startsWithEgyptPrefix = phoneNumber.startsWith('012') || 
-                                   phoneNumber.startsWith('011') || 
-                                   phoneNumber.startsWith('010') || 
-                                   phoneNumber.startsWith('015');
-    
-    const hasCountryCode = phoneNumber.startsWith('20');
-    
-    if (!startsWithEgyptPrefix && !hasCountryCode) {
-      alert('Country code required. Please add country code (e.g., 20 for Egypt)');
-      return;
-    }
-    
-    // If number starts with 012/011/010/015, remove first 0 and prepend 20 (Egypt country code)
-    if (startsWithEgyptPrefix && !hasCountryCode) {
-      phoneNumber = '20' + phoneNumber.substring(1); // Remove first 0
+    // Auto-convert only local Egyptian mobile numbers; keep other international numbers as-is.
+    const startsWithEgyptLocalMobile =
+      phoneNumber.startsWith('010') ||
+      phoneNumber.startsWith('011') ||
+      phoneNumber.startsWith('012') ||
+      phoneNumber.startsWith('015');
+
+    if (startsWithEgyptLocalMobile) {
+      phoneNumber = `20${phoneNumber.substring(1)}`;
     }
     
     // Create WhatsApp URL
     const whatsappUrl = `https://wa.me/${phoneNumber}?text=${encodeURIComponent(message)}`;
     
+    startWaCooldown(`student-${vac.account_id}`);
     // Open WhatsApp in a new tab
     window.open(whatsappUrl, '_blank');
   };
 
   // Handle WhatsApp send to parent
   const handleSendParentWhatsApp = (vac) => {
+    if (waCoolingDown) return;
     if (!vac.parents_phone) {
       alert('Parent phone number not available');
       return;
@@ -534,24 +539,161 @@ Best regards
       return;
     }
     
-    const startsWithEgyptPrefix = phoneNumber.startsWith('012') || 
-                                   phoneNumber.startsWith('011') || 
-                                   phoneNumber.startsWith('010') || 
-                                   phoneNumber.startsWith('015');
-    
-    const hasCountryCode = phoneNumber.startsWith('20');
-    
-    if (!startsWithEgyptPrefix && !hasCountryCode) {
-      alert('Country code required. Please add country code (e.g., 20 for Egypt)');
-      return;
-    }
-    
-    if (startsWithEgyptPrefix && !hasCountryCode) {
-      phoneNumber = '20' + phoneNumber.substring(1);
+    const startsWithEgyptLocalMobile =
+      phoneNumber.startsWith('010') ||
+      phoneNumber.startsWith('011') ||
+      phoneNumber.startsWith('012') ||
+      phoneNumber.startsWith('015');
+
+    if (startsWithEgyptLocalMobile) {
+      phoneNumber = `20${phoneNumber.substring(1)}`;
     }
     
     const whatsappUrl = `https://wa.me/${phoneNumber}?text=${encodeURIComponent(message)}`;
+    startWaCooldown(`parent-${vac.account_id}`);
     window.open(whatsappUrl, '_blank');
+  };
+
+  const renderVacWaButton = (onClick, targetKey) => {
+    const showCounter = waCoolingDown && waCooldownTarget === targetKey;
+    return (
+      <div
+        style={{
+          display: 'inline-flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          gap: '2px',
+          verticalAlign: 'middle',
+        }}
+      >
+        <div aria-hidden style={{ minHeight: '18px', width: '100%' }} />
+        <button
+          type="button"
+          onClick={onClick}
+          disabled={waCoolingDown}
+          title={waCoolingDown ? `Wait ${waCooldownLeft}s before sending again` : 'Send WhatsApp'}
+          style={{
+            position: 'relative',
+            overflow: 'hidden',
+            background: waCoolingDown ? '#1c1f24' : 'rgb(37, 211, 102)',
+            color: '#ffffff',
+            border: 'none',
+            outline: 'none',
+            borderRadius: '10px',
+            padding: '6px 12px',
+            fontSize: '12px',
+            cursor: waCoolingDown ? 'not-allowed' : 'pointer',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '6px',
+            fontWeight: '600',
+            transition: 'background 0.45s cubic-bezier(0.22, 1, 0.36, 1), transform 0.45s cubic-bezier(0.22, 1, 0.36, 1), box-shadow 0.45s ease, letter-spacing 0.45s ease',
+            boxShadow: waCoolingDown
+              ? '0 6px 16px rgba(0,0,0,0.25), inset 0 1px 0 rgba(255,255,255,0.06)'
+              : '0 3px 10px rgba(37, 211, 102, 0.3)',
+            minWidth: '78px',
+            justifyContent: 'center',
+            transform: waCoolingDown ? 'scale(0.985)' : 'scale(1)',
+            letterSpacing: waCoolingDown ? '0.03em' : '0',
+          }}
+        >
+          <span
+            aria-hidden
+            style={{
+              position: 'absolute',
+              inset: 0,
+              borderRadius: 'inherit',
+              background: 'linear-gradient(160deg, #2a2f36 0%, #1c1f24 55%, #14171b 100%)',
+              opacity: waCoolingDown ? 1 : 0,
+              transition: 'opacity 0.5s cubic-bezier(0.22, 1, 0.36, 1)',
+              pointerEvents: 'none',
+              zIndex: 0,
+            }}
+          />
+          <span
+            style={{
+              position: 'relative',
+              zIndex: 1,
+              width: 25,
+              height: 25,
+              display: 'inline-flex',
+              flexShrink: 0,
+            }}
+          >
+            <Image
+              src="/whatsapp.svg"
+              alt=""
+              width={25}
+              height={25}
+              style={{
+                position: 'absolute',
+                inset: 0,
+                opacity: waCoolingDown ? 0 : 1,
+                transform: waCoolingDown ? 'scale(0.65) rotate(-12deg)' : 'scale(1) rotate(0deg)',
+                transition: 'opacity 0.45s cubic-bezier(0.22, 1, 0.36, 1), transform 0.5s cubic-bezier(0.22, 1, 0.36, 1)',
+                pointerEvents: 'none',
+              }}
+            />
+            <Image
+              src="/close-cross.svg"
+              alt=""
+              width={25}
+              height={25}
+              style={{
+                position: 'absolute',
+                inset: 0,
+                opacity: waCoolingDown ? 1 : 0,
+                transform: waCoolingDown ? 'scale(1) rotate(0deg)' : 'scale(0.65) rotate(12deg)',
+                transition: 'opacity 0.45s cubic-bezier(0.22, 1, 0.36, 1), transform 0.5s cubic-bezier(0.22, 1, 0.36, 1)',
+                pointerEvents: 'none',
+              }}
+            />
+          </span>
+          <span
+            style={{
+              position: 'relative',
+              zIndex: 1,
+              transition: 'opacity 0.4s ease, color 0.4s ease',
+              opacity: waCoolingDown ? 0.88 : 1,
+              color: waCoolingDown ? 'rgba(255,255,255,0.78)' : '#ffffff',
+            }}
+          >
+            Send
+          </span>
+        </button>
+        <div
+          style={{
+            minHeight: '18px',
+            width: '100%',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            position: 'relative',
+          }}
+        >
+          <div
+            style={{
+              fontSize: '11px',
+              fontWeight: 800,
+              color: '#c62828',
+              letterSpacing: '0.06em',
+              lineHeight: 1.2,
+              padding: '2px 8px',
+              borderRadius: '999px',
+              background: 'rgba(198, 40, 40, 0.08)',
+              userSelect: 'none',
+              opacity: showCounter ? 1 : 0,
+              transform: showCounter ? 'translateY(0) scale(1)' : 'translateY(-4px) scale(0.92)',
+              transition: 'opacity 0.4s cubic-bezier(0.22, 1, 0.36, 1), transform 0.4s cubic-bezier(0.22, 1, 0.36, 1)',
+              pointerEvents: 'none',
+            }}
+            aria-live="polite"
+          >
+            {showCounter ? `${waCooldownLeft}s` : '\u00a0'}
+          </div>
+        </div>
+      </div>
+    );
   };
 
   if (isLoading) {
@@ -560,7 +702,7 @@ Best regards
         minHeight: "100vh", 
         padding: "20px 5px 20px 5px"
       }}>
-        <div style={{ maxWidth: 800, margin: "40px auto", padding: "20px 5px 20px 5px" }}>
+        <div style={{ maxWidth: 800, margin: "40px auto", padding: "12px" }}>
           <Title href="/dashboard/manage_online_system" backText="Back">
             <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
               <Image src="/lock-cog.svg" alt="VAC" width={32} height={32} />
@@ -862,56 +1004,22 @@ Best regards
                           regenerate
                         </button>
                       </Table.Td>
-                      <Table.Td style={{ textAlign: 'center' }}>
+                      <Table.Td style={{ textAlign: 'center', verticalAlign: 'middle', padding: '10px 4px' }}>
                         {vac.phone ? (
-                          <button
-                            onClick={() => handleSendWhatsApp(vac)}
-                            style={{
-                              backgroundColor: '#25D366',
-                              color: 'white',
-                              border: 'none',
-                              borderRadius: '6px',
-                              padding: '6px 12px',
-                              fontSize: '12px',
-                              cursor: 'pointer',
-                              display: 'flex',
-                              alignItems: 'center',
-                              gap: '4px',
-                              fontWeight: '500',
-                              transition: 'background-color 0.2s',
-                              margin: '0 auto'
-                            }}
-                          >
-                            <Image src="/whatsapp.svg" alt="WhatsApp" width={25} height={25} style={{ display: 'inline-block' }} />
-                            Send
-                          </button>
+                          renderVacWaButton(
+                            () => handleSendWhatsApp(vac),
+                            `student-${vac.account_id}`
+                          )
                         ) : (
                           <span style={{ color: '#6c757d', fontStyle: 'italic', fontSize: '0.85rem' }}>No phone</span>
                         )}
                       </Table.Td>
-                      <Table.Td style={{ textAlign: 'center' }}>
+                      <Table.Td style={{ textAlign: 'center', verticalAlign: 'middle', padding: '10px 4px' }}>
                         {vac.parents_phone ? (
-                          <button
-                            onClick={() => handleSendParentWhatsApp(vac)}
-                            style={{
-                              backgroundColor: '#25D366',
-                              color: 'white',
-                              border: 'none',
-                              borderRadius: '6px',
-                              padding: '6px 12px',
-                              fontSize: '12px',
-                              cursor: 'pointer',
-                              display: 'flex',
-                              alignItems: 'center',
-                              gap: '4px',
-                              fontWeight: '500',
-                              transition: 'background-color 0.2s',
-                              margin: '0 auto'
-                            }}
-                          >
-                            <Image src="/whatsapp.svg" alt="WhatsApp" width={25} height={25} style={{ display: 'inline-block' }} />
-                            Send
-                          </button>
+                          renderVacWaButton(
+                            () => handleSendParentWhatsApp(vac),
+                            `parent-${vac.account_id}`
+                          )
                         ) : (
                           <span style={{ color: '#6c757d', fontStyle: 'italic', fontSize: '0.85rem' }}>No phone</span>
                         )}

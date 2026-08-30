@@ -48,9 +48,18 @@ const MONGO_URI = envConfig.MONGO_URI || process.env.MONGO_URI || 'mongodb://loc
 const DB_NAME = envConfig.DB_NAME || process.env.DB_NAME || 'demo-attendance-system';
 const SYSTEM_SCORING_SYSTEM = envConfig.SYSTEM_SCORING_SYSTEM === 'true' || process.env.SYSTEM_SCORING_SYSTEM === 'true';
 const WITH_PHISICAL_CARD = envConfig.WITH_PHISICAL_CARD === 'true';
+const NATIONAL_SYSTEM = envConfig.NATIONAL_SYSTEM === 'true' || process.env.NATIONAL_SYSTEM === 'true';
 
 console.log('🔗 Final MONGO_URI being used:', MONGO_URI.replace(/:[^:@]*@/, ':****@'));
 console.log('🔗 Final DB_NAME being used:', DB_NAME);
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function exactMatchRegex(value) {
+  return new RegExp(`^${escapeRegExp(value)}$`, 'i');
+}
 
 // Auth middleware is now imported from shared utility
 
@@ -151,7 +160,7 @@ export default async function handler(req, res) {
     
     if (req.method === 'GET') {
       // Check if pagination parameters are provided
-      const { page, limit, search, grade, center, sortBy, sortOrder } = req.query;
+      const { page, limit, search, grade, course, center, courseType, sortBy, sortOrder } = req.query;
       const hasPagination = page || limit;
       
       if (hasPagination) {
@@ -163,12 +172,14 @@ export default async function handler(req, res) {
         const pageSize = parseInt(limit) || 50;
         const searchTerm = search ? search.trim() : '';
         const gradeFilter = grade ? grade.trim() : '';
+        const courseFilter = course ? course.trim() : '';
         const centerFilter = center ? center.trim() : '';
+        const courseTypeFilter = courseType ? courseType.trim() : '';
         const genderFilter = req.query.gender ? req.query.gender.trim() : '';
         const sortField = sortBy || 'id';
         const sortDirection = sortOrder === 'desc' ? -1 : 1;
         
-        console.log('📋 Pagination params:', { currentPage, pageSize, searchTerm, gradeFilter, centerFilter, genderFilter, sortField, sortDirection });
+        console.log('📋 Pagination params:', { currentPage, pageSize, searchTerm, gradeFilter, courseFilter, centerFilter, courseTypeFilter, genderFilter, sortField, sortDirection });
         
         // Build query filter
         let queryFilter = {};
@@ -204,15 +215,23 @@ export default async function handler(req, res) {
         }
         
         if (gradeFilter) {
-          queryFilter.grade = { $regex: new RegExp(`^${gradeFilter}$`, 'i') };
+          queryFilter.grade = { $regex: exactMatchRegex(gradeFilter) };
+        }
+        
+        if (courseFilter) {
+          queryFilter.course = { $regex: exactMatchRegex(courseFilter) };
         }
         
         if (centerFilter) {
-          queryFilter.main_center = { $regex: new RegExp(`^${centerFilter}$`, 'i') };
+          queryFilter.main_center = { $regex: exactMatchRegex(centerFilter) };
+        }
+        
+        if (courseTypeFilter) {
+          queryFilter.courseType = { $regex: exactMatchRegex(courseTypeFilter) };
         }
         
         if (genderFilter) {
-          queryFilter.gender = { $regex: new RegExp(`^${genderFilter}$`, 'i') };
+          queryFilter.gender = { $regex: exactMatchRegex(genderFilter) };
         }
         
         console.log('🔍 Query filter:', JSON.stringify(queryFilter, null, 2));
@@ -233,6 +252,8 @@ export default async function handler(req, res) {
               name: 1,
               gender: 1,
               grade: 1,
+              course: 1,
+              courseType: 1,
               phone: 1,
               parentsPhone: 1,
               center: 1,
@@ -243,7 +264,9 @@ export default async function handler(req, res) {
               age: 1,
               account_state: 1,
               score: 1,
-              weeks: 1
+              payment: 1,
+              weeks: 1,
+              lessons: 1
             }
           })
           .sort({ [sortField]: sortDirection })
@@ -278,7 +301,7 @@ export default async function handler(req, res) {
             const hasWeeks = Array.isArray(student.weeks) && student.weeks.length > 0;
             const currentWeek = hasWeeks ?
               (student.weeks.find(w => w && w.attended) || student.weeks.find(w => w) || student.weeks[0]) :
-              { week: 1, attended: false, lastAttendance: null, lastAttendanceCenter: null, hwDone: false, quizDegree: null, message_state: false };
+              { week: 1, attended: false, lastAttendance: null, lastAttendanceCenter: null, hwDone: false, quizDegree: null, message_state: false, student_message_state: false };
             
             // Robust null checks for currentWeek
             const safeCurrentWeek = currentWeek || { 
@@ -288,7 +311,8 @@ export default async function handler(req, res) {
               lastAttendanceCenter: null, 
               hwDone: false, 
               quizDegree: null, 
-              message_state: false 
+              message_state: false,
+              student_message_state: false
             };
             
             // Get email from users collection, or null if not found
@@ -299,6 +323,8 @@ export default async function handler(req, res) {
               name: student.name,
               gender: student.gender || null,
               grade: student.grade,
+              course: student.course || null,
+              courseType: student.courseType || null,
               phone: student.phone,
               parents_phone: student.parentsPhone,
               center: student.center,
@@ -313,10 +339,13 @@ export default async function handler(req, res) {
               school: student.school || null,
               age: student.age || null,
               message_state: safeCurrentWeek.message_state || false,
+              student_message_state: safeCurrentWeek.student_message_state || false,
               account_state: student.account_state || "Activated",
               score: student.score !== null && student.score !== undefined ? student.score : 0,
               email: studentEmail,
-              weeks: student.weeks || []
+              payment: student.payment || { numberOfSessions: 0, cost: 0, paymentComment: null, date: null },
+              weeks: student.weeks || [],
+              lessons: student.lessons || {}
             };
           });
           
@@ -340,7 +369,9 @@ export default async function handler(req, res) {
           filters: {
             search: searchTerm,
             grade: gradeFilter,
+            course: courseFilter,
             center: centerFilter,
+            courseType: courseTypeFilter,
             gender: genderFilter,
             sortBy: sortField,
             sortOrder: sortDirection === 1 ? 'asc' : 'desc'
@@ -358,6 +389,8 @@ export default async function handler(req, res) {
             name: 1,
             gender: 1,
             grade: 1,
+            course: 1,
+            courseType: 1,
             phone: 1,
             parentsPhone: 1,
             center: 1,
@@ -368,7 +401,9 @@ export default async function handler(req, res) {
             age: 1,
             account_state: 1,
             score: 1,
-            weeks: 1
+            payment: 1,
+            weeks: 1,
+            lessons: 1
           }
         }).toArray();
         
@@ -399,7 +434,7 @@ export default async function handler(req, res) {
             const hasWeeks = Array.isArray(student.weeks) && student.weeks.length > 0;
             const currentWeek = hasWeeks ?
               (student.weeks.find(w => w && w.attended) || student.weeks.find(w => w) || student.weeks[0]) :
-              { week: 1, attended: false, lastAttendance: null, lastAttendanceCenter: null, hwDone: false, quizDegree: null, message_state: false };
+              { week: 1, attended: false, lastAttendance: null, lastAttendanceCenter: null, hwDone: false, quizDegree: null, message_state: false, student_message_state: false };
             
             // Robust null checks for currentWeek
             const safeCurrentWeek = currentWeek || { 
@@ -409,7 +444,8 @@ export default async function handler(req, res) {
               lastAttendanceCenter: null, 
               hwDone: false, 
               quizDegree: null, 
-              message_state: false 
+              message_state: false,
+              student_message_state: false
             };
             
             // Get email from users collection, or null if not found
@@ -420,6 +456,8 @@ export default async function handler(req, res) {
               name: student.name,
               gender: student.gender || null,
               grade: student.grade,
+              course: student.course || null,
+              courseType: student.courseType || null,
               phone: student.phone,
               parents_phone: student.parentsPhone,
               center: student.center,
@@ -434,10 +472,13 @@ export default async function handler(req, res) {
               school: student.school || null,
               age: student.age || null,
               message_state: safeCurrentWeek.message_state || false,
+              student_message_state: safeCurrentWeek.student_message_state || false,
               account_state: student.account_state || "Activated",
               score: student.score !== null && student.score !== undefined ? student.score : 0,
               email: studentEmail,
-              weeks: student.weeks || []
+              payment: student.payment || { numberOfSessions: 0, cost: 0, paymentComment: null, date: null },
+              weeks: student.weeks || [],
+              lessons: student.lessons || {}
             };
           });
           
@@ -449,7 +490,7 @@ export default async function handler(req, res) {
       }
     } else if (req.method === 'POST') {
       // Add new student
-      const { id, name, grade, phone, parents_phone, main_center, age, gender, school, main_comment, comment, account_state, score } = req.body;
+      const { id, name, grade, course, courseType, phone, parents_phone, main_center, age, gender, school, main_comment, comment, account_state, score, payment, online_sessions, online_homeworks, online_quizzes, online_mock_exams, mockExams } = req.body;
       
       let newId;
       
@@ -460,8 +501,16 @@ export default async function handler(req, res) {
           return res.status(400).json({ error: 'Student ID is required when WITH_PHISICAL_CARD is enabled' });
         }
         
-        if (!name || !grade || !phone || !parents_phone || !main_center || age === undefined || !gender || !school) {
-          return res.status(400).json({ error: 'All fields are required' });
+        const missingCore =
+          !name || !course || !phone || !parents_phone || !main_center || age === undefined || !gender ||
+          (NATIONAL_SYSTEM && !school);
+        const missingGrade = !NATIONAL_SYSTEM && !grade;
+        if (missingCore || missingGrade) {
+          return res.status(400).json({
+            error: NATIONAL_SYSTEM
+              ? 'All fields are required (name, course/grade, phone, parents_phone, main_center, age, gender, school)'
+              : 'All fields are required (name, grade, course, phone, parents_phone, main_center, age, gender)',
+          });
         }
         
         // Check if the custom ID is already used
@@ -474,7 +523,11 @@ export default async function handler(req, res) {
       } else {
         // If WITH_PHISICAL_CARD is false, auto-generate ID (last student ID + 1)
         // Ignore id field completely - don't validate it even if it's sent
-        if (!name || !grade || !phone || !parents_phone || !main_center || age === undefined || !gender || !school) {
+        const missingCore =
+          !name || !course || !phone || !parents_phone || !main_center || age === undefined || !gender ||
+          (NATIONAL_SYSTEM && !school);
+        const missingGrade = !NATIONAL_SYSTEM && !grade;
+        if (missingCore || missingGrade) {
           return res.status(400).json({ error: 'All fields are required' });
         }
         
@@ -492,25 +545,100 @@ export default async function handler(req, res) {
           existingStudent = await db.collection('students').findOne({ id: newId });
         }
       }
+
+      // Normalize and enforce unique student phone
+      const normalizePhone = (phoneValue) => {
+        if (!phoneValue) return '';
+        let p = String(phoneValue).replace(/[^0-9]/g, '');
+        if (p.match(/^(012|011|010|015)/)) {
+          p = '20' + p.substring(1);
+        }
+        if (p.startsWith('20') && p.length > 2 && p[2] === '0') {
+          p = '20' + p.substring(3);
+        }
+        return p;
+      };
+      const phoneVariants = (normalized) => {
+        const variants = new Set([normalized]);
+        if (normalized.startsWith('20') && normalized.length > 2) {
+          const local = normalized.substring(2);
+          variants.add(local);
+          variants.add('0' + local);
+        }
+        return Array.from(variants).filter(Boolean);
+      };
+
+      const normalizedPhone = normalizePhone(phone);
+      if (!normalizedPhone || normalizedPhone.length < 8) {
+        return res.status(400).json({ error: 'Please enter a valid student phone number' });
+      }
+      if (NATIONAL_SYSTEM) {
+        const phoneTaken = await db.collection('students').findOne({
+          phone: { $in: phoneVariants(normalizedPhone) },
+        });
+        if (phoneTaken) {
+          return res.status(409).json({ error: 'This phone number is already used by another student' });
+        }
+      }
       
-      // New students start with no weeks; weeks are created on demand
-      const weeks = [];
+      // New students start with empty lessons object (not weeks array)
+      const lessons = {};
+      
+      // Initialize payment object
+      const paymentObj = payment || {
+        numberOfSessions: 0,
+        cost: 0,
+        paymentComment: null,
+        date: null
+      };
+      
+      // Initialize online arrays
+      const onlineSessions = online_sessions || [];
+      const onlineHomeworks = online_homeworks || [];
+      const onlineQuizzes = online_quizzes || [];
+      const onlineMockExams = online_mock_exams || [];
+      
+      // Initialize mockExams array (50 exams, all null by default)
+      const mockExamsArray = mockExams || Array(50).fill(null).map(() => ({
+        mathDegree: null,
+        mathOutOf: null,
+        mathPercentage: null,
+        englishDegree: null,
+        englishOutOf: null,
+        englishPercentage: null,
+        examDegree: null,
+        outOf: null,
+        percentage: null,
+        date: null
+      }));
       
       const student = {
         id: newId,
         name,
-        age,
         gender,
-        grade,
-        school,
-        phone,
+        grade: grade || null, // GradeSelect field; not required when NATIONAL_SYSTEM
+        course: course || null, // Course/Grade from CourseSelect (EST, SAT, ACT, etc.)
+        courseType: NATIONAL_SYSTEM ? null : (courseType || "basics"),
+        school: school && String(school).trim() ? String(school).trim() : null,
+        phone: normalizedPhone,
         parentsPhone: parents_phone,
         main_center,
         main_comment: (main_comment ?? comment ?? null),
         score: SYSTEM_SCORING_SYSTEM ? (score !== undefined && score !== null ? parseInt(score) : 10) : 0, // Default to 10 if scoring enabled, 0 if disabled
         account_state: account_state || "Activated", // Default to Activated
-        weeks: weeks
+        lessons: lessons, // Use lessons object instead of weeks array
+        payment: paymentObj,
+        online_sessions: onlineSessions,
+        online_homeworks: onlineHomeworks,
+        online_quizzes: onlineQuizzes,
+        online_mock_exams: onlineMockExams,
+        mockExams: mockExamsArray
       };
+      
+      // Only add age if it's not empty string
+      if (age !== undefined && age !== null && age !== '') {
+        student.age = age;
+      }
       await db.collection('students').insertOne(student);
       
       // Generate VAC code for the new student

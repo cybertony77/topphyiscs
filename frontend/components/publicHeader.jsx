@@ -25,7 +25,7 @@ export default function CustomHeader() {
         height={50}
         style={{
           borderRadius: "50%",
-          background: "#49b9e3",
+          background: "white",
           boxShadow: "0 2px 8px rgba(31,168,220,0.10)",
           objectFit: "cover",
           cursor: "pointer"

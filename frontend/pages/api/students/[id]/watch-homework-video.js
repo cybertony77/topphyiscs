@@ -2,6 +2,8 @@ import { MongoClient, ObjectId } from 'mongodb';
 import fs from 'fs';
 import path from 'path';
 import { authMiddleware } from '../../../../lib/authMiddleware';
+import { mergeStudentLesson } from '../../../../lib/studentLessons';
+import { formatEgyptAttendance } from '../../../../lib/egyptDateTime';
 
 function loadEnvConfig() {
   try {
@@ -32,6 +34,15 @@ function loadEnvConfig() {
 const envConfig = loadEnvConfig();
 const MONGO_URI = envConfig.MONGO_URI || process.env.MONGO_URI;
 const DB_NAME = envConfig.DB_NAME || process.env.DB_NAME;
+
+// Format date as DD/MM/YYYY
+function formatDate(date) {
+  const day = String(date.getDate()).padStart(2, '0');
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const year = date.getFullYear();
+  
+  return `${day}/${month}/${year}`;
+}
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
@@ -74,7 +85,7 @@ export default async function handler(req, res) {
       });
     }
 
-    const { session_id, action, payment_state } = req.body; // action: 'view' or 'finish', payment_state: 'free' or 'paid' or 'free_if_attended'
+    const { session_id, action, payment_state, lesson } = req.body; // action: 'view' or 'finish', payment_state: video state, lesson: lesson name
 
     if (!session_id) {
       return res.status(400).json({ error: 'Session ID is required' });
@@ -95,6 +106,8 @@ export default async function handler(req, res) {
       return res.status(404).json({ error: 'Homework video session not found' });
     }
 
+    const isPaidVideo = (payment_state || session.payment_state) === 'paid';
+
     if (action === 'view') {
       // Just record that video was opened (no decrement)
       return res.status(200).json({ 
@@ -102,38 +115,43 @@ export default async function handler(req, res) {
         message: 'Video view recorded'
       });
     } else if (action === 'finish') {
-      // Set view_homework_video=true for the week
-      const week = session.week;
-      if (week !== null && week !== undefined) {
-        const weeks = student.weeks || [];
-        // Find the week entry
-        const weekIndex = weeks.findIndex(w => w && w.week === week);
+      // Set view_homework_video=true for the lesson and mark attendance
+      const lessonName = lesson || session.lesson;
+      if (lessonName && lessonName.trim()) {
+        const attendanceDate = formatDate(new Date());
+        const attendanceString = formatEgyptAttendance(new Date(), 'Online');
 
-        if (weekIndex !== -1) {
-          // Update existing week - set view_homework_video=true
-          await db.collection('students').updateOne(
-            { id: student_id, 'weeks.week': week },
-            {
-              $set: {
-                'weeks.$.view_homework_video': true
-              }
-            }
-          );
-        } else {
-          // Week doesn't exist, add new week entry with view_homework_video=true
-          const newWeek = {
-            week: week,
-            attended: false,
-            hwDone: false,
-            view_homework_video: true,
-            quizDegree: null,
-            comment: null,
-            message_state: false
+        const lessonPatch = {
+          view_homework_video: true,
+          attended: true,
+          lastAttendance: attendanceString,
+          lastAttendanceCenter: 'Online',
+          attendanceDate: attendanceDate,
+          ...(isPaidVideo ? { paid: true } : {}),
+        };
+        const nextLessons = mergeStudentLesson(student.lessons, lessonName, lessonPatch);
+        await db.collection('students').updateOne(
+          { id: student_id },
+          { $set: { lessons: nextLessons } }
+        );
+
+        // Create history record when attendance is marked
+        const existingHistory = await db.collection('history').findOne({
+          studentId: student_id,
+          lesson: lessonName
+        });
+
+        if (!existingHistory) {
+          const historyRecord = {
+            studentId: student.id,
+            lesson: lessonName
           };
-          await db.collection('students').updateOne(
-            { id: student_id },
-            { $push: { weeks: newWeek } }
-          );
+          
+          console.log('📝 Creating history record for homework video attendance:', historyRecord);
+          await db.collection('history').insertOne(historyRecord);
+          console.log('✅ History record created');
+        } else {
+          console.log('ℹ️ History record already exists for student', student_id, 'lesson', lessonName);
         }
       }
 

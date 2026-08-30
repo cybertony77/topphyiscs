@@ -1,5 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import apiClient from '../axios';
+import { formatPhoneForDB } from '../phoneUtils';
 
 // Query keys for students
 export const studentKeys = {
@@ -22,7 +23,9 @@ const studentsApi = {
     if (params.limit) queryParams.append('limit', params.limit);
     if (params.search) queryParams.append('search', params.search);
     if (params.grade) queryParams.append('grade', params.grade);
+    if (params.course) queryParams.append('course', params.course);
     if (params.center) queryParams.append('center', params.center);
+    if (params.courseType) queryParams.append('courseType', params.courseType);
     if (params.gender) queryParams.append('gender', params.gender);
     if (params.sortBy) queryParams.append('sortBy', params.sortBy);
     if (params.sortOrder) queryParams.append('sortOrder', params.sortOrder);
@@ -61,6 +64,17 @@ const studentsApi = {
   // Create new student
   create: async (studentData) => {
     const response = await apiClient.post('/api/students', studentData);
+    return response.data;
+  },
+
+  // Check if student phone already exists
+  checkPhoneExists: async (phone, excludeId) => {
+    const params = new URLSearchParams();
+    params.append('phone', phone);
+    if (excludeId !== undefined && excludeId !== null && String(excludeId).trim() !== '') {
+      params.append('excludeId', String(excludeId));
+    }
+    const response = await apiClient.get(`/api/students/check-phone?${params.toString()}`);
     return response.data;
   },
 
@@ -114,18 +128,24 @@ const studentsApi = {
   },
 
   // Update message state
-  updateMessageState: async (id, message_state, week) => {
+  updateMessageState: async (id, message_state, lesson, message_state_field) => {
     const response = await apiClient.post(`/api/students/${id}/update-message-state`,
-      { message_state, week }
+      { message_state, lesson, message_state_field }
     );
     return response.data;
   },
 
-  // Update weekly comment
-  updateWeekComment: async (id, comment, week) => {
+  // Update lesson comment
+  updateWeekComment: async (id, comment, lesson) => {
     const response = await apiClient.post(`/api/students/${id}/comment`,
-      { comment, week }
+      { comment, lesson }
     );
+    return response.data;
+  },
+
+  // Save payment for student
+  savePayment: async (paymentData) => {
+    const response = await apiClient.post('/api/payments', paymentData);
     return response.data;
   },
 
@@ -136,6 +156,12 @@ const studentsApi = {
       type,
       data
     });
+    return response.data;
+  },
+
+  // Save mock exam
+  saveMockExam: async (mockExamData) => {
+    const response = await apiClient.post('/api/mock-exams', mockExamData);
     return response.data;
   },
 };
@@ -191,6 +217,22 @@ export const useStudentPublic = (id, signature, options = {}) => {
     queryFn: () => studentsApi.getByIdPublic(id, signature),
     enabled: !!id && !!signature,
     ...options, // Spread the options to allow custom configuration
+  });
+};
+
+export const useCheckStudentPhone = (phone, excludeId = null, options = {}) => {
+  const normalized = formatPhoneForDB(phone);
+  const ready = normalized.length >= 11;
+
+  return useQuery({
+    queryKey: [...studentKeys.all, 'check-phone', normalized, excludeId ?? null],
+    queryFn: () => studentsApi.checkPhoneExists(normalized, excludeId),
+    enabled: ready,
+    staleTime: 0,
+    refetchOnMount: true,
+    refetchOnWindowFocus: false,
+    retry: 1,
+    ...options,
   });
 };
 
@@ -276,6 +318,20 @@ export const useToggleAttendance = () => {
   return useMutation({
     mutationFn: ({ id, attendanceData }) =>
       studentsApi.toggleAttendance(id, attendanceData, ),
+    onSuccess: (result, { id }) => {
+      if (result?.payment) {
+        queryClient.setQueryData(studentKeys.detail(id), (old) => {
+          if (!old) return old;
+          return {
+            ...old,
+            payment: {
+              ...(old.payment || {}),
+              ...result.payment,
+            },
+          };
+        });
+      }
+    },
     onSettled: async (_, __, { id }) => {
       queryClient.invalidateQueries({ queryKey: studentKeys.detail(id) });
       queryClient.invalidateQueries({ queryKey: studentKeys.lists() });
@@ -377,8 +433,8 @@ export const useUpdateMessageState = () => {
   const queryClient = useQueryClient();
   
   return useMutation({
-    mutationFn: ({ id, message_state, week }) => {
-      return studentsApi.updateMessageState(id, message_state, week);
+    mutationFn: ({ id, message_state, lesson, message_state_field }) => {
+      return studentsApi.updateMessageState(id, message_state, lesson, message_state_field);
     },
     onSettled: async (_, __, { id }) => {
       queryClient.invalidateQueries({ queryKey: studentKeys.detail(id) });
@@ -395,8 +451,8 @@ export const useUpdateWeekComment = () => {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: ({ id, comment, week }) =>
-      studentsApi.updateWeekComment(id, comment, week),
+    mutationFn: ({ id, comment, lesson }) =>
+      studentsApi.updateWeekComment(id, comment, lesson),
     onSettled: async (_, __, { id }) => {
       queryClient.invalidateQueries({ queryKey: studentKeys.detail(id) });
       queryClient.invalidateQueries({ queryKey: studentKeys.lists() });
@@ -404,6 +460,61 @@ export const useUpdateWeekComment = () => {
       await queryClient.invalidateQueries({
         predicate: (query) => query.queryKey[0] === 'students'
       });
+    },
+  });
+};
+
+export const useSavePayment = () => {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (paymentData) => studentsApi.savePayment(paymentData),
+    onSuccess: (result, { studentId }) => {
+      const payment = result?.data;
+      if (!studentId || !payment) return;
+      queryClient.setQueryData(studentKeys.detail(studentId), (old) => {
+        if (!old) return old;
+        return {
+          ...old,
+          payment: {
+            numberOfSessions: payment.numberOfSessions ?? null,
+            cost: payment.cost ?? null,
+            paymentComment: payment.paymentComment ?? null,
+            date: payment.date ?? null,
+          },
+        };
+      });
+    },
+    onSettled: async (_, __, { studentId }) => {
+      // Invalidate the specific student's data
+      queryClient.invalidateQueries({ queryKey: studentKeys.detail(studentId) });
+      // Invalidate all students list to update any cached data
+      queryClient.invalidateQueries({ queryKey: studentKeys.lists() });
+      // Invalidate all student-related queries
+      await queryClient.invalidateQueries({
+        predicate: (query) => query.queryKey[0] === 'students'
+      });
+    },
+  });
+};
+
+export const useSaveMockExam = () => {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (mockExamData) => studentsApi.saveMockExam(mockExamData),
+    onSettled: async (_, __, mockExamData) => {
+      const studentId = mockExamData?.studentId;
+      if (studentId) {
+        // Invalidate the specific student's data
+        queryClient.invalidateQueries({ queryKey: studentKeys.detail(studentId) });
+        // Invalidate all students list to update any cached data
+        queryClient.invalidateQueries({ queryKey: studentKeys.lists() });
+        // Invalidate all student-related queries
+        await queryClient.invalidateQueries({
+          predicate: (query) => query.queryKey[0] === 'students'
+        });
+      }
     },
   });
 };

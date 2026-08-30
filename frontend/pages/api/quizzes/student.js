@@ -2,6 +2,8 @@ import { MongoClient } from 'mongodb';
 import fs from 'fs';
 import path from 'path';
 import { authMiddleware } from '../../../lib/authMiddleware';
+import { itemCenterMatchesStudentMainCenter } from '../../../lib/studentCenterMatch';
+import { sanitizeQuestionForStudent } from '../../../lib/onlineQuestionApiNormalize';
 
 function loadEnvConfig() {
   try {
@@ -32,6 +34,7 @@ function loadEnvConfig() {
 const envConfig = loadEnvConfig();
 const MONGO_URI = envConfig.MONGO_URI || process.env.MONGO_URI || 'mongodb://localhost:27017/topphysics';
 const DB_NAME = envConfig.DB_NAME || process.env.DB_NAME || 'mr-george-magdy';
+const NATIONAL_SYSTEM = envConfig.NATIONAL_SYSTEM === 'true' || process.env.NATIONAL_SYSTEM === 'true';
 
 export default async function handler(req, res) {
   let client;
@@ -48,93 +51,118 @@ export default async function handler(req, res) {
     const db = client.db(DB_NAME);
 
     if (req.method === 'GET') {
-      // Get student's grade from students collection
-      let studentGrade = null;
+      // Get student's course and courseType from students collection
+      let studentCourse = null;
+      let studentCourseType = null;
+      let studentMainCenter = null;
       if (user.role === 'student') {
         // JWT contains assistant_id, use that to find student
         const studentId = user.assistant_id || user.id;
         console.log('🔍 Quiz API - User from JWT:', { role: user.role, assistant_id: user.assistant_id, id: user.id, studentId });
         if (studentId) {
           const student = await db.collection('students').findOne({ id: studentId });
-          console.log('🔍 Student found:', student ? { id: student.id, grade: student.grade } : 'NOT FOUND');
-          if (student && student.grade) {
-            studentGrade = student.grade;
-            console.log('✅ Using student grade:', studentGrade);
+          console.log('🔍 Student found:', student ? { id: student.id, course: student.course, courseType: student.courseType } : 'NOT FOUND');
+          if (student) {
+            studentCourse = student.course;
+            studentCourseType = student.courseType;
+            studentMainCenter = student.main_center;
+            console.log('✅ Using student course:', studentCourse, 'courseType:', studentCourseType);
           }
         }
       }
 
-      // Build query filter - ALWAYS filter by grade for students
-      if (studentGrade) {
-        // Normalize student grade: lowercase, remove periods, trim
-        const normalizedStudentGrade = studentGrade.toLowerCase().replace(/\./g, '').trim();
+      // Build query filter - filter by course and courseType for students
+      if (studentCourse) {
+        const studentCourseTrimmed = (studentCourse || '').trim();
+        const studentCourseTypeTrimmed = (studentCourseType || '').trim();
         
-        // Get all quizzes and filter by normalized grade in JavaScript
-        // This handles case differences: "2nd secondary" matches "2nd Secondary"
+        // Get all quizzes and filter by course, courseType and activation state
         const allQuizzes = await db.collection('quizzes').find({}).toArray();
         
-        // Filter quizzes by normalized grade and exclude deactivated quizzes
-        console.log('🔍 Filtering quizzes. Student normalized grade:', normalizedStudentGrade);
+        // Filter quizzes by course, courseType and activation state
+        console.log('🔍 Filtering quizzes. Student course:', studentCourseTrimmed, 'courseType:', studentCourseTypeTrimmed);
         console.log('🔍 Total quizzes before filter:', allQuizzes.length);
         const filteredQuizzes = allQuizzes.filter(quiz => {
-          // Exclude deactivated quizzes
-          const effectiveState = quiz.state || quiz.account_state || 'Activated';
-          if (effectiveState === 'Deactivated') {
+          if (!quiz.course) {
+            console.log('⚠️ Quiz has no course:', quiz._id);
             return false;
           }
-          if (!quiz.grade) {
-            console.log('⚠️ Quiz has no grade:', quiz._id);
-            return false;
-          }
-          const normalizedQuizGrade = quiz.grade.toLowerCase().replace(/\./g, '').trim();
-          const matches = normalizedQuizGrade === normalizedStudentGrade;
-          console.log(`🔍 Quiz grade: "${quiz.grade}" → normalized: "${normalizedQuizGrade}" | Matches: ${matches}`);
+          const quizCourse = (quiz.course || '').trim();
+          const quizCourseType = (quiz.courseType || '').trim();
+          const quizState = (quiz.state || quiz.account_state || 'Activated');
+          
+          // Course match: if quiz course is "All", it matches any student course
+          const courseMatch = quizCourse.toLowerCase() === 'all' || 
+                            quizCourse.toLowerCase() === studentCourseTrimmed.toLowerCase();
+          
+          // CourseType match: skip when national system
+          const courseTypeMatch = NATIONAL_SYSTEM ||
+                                 !quizCourseType || 
+                                 !studentCourseTypeTrimmed ||
+                                 quizCourseType.toLowerCase() === studentCourseTypeTrimmed.toLowerCase();
+          // Activation state: hide deactivated quizzes from students
+          const isActivated = quizState !== 'Deactivated';
+
+          const centerMatch = itemCenterMatchesStudentMainCenter(quiz.center, studentMainCenter);
+          
+          const matches = courseMatch && courseTypeMatch && isActivated && centerMatch;
+          console.log(`🔍 Quiz course: "${quizCourse}" courseType: "${quizCourseType}" | Matches: ${matches}`);
           return matches;
         });
         console.log('✅ Filtered quizzes count:', filteredQuizzes.length);
         
-        // Sort by week number (ascending), with null weeks at the end
+        // Sort by lesson (ascending), then by date (descending)
         const sortedQuizzes = filteredQuizzes.sort((a, b) => {
-          if (a.week === null || a.week === undefined) {
-            if (b.week === null || b.week === undefined) {
-              return b._id.toString().localeCompare(a._id.toString());
-            }
-            return 1;
-          }
-          if (b.week === null || b.week === undefined) {
-            return -1;
-          }
-          if (a.week !== b.week) {
-            return a.week - b.week;
+          const aLesson = (a.lesson || '').trim();
+          const bLesson = (b.lesson || '').trim();
+          if (aLesson !== bLesson) {
+            return aLesson.localeCompare(bLesson);
           }
           return b._id.toString().localeCompare(a._id.toString());
         });
         
         // Remove correct_answer from questions for students
-        const sanitizedQuizzes = sortedQuizzes.map(quiz => ({
-          _id: quiz._id,
-          grade: quiz.grade || null,
-          lesson_name: quiz.lesson_name,
-          week: quiz.week || null,
-          quiz_type: 'questions', // Always questions type
-          deadline_type: quiz.deadline_type || 'no_deadline',
-          deadline_date: quiz.deadline_date || null,
-          timer: quiz.timer,
-          shuffle_questions_and_answers: quiz.shuffle_questions_and_answers || false,
-          show_details_after_submitting: quiz.show_details_after_submitting || false,
-          state: quiz.state || 'Activated', // Ensure state field is always present
-          questions: (quiz.questions || []).map(q => ({
-            question_text: q.question_text || '',
-            question_picture: q.question_picture || null,
-            answers: q.answers || [],
-            answer_texts: q.answer_texts || []
-            // Note: correct_answer is intentionally excluded for students
-          }))
-        }));
+        const sanitizedQuizzes = sortedQuizzes.map(quiz => {
+          const sanitized = {
+            _id: quiz._id,
+            course: quiz.course || null,
+            courseType: quiz.courseType || null,
+            center: quiz.center || null,
+            lesson: quiz.lesson || null,
+            lesson_name: quiz.lesson_name,
+            // Expose normalized activation state so frontend can safely filter
+            state: quiz.state || quiz.account_state || 'Activated',
+            quiz_type: quiz.quiz_type || 'questions',
+            deadline_type: quiz.deadline_type || 'no_deadline',
+            deadline_date: quiz.deadline_date || null,
+            deadline_time: quiz.deadline_time ?? null,
+            timer: quiz.timer,
+            shuffle_questions_and_answers: quiz.shuffle_questions_and_answers || false,
+            show_details_after_submitting: quiz.show_details_after_submitting || false,
+          };
+
+          if (quiz.comment) {
+            sanitized.comment = quiz.comment;
+          }
+
+          if (quiz.quiz_type === 'pdf') {
+            sanitized.pdf_file_name = quiz.pdf_file_name || '';
+            sanitized.pdf_url = quiz.pdf_url || '';
+            sanitized.allow_downloading = quiz.allow_downloading !== false && quiz.allow_downloading !== 'false';
+          }
+
+          if (quiz.quiz_type !== 'pdf') {
+            sanitized.questions = (quiz.questions || []).map(q => sanitizeQuestionForStudent(q));
+          } else {
+            sanitized.questions = [];
+          }
+
+          return sanitized;
+        });
         
         return res.status(200).json({ success: true, quizzes: sanitizedQuizzes });
       } else {
-        // If student has no grade, return empty array (don't show any quizzes)
+        // If student has no course, return empty array (don't show any quizzes)
         return res.status(200).json({ success: true, quizzes: [] });
       }
     }

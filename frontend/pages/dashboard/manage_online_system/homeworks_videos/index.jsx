@@ -2,14 +2,19 @@ import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/router";
 import Image from 'next/image';
 import Title from '../../../../components/Title';
-import AttendanceWeekSelect from '../../../../components/AttendanceWeekSelect';
-import GradeSelect from '../../../../components/GradeSelect';
+import AttendanceLessonSelect from '../../../../components/AttendancelessonSelect';
+import CourseSelect from '../../../../components/CourseSelect';
+import CourseTypeSelect from '../../../../components/CourseTypeSelect';
 import HomeworkVideoPaymentStateSelect from '../../../../components/HomeworkVideoPaymentStateSelect';
-import R2VideoPlayer from '../../../../components/R2VideoPlayer';
 import AccountStateSelect from '../../../../components/AccountStateSelect';
+import R2VideoPlayer from '../../../../components/R2VideoPlayer';
+import ZoomVideoPlayer from '../../../../components/ZoomVideoPlayer';
+import GoogleMeetVideoPlayer from '../../../../components/GoogleMeetVideoPlayer';
+import YoutubeEmbedWithProgress from '../../../../components/YoutubeEmbedWithProgress';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import apiClient from '../../../../lib/axios';
-import { useSystemConfig } from '../../../../lib/api/system';
+import { useProfile } from '../../../../lib/api/auth';
+import { useSystemConfig , useNationalSystem, getCourseFieldLabels} from '../../../../lib/api/system';
 import { TextInput, ActionIcon, useMantineTheme } from '@mantine/core';
 import { IconSearch, IconArrowRight } from '@tabler/icons-react';
 
@@ -36,7 +41,17 @@ function weekNumberToString(weekNumber) {
 
 // Build embed URL
 function buildEmbedUrl(videoId) {
-  return `https://www.youtube.com/embed/${videoId}?controls=1&rel=0&modestbranding=1&disablekb=1&fs=1`;
+  return `https://www.youtube.com/embed/${videoId}?controls=0&rel=0&modestbranding=1&disablekb=1&fs=0&iv_load_policy=3&playsinline=1`;
+}
+
+function formatHomeworkVideoPaymentStateLabel(state) {
+  const labels = {
+    paid: 'paid',
+    free: 'free',
+    free_if_homework_done: 'free if submitted homework',
+    free_if_attended: 'free_if_attended',
+  };
+  return labels[state] || state || 'paid';
 }
 
 
@@ -60,8 +75,11 @@ function InputWithButton(props) {
 }
 
 export default function HomeworksVideos() {
+  const isNational = useNationalSystem();
+  const courseLabels = getCourseFieldLabels(isNational);
   const router = useRouter();
   const queryClient = useQueryClient();
+  const { data: profile } = useProfile();
   const { data: systemConfig } = useSystemConfig();
   const isHomeworksVideosEnabled = systemConfig?.homeworks_videos === true || systemConfig?.homeworks_videos === 'true';
   const [videoPopupOpen, setVideoPopupOpen] = useState(false);
@@ -90,12 +108,14 @@ export default function HomeworksVideos() {
   // Search and filter states
   const [searchInput, setSearchInput] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
-  const [filterGrade, setFilterGrade] = useState('');
-  const [filterWeek, setFilterWeek] = useState('');
+  const [filterCourse, setFilterCourse] = useState('');
+  const [filterCourseType, setFilterCourseType] = useState('');
+  const [filterLesson, setFilterLesson] = useState('');
   const [filterPaymentState, setFilterPaymentState] = useState('');
-  const [filterState, setFilterState] = useState('');
-  const [filterGradeDropdownOpen, setFilterGradeDropdownOpen] = useState(false);
-  const [filterWeekDropdownOpen, setFilterWeekDropdownOpen] = useState(false);
+  const [filterAccountState, setFilterAccountState] = useState('');
+  const [filterCourseDropdownOpen, setFilterCourseDropdownOpen] = useState(false);
+  const [filterCourseTypeDropdownOpen, setFilterCourseTypeDropdownOpen] = useState(false);
+  const [filterLessonDropdownOpen, setFilterLessonDropdownOpen] = useState(false);
   const [filterPaymentStateDropdownOpen, setFilterPaymentStateDropdownOpen] = useState(false);
 
   // Fetch homeworks videos
@@ -123,17 +143,23 @@ export default function HomeworksVideos() {
       }
     }
 
-    // Grade filter
-    if (filterGrade) {
-      if (session.grade !== filterGrade) {
+    // Course filter
+    if (filterCourse) {
+      if (session.course !== filterCourse) {
         return false;
       }
     }
 
-    // Week filter
-    if (filterWeek) {
-      const weekNumber = extractWeekNumber(filterWeek);
-      if (session.week !== weekNumber) {
+    // CourseType filter
+    if (filterCourseType) {
+      if ((session.courseType || '').toLowerCase() !== filterCourseType.toLowerCase()) {
+        return false;
+      }
+    }
+
+    // Lesson filter
+    if (filterLesson) {
+      if (session.lesson !== filterLesson) {
         return false;
       }
     }
@@ -145,10 +171,10 @@ export default function HomeworksVideos() {
       }
     }
 
-    // State filter
-    if (filterState) {
-      const itemState = session.state || session.account_state || 'Activated';
-      if (itemState !== filterState) {
+    // Account state filter
+    if (filterAccountState) {
+      const state = session.state || session.account_state || 'Activated';
+      if (state !== filterAccountState) {
         return false;
       }
     }
@@ -341,51 +367,63 @@ export default function HomeworksVideos() {
           }}>
             <div className="filter-group" style={{ flex: 1, minWidth: 180 }}>
               <label className="filter-label" style={{ display: 'block', marginBottom: '8px', fontWeight: 600, color: '#495057', fontSize: '0.95rem' }}>
-                Filter by Grade
+                {courseLabels.filterByCourse}
               </label>
-              <GradeSelect
-                selectedGrade={filterGrade}
-                onGradeChange={(grade) => {
-                  setFilterGrade(grade);
+              <CourseSelect
+                selectedGrade={filterCourse}
+                onGradeChange={(course) => {
+                  setFilterCourse(course);
                 }}
-                isOpen={filterGradeDropdownOpen}
+                isOpen={filterCourseDropdownOpen}
                 onToggle={() => {
-                  setFilterGradeDropdownOpen(!filterGradeDropdownOpen);
-                  setFilterWeekDropdownOpen(false);
+                  setFilterCourseDropdownOpen(!filterCourseDropdownOpen);
+                  setFilterCourseTypeDropdownOpen(false);
+                  setFilterLessonDropdownOpen(false);
                   setFilterPaymentStateDropdownOpen(false);
                 }}
-                onClose={() => setFilterGradeDropdownOpen(false)}
+                onClose={() => setFilterCourseDropdownOpen(false)}
+                showAllOption={true}
               />
             </div>
-            <div className="filter-group" style={{ flex: 1, minWidth: 180 }}>
+            {courseLabels.showCourseType && (
+<div className="filter-group" style={{ flex: 1, minWidth: 180 }}>
               <label className="filter-label" style={{ display: 'block', marginBottom: '8px', fontWeight: 600, color: '#495057', fontSize: '0.95rem' }}>
-                Filter by Homework Video State
+                Filter by Course Type
               </label>
-              <AccountStateSelect
-                label="Homework Video State"
-                value={filterState || null}
-                onChange={(value) => setFilterState(value || '')}
-                placeholder="Select Homework Video State"
-                style={{ marginBottom: 0, hideLabel: true }}
-              />
-            </div>
-            <div className="filter-group" style={{ flex: 1, minWidth: 180 }}>
-              <label className="filter-label" style={{ display: 'block', marginBottom: '8px', fontWeight: 600, color: '#495057', fontSize: '0.95rem' }}>
-                Filter by Week
-              </label>
-              <AttendanceWeekSelect
-                selectedWeek={filterWeek}
-                onWeekChange={(week) => {
-                  setFilterWeek(week);
+              <CourseTypeSelect
+                selectedCourseType={filterCourseType}
+                onCourseTypeChange={(courseType) => {
+                  setFilterCourseType(courseType);
                 }}
-                isOpen={filterWeekDropdownOpen}
+                isOpen={filterCourseTypeDropdownOpen}
                 onToggle={() => {
-                  setFilterWeekDropdownOpen(!filterWeekDropdownOpen);
-                  setFilterGradeDropdownOpen(false);
+                  setFilterCourseTypeDropdownOpen(!filterCourseTypeDropdownOpen);
+                  setFilterCourseDropdownOpen(false);
+                  setFilterLessonDropdownOpen(false);
                   setFilterPaymentStateDropdownOpen(false);
                 }}
-                onClose={() => setFilterWeekDropdownOpen(false)}
-                placeholder="Select Week"
+                onClose={() => setFilterCourseTypeDropdownOpen(false)}
+              />
+            </div>
+)}
+            <div className="filter-group" style={{ flex: 1, minWidth: 180 }}>
+              <label className="filter-label" style={{ display: 'block', marginBottom: '8px', fontWeight: 600, color: '#495057', fontSize: '0.95rem' }}>
+                Filter by Lesson
+              </label>
+              <AttendanceLessonSelect
+                selectedLesson={filterLesson}
+                onLessonChange={(lesson) => {
+                  setFilterLesson(lesson);
+                }}
+                isOpen={filterLessonDropdownOpen}
+                onToggle={() => {
+                  setFilterLessonDropdownOpen(!filterLessonDropdownOpen);
+                  setFilterCourseDropdownOpen(false);
+                  setFilterCourseTypeDropdownOpen(false);
+                  setFilterPaymentStateDropdownOpen(false);
+                }}
+                onClose={() => setFilterLessonDropdownOpen(false)}
+                placeholder="Select Lesson"
               />
             </div>
             <div className="filter-group" style={{ flex: 1, minWidth: 180 }}>
@@ -402,10 +440,25 @@ export default function HomeworksVideos() {
                 isOpen={filterPaymentStateDropdownOpen}
                 onToggle={() => {
                   setFilterPaymentStateDropdownOpen(!filterPaymentStateDropdownOpen);
-                  setFilterGradeDropdownOpen(false);
-                  setFilterWeekDropdownOpen(false);
+                  setFilterCourseDropdownOpen(false);
+                  setFilterCourseTypeDropdownOpen(false);
+                  setFilterLessonDropdownOpen(false);
                 }}
                 onClose={() => setFilterPaymentStateDropdownOpen(false)}
+              />
+            </div>
+            <div className="filter-group" style={{ flex: 1, minWidth: 180 }}>
+              <label className="filter-label" style={{ display: 'block', marginBottom: '8px', fontWeight: 600, color: '#495057', fontSize: '0.95rem' }}>
+                Filter by Homework Video State
+              </label>
+              <AccountStateSelect
+                label="Homework Video State"
+                value={filterAccountState || null}
+                onChange={(state) => {
+                  setFilterAccountState(state || '');
+                }}
+                placeholder="Select Homework Video State"
+                style={{ marginBottom: 0, hideLabel: true }}
               />
             </div>
           </div>
@@ -548,9 +601,8 @@ export default function HomeworksVideos() {
               videoLength++;
               videoIndex++;
             }
-            const itemState = session.state || session.account_state || 'Activated';
-            const isActivated = itemState === 'Activated';
-            const stateColor = isActivated ? '#28a745' : '#dc3545';
+            const accountState = session.state || session.account_state || 'Activated';
+            const isActivated = accountState === 'Activated';
             
             return (
                 <div
@@ -586,23 +638,23 @@ export default function HomeworksVideos() {
               {/* Header with Edit/Delete buttons */}
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
                 <div style={{ flex: 1 }}>
-                    <div style={{ fontWeight: '600', fontSize: '1.1rem', color: '#333', marginBottom: '4px' }}>
-                      {[session.grade, session.week !== undefined && session.week !== null ? `Week ${session.week}` : null, session.name].filter(Boolean).join(' • ')}
-                    </div>
-                    <div style={{ fontSize: '0.9rem', color: '#6c757d', marginTop: '4px' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-                        <span style={{ color: stateColor, fontWeight: 600 }}>{itemState}</span>
-                        <span>•</span>
-                        <span>{session.payment_state || 'paid'}</span>
-                        <span>•</span>
-                        <span>{`${videoLength} video${videoLength !== 1 ? 's' : ''}`}</span>
-                        {session.date && (
-                          <>
-                            <span>•</span>
-                            <span>{session.date}</span>
-                          </>
-                        )}
-                      </div>
+                  <div style={{ fontWeight: '600', fontSize: '1.1rem', color: '#333', marginBottom: '4px' }}>
+                    {[session.course, !isNational && session.courseType, session.lesson, session.name].filter(Boolean).join(' • ')}
+                  </div>
+                    <div style={{ fontSize: '0.9rem', color: '#6c757d', marginTop: '4px', display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '4px' }}>
+                      <span style={{ color: isActivated ? '#28a745' : '#dc3545', fontWeight: 600 }}>
+                        {accountState}
+                      </span>
+                      <span>•</span>
+                      <span>{formatHomeworkVideoPaymentStateLabel(session.payment_state)}</span>
+                      <span>•</span>
+                      <span>{`${videoLength} video${videoLength !== 1 ? 's' : ''}`}</span>
+                      {session.date && (
+                        <>
+                          <span>•</span>
+                          <span>{session.date}</span>
+                        </>
+                      )}
                     </div>
                 </div>
                 <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
@@ -723,7 +775,7 @@ export default function HomeworksVideos() {
                 {/* Title with Toggle */}
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '4px' }}>
                   <div style={{ fontWeight: '600', fontSize: '1.1rem', color: '#333', flex: 1 }}>
-                    {[session.grade, session.week !== undefined && session.week !== null ? `Week ${session.week}` : null, session.name].filter(Boolean).join(' • ')}
+                    {[session.course, !isNational && session.courseType, session.lesson, session.name].filter(Boolean).join(' • ')}
                   </div>
                   <div 
                     style={{ 
@@ -745,8 +797,20 @@ export default function HomeworksVideos() {
                   </div>
                 </div>
                 {/* Metadata */}
-                <div style={{ fontSize: '0.9rem', color: '#6c757d', marginBottom: '12px' }}>
-                  {[session.payment_state || 'paid', `${videoLength} video${videoLength !== 1 ? 's' : ''}`, session.date].filter(Boolean).join(' • ')}
+                <div style={{ fontSize: '0.9rem', color: '#6c757d', marginBottom: '12px', display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '4px' }}>
+                  <span style={{ color: isActivated ? '#28a745' : '#dc3545', fontWeight: 600 }}>
+                    {accountState}
+                  </span>
+                  <span>•</span>
+                  <span>{formatHomeworkVideoPaymentStateLabel(session.payment_state)}</span>
+                  <span>•</span>
+                  <span>{`${videoLength} video${videoLength !== 1 ? 's' : ''}`}</span>
+                  {session.date && (
+                    <>
+                      <span>•</span>
+                      <span>{session.date}</span>
+                    </>
+                  )}
                 </div>
                 {/* Edit/Delete Buttons */}
                 <div style={{ display: 'flex', gap: '12px', justifyContent: 'center', marginBottom: '15px' }}>
@@ -980,26 +1044,22 @@ export default function HomeworksVideos() {
               {selectedVideo.video_type === 'r2' ? (
                 <R2VideoPlayer
                   r2Key={selectedVideo.video_ID || selectedVideo.video_ID_1 || ''}
+                  watermarkText={`${profile?.id || 'unknown'}`}
+                />
+              ) : selectedVideo.video_type === 'zoom' ? (
+                <ZoomVideoPlayer
+                  meetingId={selectedVideo.video_ID || selectedVideo.video_ID_1 || ''}
+                  watermarkText={`${profile?.id || 'unknown'}`}
+                />
+              ) : selectedVideo.video_type === 'google_meet' ? (
+                <GoogleMeetVideoPlayer
+                  secureId={selectedVideo.video_ID || selectedVideo.video_ID_1 || ''}
+                  watermarkText={`${profile?.id || 'unknown'}`}
                 />
               ) : (
-                <iframe
-                  src={buildEmbedUrl(selectedVideo.video_ID || selectedVideo.video_ID_1 || '')}
-                  frameBorder="0"
-                  allow="encrypted-media; autoplay; fullscreen; picture-in-picture"
-                  allowFullScreen={true}
-                  playsInline={true}
-                  style={{
-                    width: '100%',
-                    height: 'auto',
-                    maxHeight: '100vh',
-                    aspectRatio: '16 / 9',
-                    border: 'none',
-                    outline: 'none'
-                  }}
-                  onContextMenu={(e) => e.preventDefault()}
-                  onDragStart={(e) => e.preventDefault()}
-                  onSelectStart={(e) => e.preventDefault()}
-                  draggable={false}
+                <YoutubeEmbedWithProgress
+                  youtubeVideoId={selectedVideo.video_ID || selectedVideo.video_ID_1 || ''}
+                  watermarkText={`${profile?.id || 'unknown'}`}
                 />
               )}
             </div>

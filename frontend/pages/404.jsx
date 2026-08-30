@@ -4,8 +4,14 @@ import Image from 'next/image';
 export default function Custom404() {
   const router = useRouter();
   
-  // Get the page that user tried to access
-  const requestedPage = router.asPath || 'unknown page';
+  const pathFromQuery = router.query.path;
+  const requestedPage =
+    (typeof pathFromQuery === 'string' && pathFromQuery) ||
+    (Array.isArray(pathFromQuery) && pathFromQuery[0]) ||
+    (router.asPath && router.asPath.split('?')[0] !== '/404'
+      ? router.asPath.split('?')[0]
+      : null) ||
+    'unknown page';
 
   return (
     <div style={{ 
@@ -104,7 +110,7 @@ export default function Custom404() {
           .error-code {
             font-size: 8rem;
             font-weight: 900;
-            background: linear-gradient(135deg, #1FA8DC 0%, #FEB954 100%);
+            background: linear-gradient(90deg,rgba(158, 158, 158, 1) 0%, rgba(99, 191, 191, 1) 50%, rgba(8, 156, 170, 1) 100%);
             -webkit-background-clip: text;
             -webkit-text-fill-color: transparent;
             background-clip: text;
@@ -123,7 +129,7 @@ export default function Custom404() {
             transform: translateX(-50%);
             width: 80px;
             height: 4px;
-            background: linear-gradient(135deg, #1FA8DC 0%, #FEB954 100%);
+            background: linear-gradient(90deg,rgba(158, 158, 158, 1) 0%, rgba(99, 191, 191, 1) 50%, rgba(8, 156, 170, 1) 100%);
             border-radius: 2px;
           }
           
@@ -198,7 +204,7 @@ export default function Custom404() {
           }
           
           .btn-primary {
-            background: linear-gradient(135deg, #1FA8DC 0%, #87CEEB 100%);
+            background: #00bdcf;
             color: white;
             box-shadow: 0 8px 25px rgba(31, 168, 220, 0.4);
           }

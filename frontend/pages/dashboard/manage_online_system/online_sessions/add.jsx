@@ -1,11 +1,18 @@
 import { useState, useEffect, useRef } from "react";
+import { useNationalSystem, getCourseFieldLabels } from '../../../../lib/api/system';
 import { useRouter } from "next/router";
 import Title from '../../../../components/Title';
-import AttendanceWeekSelect from '../../../../components/AttendanceWeekSelect';
-import GradeSelect from '../../../../components/GradeSelect';
+import AttendanceLessonSelect from '../../../../components/AttendancelessonSelect';
+import CourseSelect from '../../../../components/CourseSelect';
+import CourseTypeSelect from '../../../../components/CourseTypeSelect';
 import OnlineSessionPaymentStateSelect from '../../../../components/OnlineSessionPaymentStateSelect';
 import VideoInput from '../../../../components/VideoInput';
 import AccountStateSelect from '../../../../components/AccountStateSelect';
+import OnlineSessionViewingSettings, {
+  ONLINE_SESSION_PAYMENT_STATES,
+  needsViewingSettings,
+  validateViewingSettings,
+} from '../../../../components/OnlineSessionViewingSettings';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import apiClient from '../../../../lib/axios';
 import Image from 'next/image';
@@ -18,6 +25,19 @@ function extractYouTubeId(url) {
   return match ? match[1] : null;
 }
 
+function extractZoomMeetingId(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  const noSpaces = raw.replace(/\s+/g, '');
+  if (/^[0-9]+$/.test(noSpaces)) return noSpaces;
+  const downloadMatch = noSpaces.match(/\/rec\/download\/([^/?#]+)/i);
+  if (downloadMatch?.[1]) return decodeURIComponent(downloadMatch[1]);
+  const match = noSpaces.match(/zoom\.us\/(?:j|wc\/j(?:oin)?)\/([0-9]+)/i);
+  if (match?.[1]) return match[1];
+  // UUID selected from Zoom recordings list
+  return noSpaces;
+}
+
 // Extract week number from week string (e.g., "week 01" -> 1)
 function extractWeekNumber(weekString) {
   if (!weekString) return null;
@@ -26,6 +46,8 @@ function extractWeekNumber(weekString) {
 }
 
 export default function AddOnlineSession() {
+  const isNational = useNationalSystem();
+  const courseLabels = getCourseFieldLabels(isNational);
   const router = useRouter();
   const queryClient = useQueryClient();
   const [formData, setFormData] = useState({
@@ -36,16 +58,22 @@ export default function AddOnlineSession() {
       youtube_url: '',
       video_source: 'youtube',
       r2_key: '',
+      zoom_meeting_id: '',
+      google_meet_id: '',
       upload_file_name: '',
       upload_progress: 0,
       upload_status: 'idle',
     }]
   });
-  const [selectedGrade, setSelectedGrade] = useState('');
-  const [gradeDropdownOpen, setGradeDropdownOpen] = useState(false);
-  const [selectedWeek, setSelectedWeek] = useState('');
-  const [weekDropdownOpen, setWeekDropdownOpen] = useState(false);
+  const [selectedCourse, setSelectedCourse] = useState('');
+  const [courseDropdownOpen, setCourseDropdownOpen] = useState(false);
+  const [selectedCourseType, setSelectedCourseType] = useState('');
+  const [courseTypeDropdownOpen, setCourseTypeDropdownOpen] = useState(false);
+  const [selectedLesson, setSelectedLesson] = useState('');
+  const [lessonDropdownOpen, setLessonDropdownOpen] = useState(false);
   const [paymentState, setPaymentState] = useState('paid');
+  const [viewingLimitType, setViewingLimitType] = useState('');
+  const [viewingLimitValue, setViewingLimitValue] = useState('');
   const [accountState, setAccountState] = useState('Activated');
   const [errors, setErrors] = useState({});
   const errorTimeoutRef = useRef(null);
@@ -57,6 +85,10 @@ export default function AddOnlineSession() {
       const response = await apiClient.get('/api/system/config');
       return response.data;
     },
+    staleTime: Infinity,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+    refetchOnMount: false,
   });
 
   const showUploadTab = systemConfig?.cloudflare_r2 === true;
@@ -68,6 +100,10 @@ export default function AddOnlineSession() {
       const response = await apiClient.get('/api/online_sessions');
       return response.data;
     },
+    staleTime: Infinity,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+    refetchOnMount: false,
   });
 
   const sessions = sessionsData?.sessions || [];
@@ -114,6 +150,8 @@ export default function AddOnlineSession() {
         youtube_url: '',
         video_source: 'youtube',
         r2_key: '',
+        zoom_meeting_id: '',
+        google_meet_id: '',
         upload_file_name: '',
         upload_progress: 0,
         upload_status: 'idle',
@@ -156,6 +194,8 @@ export default function AddOnlineSession() {
         youtube_url: url,
         video_source: 'youtube',
         r2_key: '',
+        zoom_meeting_id: '',
+        google_meet_id: '',
         upload_file_name: '',
         upload_progress: 0,
         upload_status: 'idle',
@@ -170,6 +210,14 @@ export default function AddOnlineSession() {
     }
   };
 
+  const handleClearYouTubeUrl = (index) => {
+    setFormData(prev => {
+      const newVideos = [...prev.videos];
+      newVideos[index] = { ...newVideos[index], youtube_url: '' };
+      return { ...prev, videos: newVideos };
+    });
+  };
+
   // Handle R2 upload complete
   const handleR2Upload = (index, r2Key, fileName) => {
     setFormData(prev => {
@@ -181,6 +229,8 @@ export default function AddOnlineSession() {
         video_source: r2Key ? 'r2' : 'youtube',
         ...(r2Key ? {
           youtube_url: '',
+          zoom_meeting_id: '',
+          google_meet_id: '',
           upload_status: 'done',
           upload_progress: 100,
         } : {
@@ -197,10 +247,94 @@ export default function AddOnlineSession() {
     }
   };
 
+  const handleClearR2Upload = (index) => {
+    setFormData(prev => {
+      const newVideos = [...prev.videos];
+      newVideos[index] = {
+        ...newVideos[index],
+        r2_key: '',
+        upload_file_name: '',
+        upload_progress: 0,
+        upload_status: 'idle',
+      };
+      return { ...prev, videos: newVideos };
+    });
+  };
+
+  const handleZoomMeetingIdChange = (index, meetingId) => {
+    setFormData(prev => {
+      const newVideos = [...prev.videos];
+      newVideos[index] = {
+        ...newVideos[index],
+        zoom_meeting_id: meetingId,
+        video_source: 'zoom',
+        youtube_url: '',
+        r2_key: '',
+        google_meet_id: '',
+        upload_file_name: '',
+        upload_progress: 0,
+        upload_status: 'idle',
+      };
+      return { ...prev, videos: newVideos };
+    });
+    if (errors[`video_${index}_zoom_meeting_id`]) {
+      const newErrors = { ...errors };
+      delete newErrors[`video_${index}_zoom_meeting_id`];
+      setErrors(newErrors);
+    }
+  };
+
+  const handleClearZoomMeetingId = (index) => {
+    setFormData(prev => {
+      const newVideos = [...prev.videos];
+      newVideos[index] = { ...newVideos[index], zoom_meeting_id: '', google_meet_id: '' };
+      return { ...prev, videos: newVideos };
+    });
+  };
+
+  const handleGoogleMeetIdChange = (index, meetId) => {
+    setFormData(prev => {
+      const newVideos = [...prev.videos];
+      newVideos[index] = {
+        ...newVideos[index],
+        google_meet_id: meetId,
+        video_source: 'google_meet',
+        youtube_url: '',
+        r2_key: '',
+        zoom_meeting_id: '',
+        upload_file_name: '',
+        upload_progress: 0,
+        upload_status: 'idle',
+      };
+      return { ...prev, videos: newVideos };
+    });
+    if (errors[`video_${index}_google_meet_id`]) {
+      const newErrors = { ...errors };
+      delete newErrors[`video_${index}_google_meet_id`];
+      setErrors(newErrors);
+    }
+  };
+
+  const handleClearGoogleMeetId = (index) => {
+    setFormData(prev => {
+      const newVideos = [...prev.videos];
+      newVideos[index] = { ...newVideos[index], google_meet_id: '' };
+      return { ...prev, videos: newVideos };
+    });
+  };
+
+  const handleVideoSourceChange = (index, source) => {
+    setFormData(prev => {
+      const newVideos = [...prev.videos];
+      newVideos[index] = { ...newVideos[index], video_source: source };
+      return { ...prev, videos: newVideos };
+    });
+  };
+
   // Handle form input change
   const handleInputChange = (e) => {
     const { name, value } = e.target;
-    setFormData({ ...formData, [name]: value });
+    setFormData(prev => ({ ...prev, [name]: value }));
     // Clear error
     if (errors[name]) {
       setErrors({ ...errors, [name]: '' });
@@ -215,19 +349,26 @@ export default function AddOnlineSession() {
     e.preventDefault();
     const newErrors = {};
 
-    // Validate grade
-    if (!selectedGrade || selectedGrade.trim() === '') {
-      newErrors.grade = '❌ Grade is required';
+    // Validate course
+    if (!selectedCourse || selectedCourse.trim() === '') {
+      newErrors.course = `❌ ${courseLabels.course} is required`;
     }
 
-    // Validate week
-    if (!selectedWeek || selectedWeek.trim() === '') {
-      newErrors.week = '❌ Attendance week is required';
+    // Validate lesson
+    if (!selectedLesson || selectedLesson.trim() === '') {
+      newErrors.lesson = '❌ Lesson is required';
     }
 
     // Validate payment state
-    if (!paymentState || (paymentState !== 'paid' && paymentState !== 'free')) {
+    if (!paymentState || !ONLINE_SESSION_PAYMENT_STATES.includes(paymentState)) {
       newErrors.paymentState = '❌ Video Payment State is required';
+    }
+
+    Object.assign(newErrors, validateViewingSettings(paymentState, viewingLimitType, viewingLimitValue));
+
+    // Validate name
+    if (!formData.name.trim()) {
+      newErrors.name = '❌ Name is required';
     }
 
     // Validate account state
@@ -235,14 +376,14 @@ export default function AddOnlineSession() {
       newErrors.accountState = '❌ Account State is required';
     }
 
-    // Validate name
-    if (!formData.name.trim()) {
-      newErrors.name = '❌ Name is required';
-    }
-
     // Validate videos - at least one must have either youtube_url or r2_key
     const validVideos = formData.videos.filter(video => {
-      return (video.youtube_url && video.youtube_url.trim()) || (video.r2_key && video.r2_key.trim());
+      return (
+        (video.youtube_url && video.youtube_url.trim()) ||
+        (video.r2_key && video.r2_key.trim()) ||
+        (video.zoom_meeting_id && video.zoom_meeting_id.trim()) ||
+        (video.google_meet_id && video.google_meet_id.trim())
+      );
     });
 
     if (validVideos.length === 0) {
@@ -254,11 +395,21 @@ export default function AddOnlineSession() {
       const video = formData.videos[index];
       const hasYoutube = video.youtube_url && video.youtube_url.trim();
       const hasR2 = video.r2_key && video.r2_key.trim();
+      const hasZoom = video.zoom_meeting_id && video.zoom_meeting_id.trim();
+      const hasGoogleMeet = video.google_meet_id && video.google_meet_id.trim();
 
       if (hasYoutube) {
         const videoId = extractYouTubeId(video.youtube_url.trim());
         if (!videoId) {
           newErrors[`video_${index}_youtube_url`] = '❌ Invalid YouTube URL';
+        }
+      } else if (hasZoom) {
+        if (!extractZoomMeetingId(video.zoom_meeting_id).trim()) {
+          newErrors[`video_${index}_zoom_meeting_id`] = '❌ Invalid Zoom meeting value';
+        }
+      } else if (hasGoogleMeet) {
+        if (!video.google_meet_id.trim()) {
+          newErrors[`video_${index}_google_meet_id`] = '❌ Google Meet ID is required';
         }
       } else if (!hasR2 && validVideos.length === 0) {
         newErrors[`video_${index}_youtube_url`] = '❌ YouTube URL is required';
@@ -270,20 +421,17 @@ export default function AddOnlineSession() {
       return;
     }
 
-    // Extract week number from week string
-    const weekNumber = extractWeekNumber(selectedWeek);
-    if (!weekNumber) {
-      newErrors.week = '❌ Invalid week selection';
-      setErrors(newErrors);
-      return;
-    }
-
-    // Check for duplicate grade and week combination
+    // Check for duplicate course, courseType, and lesson combination
     const duplicateSession = sessions.find(
-      session => session.grade === selectedGrade.trim() && session.week === weekNumber
+      session => {
+        const courseMatch = session.course === selectedCourse.trim();
+        const courseTypeMatch = (session.courseType || '').toLowerCase() === (selectedCourseType || '').toLowerCase();
+        const lessonMatch = session.lesson === selectedLesson.trim();
+        return courseMatch && courseTypeMatch && lessonMatch;
+      }
     );
     if (duplicateSession) {
-      newErrors.general = '❌ A session with this grade and week already exists';
+      newErrors.general = '❌ A session with this course, course type, and lesson already exists';
       setErrors(newErrors);
       return;
     }
@@ -309,19 +457,47 @@ export default function AddOnlineSession() {
             video_name: video.video_name && video.video_name.trim() ? video.video_name.trim() : null,
           });
         }
+      } else if (video.zoom_meeting_id && video.zoom_meeting_id.trim()) {
+        const meetingId = extractZoomMeetingId(video.zoom_meeting_id);
+        if (!meetingId) {
+          continue;
+        }
+        finalVideoData.push({
+          video_type: 'zoom',
+          video_id: meetingId,
+          video_name: video.video_name && video.video_name.trim() ? video.video_name.trim() : null,
+        });
+      } else if (video.google_meet_id && video.google_meet_id.trim()) {
+        finalVideoData.push({
+          video_type: 'google_meet',
+          video_id: video.google_meet_id.trim(),
+          video_name: video.video_name && video.video_name.trim() ? video.video_name.trim() : null,
+        });
       }
     }
 
-    // Submit form
-    createSessionMutation.mutate({
+    // Prepare payload
+    const payload = {
       name: formData.name.trim(),
-      grade: selectedGrade.trim(),
-      week: weekNumber,
+      course: selectedCourse.trim(),
+      courseType: selectedCourseType.trim() || null,
+      lesson: selectedLesson.trim(),
       videos: finalVideoData,
       description: formData.description.trim() || null,
       payment_state: paymentState,
-      state: accountState && accountState !== '' ? accountState : 'Activated',
-    });
+      viewing_limit_type: needsViewingSettings(paymentState) && viewingLimitType ? viewingLimitType : null,
+      viewing_limit_value:
+        needsViewingSettings(paymentState) && viewingLimitType && viewingLimitValue !== ''
+          ? Number(viewingLimitValue)
+          : null,
+    };
+
+    if (accountState) {
+      payload.state = accountState;
+    }
+
+    // Submit form
+    createSessionMutation.mutate(payload);
   };
 
   return (
@@ -333,7 +509,7 @@ export default function AddOnlineSession() {
         <Title backText="Back" href="/dashboard/manage_online_system/online_sessions">
           <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
             <Image src="/plus.svg" alt="Add" width={32} height={32} />
-            Add Online Session
+            Add Recorded Session
           </div>
         </Title>
 
@@ -345,81 +521,106 @@ export default function AddOnlineSession() {
           marginTop: '24px'
         }}>
           <form onSubmit={handleSubmit}>
-            {/* Video Grade */}
+            {/* Video {courseLabels.course} */}
             <div style={{ marginBottom: '20px' }}>
               <label style={{ display: 'block', marginBottom: '8px', color: '#333', fontWeight: '500' }}>
-                Video Grade <span style={{ color: 'red' }}>*</span>
+                Video {courseLabels.course} <span style={{ color: 'red' }}>*</span>
               </label>
-              <GradeSelect
-                selectedGrade={selectedGrade}
-                onGradeChange={(grade) => {
-                  setSelectedGrade(grade);
-                  if (errors.grade) {
-                    setErrors({ ...errors, grade: '' });
+              <CourseSelect
+                selectedGrade={selectedCourse}
+                onGradeChange={(course) => {
+                  setSelectedCourse(course);
+                  if (errors.course) {
+                    setErrors({ ...errors, course: '' });
                   }
                 }}
-                isOpen={gradeDropdownOpen}
-                onToggle={() => setGradeDropdownOpen(!gradeDropdownOpen)}
-                onClose={() => setGradeDropdownOpen(false)}
+                isOpen={courseDropdownOpen}
+                onToggle={() => setCourseDropdownOpen(!courseDropdownOpen)}
+                onClose={() => setCourseDropdownOpen(false)}
                 required={true}
+                showAllOption={true}
               />
-              {errors.grade && (
+              {errors.course && (
                 <div style={{ color: '#dc3545', fontSize: '0.875rem', marginTop: '4px' }}>
-                  {errors.grade}
+                  {errors.course}
                 </div>
               )}
             </div>
 
-            {/* Video Week */}
-            <div style={{ marginBottom: '20px' }}>
+            {/* Video Course Type */}
+            {courseLabels.showCourseType && (
+<div style={{ marginBottom: '20px' }}>
               <label style={{ display: 'block', marginBottom: '8px', color: '#333', fontWeight: '500' }}>
-                Video Week <span style={{ color: 'red' }}>*</span>
+                Video Course Type
               </label>
-              <AttendanceWeekSelect
-                selectedWeek={selectedWeek}
-                onWeekChange={(week) => {
-                  setSelectedWeek(week);
-                  if (errors.week) {
-                    setErrors({ ...errors, week: '' });
+              <CourseTypeSelect
+                selectedCourseType={selectedCourseType}
+                onCourseTypeChange={(courseType) => {
+                  setSelectedCourseType(courseType);
+                  if (errors.courseType) {
+                    setErrors({ ...errors, courseType: '' });
                   }
                 }}
-                isOpen={weekDropdownOpen}
-                onToggle={() => setWeekDropdownOpen(!weekDropdownOpen)}
-                onClose={() => setWeekDropdownOpen(false)}
-                required={true}
-                placeholder="Select Video Week"
+                isOpen={courseTypeDropdownOpen}
+                onToggle={() => setCourseTypeDropdownOpen(!courseTypeDropdownOpen)}
+                onClose={() => setCourseTypeDropdownOpen(false)}
               />
-              {errors.week && (
+              {errors.courseType && (
                 <div style={{ color: '#dc3545', fontSize: '0.875rem', marginTop: '4px' }}>
-                  {errors.week}
+                  {errors.courseType}
+                </div>
+              )}
+            </div>
+)}
+
+            {/* Video Lesson */}
+            <div style={{ marginBottom: '20px' }}>
+              <label style={{ display: 'block', marginBottom: '8px', color: '#333', fontWeight: '500' }}>
+                Video Lesson <span style={{ color: 'red' }}>*</span>
+              </label>
+              <AttendanceLessonSelect
+                selectedLesson={selectedLesson}
+                onLessonChange={(lesson) => {
+                  setSelectedLesson(lesson);
+                  if (errors.lesson) {
+                    setErrors({ ...errors, lesson: '' });
+                  }
+                }}
+                isOpen={lessonDropdownOpen}
+                onToggle={() => setLessonDropdownOpen(!lessonDropdownOpen)}
+                onClose={() => setLessonDropdownOpen(false)}
+                required={true}
+                placeholder="Select Video Lesson"
+              />
+              {errors.lesson && (
+                <div style={{ color: '#dc3545', fontSize: '0.875rem', marginTop: '4px' }}>
+                  {errors.lesson}
                 </div>
               )}
             </div>
 
             {/* Video State */}
-            <div style={{ marginBottom: '20px' }}>
-              <AccountStateSelect
-                value={accountState}
-                onChange={setAccountState}
-                label="Video State"
-                placeholder="Select State"
-                required={true}
-                error={errors.accountState}
-              />
-              {errors.accountState && (
-                <div style={{ color: '#dc3545', fontSize: '0.875rem', marginTop: '4px' }}>
-                  {errors.accountState}
-                </div>
-              )}
-            </div>
+            <AccountStateSelect
+              value={accountState}
+              onChange={setAccountState}
+              label="Video State"
+              placeholder="Select Video State"
+              required={true}
+              error={errors.accountState}
+            />
+            {errors.accountState && (
+              <div style={{ color: '#dc3545', fontSize: '0.875rem', marginTop: '4px' }}>
+                {errors.accountState}
+              </div>
+            )}
 
             {/* Video Payment State Radio */}
-            <div style={{ marginBottom: '20px' }}>
+            <div className="payment-state-section" style={{ marginBottom: '20px' }}>
               <label style={{ display: 'block', marginBottom: '12px', fontWeight: '600', textAlign: 'left' }}>
                 Video Payment State <span style={{ color: 'red' }}>*</span>
               </label>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer', padding: '10px', borderRadius: '8px', border: paymentState === 'paid' ? '2px solid #1FA8DC' : '2px solid #e9ecef', backgroundColor: paymentState === 'paid' ? '#f0f8ff' : 'white' }}>
+                <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer', padding: '10px', borderRadius: '8px', border: paymentState === 'paid' ? '2px solid #1FA8DC' : '2px solid #e9ecef', backgroundColor: paymentState === 'paid' ? '#f0f8ff' : 'white', width: '100%', boxSizing: 'border-box' }}>
                   <input
                     type="radio"
                     name="payment_state"
@@ -427,15 +628,33 @@ export default function AddOnlineSession() {
                     checked={paymentState === 'paid'}
                     onChange={(e) => {
                       setPaymentState(e.target.value);
+                      setViewingLimitType('');
+                      setViewingLimitValue('');
+                      if (errors.paymentState || errors.viewingLimitType || errors.viewingLimitValue) {
+                        setErrors({ ...errors, paymentState: '', viewingLimitType: '', viewingLimitValue: '' });
+                      }
+                    }}
+                    style={{ marginRight: '10px', width: '18px', height: '18px', cursor: 'pointer', flexShrink: 0 }}
+                  />
+                  <span style={{ fontWeight: '500' }}>Paid</span>
+                </label>
+                <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer', padding: '10px', borderRadius: '8px', border: paymentState === 'free_if_attended_in_center' ? '2px solid #1FA8DC' : '2px solid #e9ecef', backgroundColor: paymentState === 'free_if_attended_in_center' ? '#f0f8ff' : 'white', width: '100%', boxSizing: 'border-box' }}>
+                  <input
+                    type="radio"
+                    name="payment_state"
+                    value="free_if_attended_in_center"
+                    checked={paymentState === 'free_if_attended_in_center'}
+                    onChange={(e) => {
+                      setPaymentState(e.target.value);
                       if (errors.paymentState) {
                         setErrors({ ...errors, paymentState: '' });
                       }
                     }}
-                    style={{ marginRight: '10px', width: '18px', height: '18px', cursor: 'pointer' }}
+                    style={{ marginRight: '10px', width: '18px', height: '18px', cursor: 'pointer', flexShrink: 0 }}
                   />
-                  <span style={{ fontWeight: '500' }}>Paid</span>
+                  <span style={{ fontWeight: '500' }}>Free if attended in center</span>
                 </label>
-                <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer', padding: '10px', borderRadius: '8px', border: paymentState === 'free' ? '2px solid #1FA8DC' : '2px solid #e9ecef', backgroundColor: paymentState === 'free' ? '#f0f8ff' : 'white' }}>
+                <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer', padding: '10px', borderRadius: '8px', border: paymentState === 'free' ? '2px solid #1FA8DC' : '2px solid #e9ecef', backgroundColor: paymentState === 'free' ? '#f0f8ff' : 'white', width: '100%', boxSizing: 'border-box' }}>
                   <input
                     type="radio"
                     name="payment_state"
@@ -447,7 +666,7 @@ export default function AddOnlineSession() {
                         setErrors({ ...errors, paymentState: '' });
                       }
                     }}
-                    style={{ marginRight: '10px', width: '18px', height: '18px', cursor: 'pointer' }}
+                    style={{ marginRight: '10px', width: '18px', height: '18px', cursor: 'pointer', flexShrink: 0 }}
                   />
                   <span style={{ fontWeight: '500' }}>Free</span>
                 </label>
@@ -458,6 +677,27 @@ export default function AddOnlineSession() {
                 </div>
               )}
             </div>
+
+            {needsViewingSettings(paymentState) && (
+              <OnlineSessionViewingSettings
+                viewingLimitType={viewingLimitType}
+                viewingLimitValue={viewingLimitValue}
+                onTypeChange={(type) => {
+                  setViewingLimitType(type);
+                  setViewingLimitValue('');
+                  if (errors.viewingLimitType || errors.viewingLimitValue) {
+                    setErrors({ ...errors, viewingLimitType: '', viewingLimitValue: '' });
+                  }
+                }}
+                onValueChange={(value) => {
+                  setViewingLimitValue(value);
+                  if (errors.viewingLimitValue) {
+                    setErrors({ ...errors, viewingLimitValue: '' });
+                  }
+                }}
+                errors={errors}
+              />
+            )}
 
             {/* Name Input */}
             <div style={{ marginBottom: '20px' }}>
@@ -499,7 +739,14 @@ export default function AddOnlineSession() {
                   video={video}
                   onVideoNameChange={handleVideoNameChange}
                   onYouTubeUrlChange={handleYouTubeUrlChange}
+                  onZoomMeetingIdChange={handleZoomMeetingIdChange}
+                  onClearYouTubeUrl={handleClearYouTubeUrl}
+                  onClearZoomMeetingId={handleClearZoomMeetingId}
+                  onGoogleMeetIdChange={handleGoogleMeetIdChange}
+                  onClearGoogleMeetId={handleClearGoogleMeetId}
                   onR2Upload={handleR2Upload}
+                  onClearR2Upload={handleClearR2Upload}
+                  onVideoSourceChange={handleVideoSourceChange}
                   onRemove={removeVideo}
                   canRemove={formData.videos.length > 1}
                   errors={errors}
@@ -636,6 +883,7 @@ export default function AddOnlineSession() {
             
             .form-container input[type="text"],
             .form-container input[type="url"],
+            .form-container input[type="number"],
             .form-container textarea {
               font-size: 16px !important; /* Prevents zoom on iOS */
             }
@@ -686,4 +934,3 @@ export default function AddOnlineSession() {
     </div>
   );
 }
-

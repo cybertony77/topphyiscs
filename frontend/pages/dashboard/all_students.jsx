@@ -1,15 +1,18 @@
 import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/router";
 import Image from 'next/image';
+import { useQuery } from '@tanstack/react-query';
+import apiClient from "../../lib/axios";
 import Title from "../../components/Title";
+import CourseSelect from "../../components/CourseSelect";
 import GradeSelect from "../../components/GradeSelect";
 import CenterSelect from "../../components/CenterSelect";
-import GenderSelect from "../../components/GenderSelect";
+import CourseTypeSelect from "../../components/CourseTypeSelect";
 import { SessionTable } from "../../components/SessionTable.jsx";
 import { IconArrowRight, IconSearch, IconChevronLeft, IconChevronRight } from '@tabler/icons-react';
 import { ActionIcon, TextInput, useMantineTheme } from '@mantine/core';
 import { useStudentsPaginated } from '../../lib/api/students';
-import { useSystemConfig } from '../../lib/api/system';
+import { useSystemConfig, useNationalSystem, getCourseFieldLabels } from '../../lib/api/system';
 import LoadingSkeleton from '../../components/LoadingSkeleton';
 
 export function InputWithButton({ onButtonClick, onKeyDown, ...props }) {
@@ -54,15 +57,18 @@ export function InputWithButton({ onButtonClick, onKeyDown, ...props }) {
 
 export default function AllStudents() {
   const { data: systemConfig } = useSystemConfig();
+  const isNational = useNationalSystem();
+  const courseLabels = getCourseFieldLabels(isNational);
   const isScoringEnabled = systemConfig?.scoring_system === true || systemConfig?.scoring_system === 'true';
+  const isPaymentSystemEnabled = systemConfig?.payment_system === true || systemConfig?.payment_system === 'true';
   
   const router = useRouter();
   const containerRef = useRef(null);
-  const [selectedGrade, setSelectedGrade] = useState("");
+  const [selectedCourse, setSelectedCourse] = useState(""); // For CourseSelect (EST, SAT, ACT)
+  const [selectedGradeFilter, setSelectedGradeFilter] = useState(""); // For GradeSelect (Grade 9, 10, 11, 12)
   const [selectedCenter, setSelectedCenter] = useState("");
-  const [selectedGender, setSelectedGender] = useState("");
-  const [openDropdown, setOpenDropdown] = useState(null); // 'grade', 'center', 'gender', or null
-  const [genderDropdownOpen, setGenderDropdownOpen] = useState(false);
+  const [selectedCourseType, setSelectedCourseType] = useState("");
+  const [openDropdown, setOpenDropdown] = useState(null); // 'course', 'grade', 'center', 'courseType', or null
   const [searchInput, setSearchInput] = useState(""); // What user types in the input
   const [searchTerm, setSearchTerm] = useState(""); // Actual search term used in API query
   const [isMobile, setIsMobile] = useState(false);
@@ -75,9 +81,10 @@ export default function AllStudents() {
     page: currentPage,
     limit: pageSize,
     search: searchTerm.trim() || undefined,
-    grade: selectedGrade || undefined,
+    grade: selectedGradeFilter || undefined, // GradeSelect selects grades (Grade 9, 10, 11, 12)
+    course: selectedCourse || undefined, // CourseSelect selects courses (EST, SAT, ACT)
     center: selectedCenter || undefined,
-    gender: selectedGender || undefined,
+    courseType: selectedCourseType || undefined,
     sortBy: 'id',
     sortOrder: 'asc',
   }, {
@@ -100,25 +107,29 @@ export default function AllStudents() {
 
   // Load remembered filter values from sessionStorage
   useEffect(() => {
-    const rememberedGrade = sessionStorage.getItem('allStudentsSelectedGrade');
+    const rememberedCourse = sessionStorage.getItem('allStudentsSelectedCourse');
+    const rememberedGradeFilter = sessionStorage.getItem('allStudentsSelectedGradeFilter');
     const rememberedCenter = sessionStorage.getItem('allStudentsSelectedCenter');
-    const rememberedGender = sessionStorage.getItem('allStudentsSelectedGender');
+    const rememberedCourseType = sessionStorage.getItem('allStudentsSelectedCourseType');
     
-    if (rememberedGrade) {
-      setSelectedGrade(rememberedGrade);
+    if (rememberedCourse) {
+      setSelectedCourse(rememberedCourse);
+    }
+    if (rememberedGradeFilter) {
+      setSelectedGradeFilter(rememberedGradeFilter);
     }
     if (rememberedCenter) {
       setSelectedCenter(rememberedCenter);
     }
-    if (rememberedGender) {
-      setSelectedGender(rememberedGender);
+    if (rememberedCourseType) {
+      setSelectedCourseType(rememberedCourseType);
     }
   }, []);
 
   // Reset to page 1 when filters change
   useEffect(() => {
     setCurrentPage(1);
-  }, [selectedGrade, selectedCenter, selectedGender, searchTerm]);
+  }, [selectedCourse, selectedGradeFilter, selectedCenter, selectedCourseType, searchTerm]);
 
   // Reset to page 1 when search term becomes empty
   useEffect(() => {
@@ -286,23 +297,43 @@ export default function AllStudents() {
         <div className="filters-container">
           <div className="filter-row">
             <div className="filter-group">
-              <label className="filter-label">Filter by Grade</label>
-              <GradeSelect
-                selectedGrade={selectedGrade}
-                onGradeChange={(grade) => {
-                  setSelectedGrade(grade);
-                  // Remember the selected grade
-                  if (grade) {
-                    sessionStorage.setItem('allStudentsSelectedGrade', grade);
+              <label className="filter-label">{courseLabels.filterByCourse}</label>
+              <CourseSelect
+                selectedGrade={selectedCourse}
+                onGradeChange={(course) => {
+                  setSelectedCourse(course);
+                  // Remember the selected course
+                  if (course) {
+                    sessionStorage.setItem('allStudentsSelectedCourse', course);
                   } else {
-                    sessionStorage.removeItem('allStudentsSelectedGrade');
+                    sessionStorage.removeItem('allStudentsSelectedCourse');
                   }
                 }}
-                isOpen={openDropdown === 'grade'}
-                onToggle={() => setOpenDropdown(openDropdown === 'grade' ? null : 'grade')}
+                isOpen={openDropdown === 'course'}
+                onToggle={() => setOpenDropdown(openDropdown === 'course' ? null : 'course')}
                 onClose={() => setOpenDropdown(null)}
               />
             </div>
+            {courseLabels.showCourseType && (
+            <div className="filter-group">
+              <label className="filter-label">Filter by Course Type</label>
+              <CourseTypeSelect
+                selectedCourseType={selectedCourseType}
+                onCourseTypeChange={(courseType) => {
+                  setSelectedCourseType(courseType);
+                  // Remember the selected course type
+                  if (courseType) {
+                    sessionStorage.setItem('allStudentsSelectedCourseType', courseType);
+                  } else {
+                    sessionStorage.removeItem('allStudentsSelectedCourseType');
+                  }
+                }}
+                isOpen={openDropdown === 'courseType'}
+                onToggle={() => setOpenDropdown(openDropdown === 'courseType' ? null : 'courseType')}
+                onClose={() => setOpenDropdown(null)}
+              />
+            </div>
+            )}
             <div className="filter-group">
               <label className="filter-label">Filter by Center</label>
               <CenterSelect
@@ -321,27 +352,26 @@ export default function AllStudents() {
                 onClose={() => setOpenDropdown(null)}
               />
             </div>
+            {courseLabels.showGradeField && (
             <div className="filter-group">
-              <label className="filter-label">Filter by Gender</label>
-              <GenderSelect
-                selectedGender={selectedGender}
-                onGenderChange={(gender) => {
-                  setSelectedGender(gender);
-                  // Remember the selected gender
-                  if (gender) {
-                    sessionStorage.setItem('allStudentsSelectedGender', gender);
+              <label className="filter-label">Filter by Grade</label>
+              <GradeSelect
+                selectedGrade={selectedGradeFilter}
+                onGradeChange={(grade) => {
+                  setSelectedGradeFilter(grade);
+                  // Remember the selected grade
+                  if (grade) {
+                    sessionStorage.setItem('allStudentsSelectedGradeFilter', grade);
                   } else {
-                    sessionStorage.removeItem('allStudentsSelectedGender');
+                    sessionStorage.removeItem('allStudentsSelectedGradeFilter');
                   }
                 }}
-                isOpen={genderDropdownOpen}
-                onToggle={() => {
-                  setOpenDropdown(null);
-                  setGenderDropdownOpen(!genderDropdownOpen);
-                }}
-                onClose={() => setGenderDropdownOpen(false)}
+                isOpen={openDropdown === 'grade'}
+                onToggle={() => setOpenDropdown(openDropdown === 'grade' ? null : 'grade')}
+                onClose={() => setOpenDropdown(null)}
               />
             </div>
+            )}
           </div>
           
 
@@ -369,18 +399,23 @@ export default function AllStudents() {
           <SessionTable
             data={students}
             height={400}
+            compactOnMobile
             showMainCenter={true}
             showGrade={true}
+            showCourse={true}
+            showCourseType={true}
             showSchool={true}
             showAccountStatus={true}
             showScore={isScoringEnabled}
+            showPayment={isPaymentSystemEnabled}
+            showOppositeTotals={true}
             showGender={true}
             showComment={false}
             showMainComment={false}
             showWeekComment={false}
             showWhatsApp={false}
             showMessageState={false}
-            emptyMessage={searchTerm || selectedGrade || selectedCenter || selectedGender
+            emptyMessage={searchTerm || selectedCourse || selectedGradeFilter || selectedCenter || selectedCourseType
               ? "No students found with the current filters."
               : "No students found."
             }
@@ -633,6 +668,7 @@ export default function AllStudents() {
             }
             .history-container {
               padding: 16px;
+              overflow-x: hidden;
             }
             .history-title {
               font-size: 1.3rem;
@@ -645,6 +681,7 @@ export default function AllStudents() {
             }
             .history-container {
               padding: 12px;
+              overflow-x: hidden;
             }
             .history-title {
               font-size: 1.2rem;

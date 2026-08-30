@@ -2,6 +2,8 @@ import { MongoClient } from 'mongodb';
 import fs from 'fs';
 import path from 'path';
 import { authMiddleware } from '../../../lib/authMiddleware';
+import { getStudentLesson } from '../../../lib/studentLessons';
+import { maskGoogleMeetIdsInDocuments } from '../../../lib/googleVideoIds';
 
 function loadEnvConfig() {
   try {
@@ -32,6 +34,7 @@ function loadEnvConfig() {
 const envConfig = loadEnvConfig();
 const MONGO_URI = envConfig.MONGO_URI || process.env.MONGO_URI;
 const DB_NAME = envConfig.DB_NAME || process.env.DB_NAME;
+const NATIONAL_SYSTEM = envConfig.NATIONAL_SYSTEM === 'true' || process.env.NATIONAL_SYSTEM === 'true';
 
 export default async function handler(req, res) {
   if (req.method !== 'GET') {
@@ -49,66 +52,113 @@ export default async function handler(req, res) {
     client = await MongoClient.connect(MONGO_URI);
     const db = client.db(DB_NAME);
 
-    // Get student's grade from students collection
-    let studentGrade = null;
+    // Get student's course, courseType, and lessons from students collection
+    let studentCourse = null;
+    let studentCourseType = null;
+    let studentLessons = {};
     if (user.role === 'student') {
       // JWT contains assistant_id, use that to find student
       const studentId = user.assistant_id || user.id;
       console.log('🔍 Homeworks Videos API - User from JWT:', { role: user.role, assistant_id: user.assistant_id, id: user.id, studentId });
       if (studentId) {
         const student = await db.collection('students').findOne({ id: studentId });
-        console.log('🔍 Student found:', student ? { id: student.id, grade: student.grade } : 'NOT FOUND');
-        if (student && student.grade) {
-          studentGrade = student.grade;
-          console.log('✅ Using student grade:', studentGrade);
+        console.log('🔍 Student found:', student ? { id: student.id, course: student.course, courseType: student.courseType, lessons: Object.keys(student.lessons || {}) } : 'NOT FOUND');
+        if (student) {
+          studentCourse = student.course;
+          studentCourseType = student.courseType;
+          studentLessons = student.lessons || {};
+          console.log('✅ Using student course:', studentCourse, 'courseType:', studentCourseType);
         }
       }
     }
 
-    // Build query filter - ALWAYS filter by grade for students
-    if (studentGrade) {
-      // Normalize student grade: lowercase, remove periods, trim
-      const normalizedStudentGrade = studentGrade.toLowerCase().replace(/\./g, '').trim();
-      
-      // Get all sessions and filter by normalized grade in JavaScript
-      // This handles case differences: "2nd secondary" matches "2nd Secondary"
+    // Build query filter - ALWAYS filter by course and courseType for students
+    if (studentCourse) {
+      // Get all sessions and filter by course and courseType in JavaScript
       const allSessions = await db.collection('homeworks_videos').find({}).toArray();
       
-      // Filter sessions by normalized grade
-      console.log('🔍 Filtering homeworks videos. Student normalized grade:', normalizedStudentGrade);
+      // Filter sessions by course, courseType, and activation state
+      console.log('🔍 Filtering homeworks videos. Student course:', studentCourse, 'courseType:', studentCourseType);
       console.log('🔍 Total sessions before filter:', allSessions.length);
       const filteredSessions = allSessions.filter(session => {
-        if (!session.grade) {
-          console.log('⚠️ Session has no grade:', session._id);
+        if (!session.course) {
+          console.log('⚠️ Session has no course:', session._id);
           return false;
         }
-        const normalizedSessionGrade = session.grade.toLowerCase().replace(/\./g, '').trim();
-        const matches = normalizedSessionGrade === normalizedStudentGrade;
-        console.log(`🔍 Session grade: "${session.grade}" → normalized: "${normalizedSessionGrade}" | Matches: ${matches}`);
+        
+        // Normalize activation state (support both new state and legacy account_state)
+        const sessionState = (session.state || session.account_state || 'Activated');
+        
+        // Check course match: if session course is "All", it matches any student course
+        const courseMatch = session.course.toLowerCase() === 'all' || 
+                           session.course.toLowerCase() === studentCourse.toLowerCase();
+        
+        // Check courseType match: skip when national system
+        const courseTypeMatch = NATIONAL_SYSTEM ||
+                               !session.courseType || 
+                               !studentCourseType ||
+                               session.courseType.toLowerCase() === studentCourseType.toLowerCase();
+        
+        // Only include activated sessions
+        const isActivated = sessionState !== 'Deactivated';
+        
+        const matches = courseMatch && courseTypeMatch && isActivated;
+        console.log(`🔍 Session course: "${session.course}", courseType: "${session.courseType || 'none'}", state: "${sessionState}" | Matches: ${matches}`);
         return matches;
       });
       console.log('✅ Filtered sessions count:', filteredSessions.length);
       
-      // Sort by week number (ascending), with null weeks at the end
-      const sortedSessions = filteredSessions.sort((a, b) => {
-        if (a.week === null || a.week === undefined) {
-          if (b.week === null || b.week === undefined) {
-            return new Date(b.date) - new Date(a.date);
+      // For sessions with payment_state 'free_if_attended', check if student attended the lesson
+      // For 'free_if_homework_done', unlock only if lessons[lesson].hwDone is present and not false
+      const sessionsWithAttendance = filteredSessions.map((session) => {
+        if (session.payment_state === 'free_if_attended' && session.lesson) {
+          const lessonData = getStudentLesson(studentLessons, session.lesson);
+          const attended = lessonData && lessonData.attended === true;
+          return { ...session, _isFreeIfAttended: true, _attended: attended };
+        }
+        if (session.payment_state === 'free_if_homework_done' && session.lesson) {
+          const lessonData = getStudentLesson(studentLessons, session.lesson);
+          let hwDoneUnlocks = false;
+          if (
+            lessonData &&
+            typeof lessonData === 'object' &&
+            Object.prototype.hasOwnProperty.call(lessonData, 'hwDone') &&
+            lessonData.hwDone !== false
+          ) {
+            hwDoneUnlocks = true;
           }
-          return 1;
+          return {
+            ...session,
+            _isFreeIfHomeworkDone: true,
+            _hwDoneUnlocks: hwDoneUnlocks,
+          };
         }
-        if (b.week === null || b.week === undefined) {
-          return -1;
+        return session;
+      });
+      
+      // Sort by course, courseType, lesson, then date
+      const sortedSessions = sessionsWithAttendance.sort((a, b) => {
+        // Sort by course
+        if (a.course !== b.course) {
+          return a.course.localeCompare(b.course);
         }
-        if (a.week !== b.week) {
-          return a.week - b.week;
+        // Sort by courseType
+        const aCourseType = (a.courseType || '').toLowerCase();
+        const bCourseType = (b.courseType || '').toLowerCase();
+        if (aCourseType !== bCourseType) {
+          return aCourseType.localeCompare(bCourseType);
         }
+        // Sort by lesson
+        if (a.lesson !== b.lesson) {
+          return (a.lesson || '').localeCompare(b.lesson || '');
+        }
+        // Sort by date (newest first)
         return new Date(b.date) - new Date(a.date);
       });
       
-      res.json({ success: true, sessions: sortedSessions });
+      res.json({ success: true, sessions: maskGoogleMeetIdsInDocuments(sortedSessions) });
     } else {
-      // If student has no grade, return empty array (don't show any sessions)
+      // If student has no course, return empty array (don't show any sessions)
       return res.json({ success: true, sessions: [] });
     }
   } catch (error) {

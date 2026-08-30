@@ -2,6 +2,7 @@ import { MongoClient, ObjectId } from 'mongodb';
 import fs from 'fs';
 import path from 'path';
 import { authMiddleware } from '../../../../lib/authMiddleware';
+import { itemCenterMatchesStudentMainCenter } from '../../../../lib/studentCenterMatch';
 
 function loadEnvConfig() {
   try {
@@ -56,37 +57,43 @@ export default async function handler(req, res) {
     }
 
     const onlineQuizzes = student.online_quizzes || [];
-    
-    // Fetch quiz details for each quiz_id
-    const quizzesWithDetails = await Promise.all(
-      onlineQuizzes.map(async (quizResult) => {
-        try {
-          const quiz = await db.collection('quizzes').findOne({ 
-            _id: new ObjectId(quizResult.quiz_id) 
-          });
-          return {
-            ...quizResult,
-            quiz: quiz ? {
-              _id: quiz._id,
-              lesson_name: quiz.lesson_name,
-              week: quiz.week,
-              timer: quiz.timer,
-              questions: quiz.questions ? quiz.questions.length : 0
-            } : null
-          };
-        } catch (err) {
-          console.error(`Error fetching quiz ${quizResult.quiz_id}:`, err);
-          return {
-            ...quizResult,
-            quiz: null
-          };
-        }
-      })
-    );
+    const mainCenter = student.main_center;
 
-    res.json({ 
+    const quizzesWithDetails = (
+      await Promise.all(
+        onlineQuizzes.map(async (quizResult) => {
+          try {
+            const quiz = await db.collection('quizzes').findOne({
+              _id: new ObjectId(quizResult.quiz_id),
+            });
+            if (!quiz) {
+              return null;
+            }
+            if (!itemCenterMatchesStudentMainCenter(quiz.center, mainCenter)) {
+              return null;
+            }
+            return {
+              ...quizResult,
+              quiz: {
+                _id: quiz._id,
+                lesson: quiz.lesson,
+                lesson_name: quiz.lesson_name,
+                week: quiz.week,
+                timer: quiz.timer,
+                questions: quiz.questions ? quiz.questions.length : 0,
+              },
+            };
+          } catch (err) {
+            console.error(`Error fetching quiz ${quizResult.quiz_id}:`, err);
+            return null;
+          }
+        })
+      )
+    ).filter(Boolean);
+
+    res.json({
       success: true,
-      quizzes: quizzesWithDetails
+      quizzes: quizzesWithDetails,
     });
   } catch (error) {
     console.error('❌ Error fetching online quizzes:', error);

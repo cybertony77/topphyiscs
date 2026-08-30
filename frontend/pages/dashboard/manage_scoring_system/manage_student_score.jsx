@@ -56,25 +56,35 @@ export default function ManageStudentScore() {
         ...student,
         centerRank: studentWithRanking?.centerRank || null,
         centerTotal: studentWithRanking?.centerTotal || null,
-        gradeRank: studentWithRanking?.gradeRank || null,
-        gradeTotal: studentWithRanking?.gradeTotal || null
+        courseRank: studentWithRanking?.courseRank || null,
+        courseTotal: studentWithRanking?.courseTotal || null
       };
     },
     enabled: !!searchId,
   });
 
-  // Update score mutation
+  // Update score mutation — goes through scoring history
   const updateScoreMutation = useMutation({
-    mutationFn: async ({ studentId, newScore }) => {
-      const response = await apiClient.put(`/api/students/${studentId}`, {
-        score: newScore
+    mutationFn: async ({ studentId, delta }) => {
+      const response = await apiClient.post('/api/scoring/calculate', {
+        studentId,
+        type: 'manual',
+        source: {
+          kind: 'staff_adjustment',
+          id: `${Date.now()}_${Math.random().toString(36).slice(2, 10)}`,
+          label: 'Manage Student Score',
+        },
+        data: {
+          delta,
+          reason: 'Staff adjustment from Manage Student Score',
+        },
       });
       return response.data;
     },
     onSuccess: () => {
-      // Refetch student data and rankings
       queryClient.invalidateQueries(['student-with-rankings', searchId]);
       queryClient.invalidateQueries(['scoring-view-scores']);
+      queryClient.invalidateQueries(['scoring-history']);
     },
   });
 
@@ -141,16 +151,12 @@ export default function ManageStudentScore() {
   const handleScoreChange = async (delta) => {
     if (!studentData) return;
     
-    const currentScore = studentData.score || 0;
-    const newScore = Math.max(0, currentScore + delta); // Ensure score doesn't go below 0
-    
     try {
       await updateScoreMutation.mutateAsync({
         studentId: studentData.id,
-        newScore
+        delta,
       });
       
-      // Refetch to get updated rankings
       await refetchStudent();
     } catch (error) {
       console.error('Error updating score:', error);
@@ -576,7 +582,7 @@ export default function ManageStudentScore() {
                     <span style={{ fontFamily: 'monospace' }}>{student.phone || 'N/A'}</span>
                   </div>
                   <div style={{ fontSize: "0.9rem", color: "#6c757d", marginTop: 2 }}>
-                    {student.grade} • {student.main_center}
+                    {[student.course, student.courseType, student.main_center].filter(Boolean).join(' • ')}
                   </div>
                 </button>
               ))}
@@ -619,8 +625,12 @@ export default function ManageStudentScore() {
                 <div className="detail-value">{studentData.grade || '-'}</div>
               </div>
               <div className="detail-item">
-                <div className="detail-label">Main Center</div>
-                <div className="detail-value">{studentData.main_center || '-'}</div>
+                <div className="detail-label">Course</div>
+                <div className="detail-value">{studentData.course || studentData.grade || '-'}</div>
+              </div>
+              <div className="detail-item">
+                <div className="detail-label">Course Type</div>
+                <div className="detail-value">{studentData.courseType || '-'}</div>
               </div>
               <div className="detail-item">
                 <div className="detail-label">Rank (Main Center)</div>
@@ -631,10 +641,10 @@ export default function ManageStudentScore() {
                 </div>
               </div>
               <div className="detail-item">
-                <div className="detail-label">Rank (Grade)</div>
+                <div className="detail-label">Rank (Course)</div>
                 <div className="detail-value">
-                  {studentData.gradeRank && studentData.gradeTotal 
-                    ? `${studentData.gradeRank} / ${studentData.gradeTotal}`
+                  {studentData.courseRank && studentData.courseTotal 
+                    ? `${studentData.courseRank} / ${studentData.courseTotal}`
                     : '-'}
                 </div>
               </div>

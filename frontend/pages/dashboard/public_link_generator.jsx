@@ -7,7 +7,7 @@ import { useSystemConfig } from '../../lib/api/system';
 
 export default function GenerateLink() {
   const { data: systemConfig } = useSystemConfig();
-  const systemName = systemConfig?.name || 'TopPhysics';
+  const systemName = systemConfig?.name || 'Mr. Amgad El-Alfy Math Academy';
   const [studentId, setStudentId] = useState('');
   const [generatedLink, setGeneratedLink] = useState('');
   const [successMessage, setSuccessMessage] = useState('');
@@ -17,8 +17,26 @@ export default function GenerateLink() {
   const [selectedStudent, setSelectedStudent] = useState(null);
   const [showWarning, setShowWarning] = useState(false);
 
-  // Get all students for search functionality 
+  // Get all students for search functionality
   const { data: allStudents } = useStudents({});
+
+  const openWhatsApp = (phoneRaw, message) => {
+    let formattedPhone = String(phoneRaw || '').replace(/[^0-9]/g, '');
+    if (!formattedPhone) return;
+
+    const startsWithEgyptLocalMobile =
+      formattedPhone.startsWith('010') ||
+      formattedPhone.startsWith('011') ||
+      formattedPhone.startsWith('012') ||
+      formattedPhone.startsWith('015');
+
+    if (startsWithEgyptLocalMobile) {
+      formattedPhone = `20${formattedPhone.substring(1)}`;
+    }
+
+    const whatsappUrl = `https://wa.me/${formattedPhone}?text=${encodeURIComponent(message)}`;
+    window.open(whatsappUrl, '_blank');
+  };
 
   const handleGenerate = (e) => {
     e.preventDefault();
@@ -128,6 +146,36 @@ export default function GenerateLink() {
     setSuccessMessage('Public link copied in the clipboard');
     // Clear success message after 3 seconds
     setTimeout(() => setSuccessMessage(''), 3000);
+  };
+
+  const shareLink = async () => {
+    if (!generatedLink) return;
+    try {
+      if (typeof navigator === 'undefined' || !navigator.share) {
+        setSuccessMessage('');
+        setError('Sharing is not supported on this device');
+        setTimeout(() => setError(''), 3000);
+        return;
+      }
+      const title = selectedStudent?.name
+        ? `${selectedStudent.name} — Public Profile`
+        : 'Public Student Link';
+      const shareData = {
+        title,
+        text: title,
+        url: generatedLink,
+      };
+      if (typeof navigator.canShare === 'function' && !navigator.canShare(shareData)) {
+        await navigator.share({ title, text: generatedLink });
+      } else {
+        await navigator.share(shareData);
+      }
+    } catch (err) {
+      if (err?.name === 'AbortError') return;
+      console.error('Share failed:', err);
+      setError(err.message || 'Share failed. Please try again.');
+      setTimeout(() => setError(''), 3000);
+    }
   };
 
   // Handle student selection from search results
@@ -259,12 +307,24 @@ export default function GenerateLink() {
             color: #2d3748;
             line-height: 1.6;
           }
+          .link-actions {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 12px;
+            width: 100%;
+          }
+          .copy-btn,
+          .share-btn {
+            flex: 1 1 calc(50% - 6px);
+            min-width: 140px;
+            box-sizing: border-box;
+          }
           .copy-btn {
             background: linear-gradient(135deg, #ff6b6b 0%, #ee5a52 100%);
             color: white;
             border: none;
             border-radius: 12px;
-            padding: 14px 28px;
+            padding: 14px 20px;
             font-weight: 700;
             font-size: 1rem;
             cursor: pointer;
@@ -274,16 +334,37 @@ export default function GenerateLink() {
             align-items: center;
             justify-content: center;
             gap: 10px;
-            width: 100%;
+          }
+          .share-btn {
+            background: linear-gradient(135deg, #22c55e 0%, #16a34a 45%, #20c997 130%);
+            color: white;
+            border: none;
+            border-radius: 12px;
+            padding: 14px 20px;
+            font-weight: 700;
+            font-size: 1rem;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            box-shadow: 0 6px 20px rgba(34, 197, 94, 0.4);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
           }
           .copy-btn:hover {
             transform: translateY(-3px);
             box-shadow: 0 8px 25px rgba(255, 107, 107, 0.5);
             background: linear-gradient(135deg, #ff5252 0%, #e53935 100%);
           }
-          .copy-btn:active {
+          .share-btn:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 8px 25px rgba(34, 197, 94, 0.5);
+            filter: brightness(1.04);
+          }
+          .copy-btn:active,
+          .share-btn:active {
             transform: translateY(-1px);
-            box-shadow: 0 4px 15px rgba(255, 107, 107, 0.4);
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
           }
           .success-message {
             background: linear-gradient(135deg, #28a745 0%, #20c997 100%);
@@ -324,12 +405,18 @@ export default function GenerateLink() {
               font-size: 14px;
               word-break: break-all;
             }
-            .copy-btn {
+            .copy-btn,
+            .share-btn {
+              flex: 1 1 100%;
               width: 100%;
               padding: 12px 20px;
               font-size: 0.9rem;
               justify-content: center;
               text-align: center;
+            }
+            .link-actions {
+              flex-direction: column;
+              gap: 10px;
             }
             .success-message {
               padding: 12px;
@@ -353,7 +440,8 @@ export default function GenerateLink() {
               padding: 12px;
               font-size: 13px;
             }
-            .copy-btn {
+            .copy-btn,
+            .share-btn {
               padding: 10px 16px;
               font-size: 0.85rem;
             }
@@ -474,7 +562,7 @@ export default function GenerateLink() {
                     <span style={{ fontFamily: 'monospace' }}>{student.phone || 'N/A'}</span>
                   </div>
                   <div style={{ fontSize: "0.9rem", color: "#6c757d", marginTop: 2 }}>
-                    {student.grade} • {student.main_center}
+                    {[student.course, student.courseType, student.main_center].filter(Boolean).join(' • ')}
                   </div>
                 </button>
               ))}
@@ -629,13 +717,30 @@ export default function GenerateLink() {
               <div className="link-display">
             <strong>{generatedLink}</strong>
           </div>
-          <button
-            onClick={copyToClipboard}
-                className="copy-btn"
-              >
-                <Image src="/copy2.svg" alt="Copy" width={20} height={20} />
-                Copy Link
-          </button>
+          <div className="link-actions">
+            <button
+              onClick={copyToClipboard}
+              className="copy-btn"
+              type="button"
+            >
+              <Image src="/copy2.svg" alt="Copy" width={20} height={20} />
+              Copy Link
+            </button>
+            <button
+              onClick={shareLink}
+              className="share-btn"
+              type="button"
+            >
+              <Image
+                src="/share.svg"
+                alt="Share"
+                width={20}
+                height={20}
+                style={{ filter: 'brightness(0) invert(1)' }}
+              />
+              Share Link
+            </button>
+          </div>
         </div>
             {successMessage && (
               <div className="success-message">
@@ -714,30 +819,11 @@ export default function GenerateLink() {
                     {selectedStudent.phone ? (
                       <button
                         className="whatsapp-btn"
+                        title="Send WhatsApp"
                         onClick={() => {
-                          // Use phone number as stored in DB (already includes country code)
-                          let formattedPhone = selectedStudent.phone.replace(/[^0-9]/g, '');
-                          
-                          // Validate country code: if number starts with 012, 011, 010, or 015, allow without country code
-                          // Otherwise, require country code (starts with 20 for Egypt)
-                          const startsWithEgyptPrefix = formattedPhone.startsWith('012') || 
-                                                         formattedPhone.startsWith('011') || 
-                                                         formattedPhone.startsWith('010') || 
-                                                         formattedPhone.startsWith('015');
-                          
-                          const hasCountryCode = formattedPhone.startsWith('20');
-                          
-                          if (!startsWithEgyptPrefix && !hasCountryCode) {
-                            alert('Country code required. Please add country code (e.g., 20 for Egypt)');
-                            return;
-                          }
-                          
-                          // If number starts with 012/011/010/015, remove first 0 and prepend 20 (Egypt country code)
-                          if (startsWithEgyptPrefix && !hasCountryCode) {
-                            formattedPhone = '20' + formattedPhone.substring(1); // Remove first 0
-                          }
-                          
-                          const message = `Follow up Message:
+                          openWhatsApp(
+                            selectedStudent.phone,
+                            `Follow up Message:
 
 Dear ${selectedStudent.name?.split(' ')[0] || 'Student'},
 If you want to keep track of your attendance, homework, and quizzes results.
@@ -747,12 +833,11 @@ Just click the link below to stay updated:
 
 We wish you gets high scores 😊❤
 
-– ${systemName}`;
-                          const whatsappUrl = `https://wa.me/${formattedPhone}?text=${encodeURIComponent(message)}`;
-                          window.open(whatsappUrl, '_blank');
+– ${systemName}`
+                          );
                         }}
                         style={{
-                          backgroundColor: '#25D366',
+                          backgroundColor: 'rgb(37, 211, 102)',
                           color: 'white',
                           border: 'none',
                           borderRadius: '8px',
@@ -763,10 +848,10 @@ We wish you gets high scores 😊❤
                           alignItems: 'center',
                           gap: '8px',
                           fontWeight: '600',
-                          transition: 'background-color 0.2s',
                           width: '100%',
                           justifyContent: 'center',
-                          margin: '0 auto'
+                          margin: '0 auto',
+                          boxShadow: '0 4px 14px rgba(37, 211, 102, 0.32)',
                         }}
                       >
                         <Image src="/whatsapp.svg" alt="WhatsApp" width={30} height={30} />
@@ -791,31 +876,11 @@ We wish you gets high scores 😊❤
                     {(selectedStudent.parents_phone || selectedStudent.parentsPhone || selectedStudent.parentsPhone1) ? (
                       <button
                         className="whatsapp-btn"
+                        title="Send WhatsApp"
                         onClick={() => {
-                          // Use phone number as stored in DB (already includes country code)
-                          let phoneNumber = (selectedStudent.parents_phone || selectedStudent.parentsPhone || selectedStudent.parentsPhone1).replace(/[^0-9]/g, '');
-                          
-                          // Validate country code: if number starts with 012, 011, 010, or 015, allow without country code
-                          // Otherwise, require country code (starts with 20 for Egypt)
-                          const startsWithEgyptPrefix = phoneNumber.startsWith('012') || 
-                                                         phoneNumber.startsWith('011') || 
-                                                         phoneNumber.startsWith('010') || 
-                                                         phoneNumber.startsWith('015');
-                          
-                          const hasCountryCode = phoneNumber.startsWith('20');
-                          
-                          if (!startsWithEgyptPrefix && !hasCountryCode) {
-                            alert('Country code required. Please add country code (e.g., 20 for Egypt)');
-                            return;
-                          }
-                          
-                          // If number starts with 012/011/010/015, remove first 0 and prepend 20 (Egypt country code)
-                          if (startsWithEgyptPrefix && !hasCountryCode) {
-                            phoneNumber = '20' + phoneNumber.substring(1); // Remove first 0
-                          }
-                          
-                          const formattedPhone = phoneNumber;
-                          const message = `Follow up Message:
+                          openWhatsApp(
+                            selectedStudent.parents_phone || selectedStudent.parentsPhone || selectedStudent.parentsPhone1,
+                            `Follow up Message:
 
 Dear ${selectedStudent.name?.split(' ')[0] || 'Student'}'s Parent,
 If you'd like to track ${selectedStudent.name?.split(' ')[0] || 'Student'}'s attendance, homework, and quizzes, please visit the link below:
@@ -824,12 +889,11 @@ If you'd like to track ${selectedStudent.name?.split(' ')[0] || 'Student'}'s att
 
 We wish ${selectedStudent.name?.split(' ')[0] || 'Student'} gets high scores 😊❤
 
-– ${systemName}`;
-                          const whatsappUrl = `https://wa.me/${formattedPhone}?text=${encodeURIComponent(message)}`;
-                          window.open(whatsappUrl, '_blank');
+– ${systemName}`
+                          );
                         }}
                         style={{
-                          backgroundColor: '#25D366',
+                          backgroundColor: 'rgb(37, 211, 102)',
                           color: 'white',
                           border: 'none',
                           borderRadius: '8px',
@@ -840,10 +904,10 @@ We wish ${selectedStudent.name?.split(' ')[0] || 'Student'} gets high scores �
                           alignItems: 'center',
                           gap: '8px',
                           fontWeight: '600',
-                          transition: 'background-color 0.2s',
                           width: '100%',
                           justifyContent: 'center',
-                          margin: '0 auto'
+                          margin: '0 auto',
+                          boxShadow: '0 4px 14px rgba(37, 211, 102, 0.32)',
                         }}
                       >
                         <Image src="/whatsapp.svg" alt="WhatsApp" width={30} height={30} />

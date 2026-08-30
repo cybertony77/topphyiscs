@@ -1,16 +1,19 @@
 import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/router";
 import Image from 'next/image';
-import { weeks } from "../../constants/weeks";
+import { useQuery } from '@tanstack/react-query';
+import apiClient from '../../lib/axios';
 import Title from "../../components/Title";
-import GradeSelect from "../../components/GradeSelect";
+import CourseSelect from "../../components/CourseSelect";
+import CourseTypeSelect from "../../components/CourseTypeSelect";
 import CenterSelect from "../../components/CenterSelect";
-import AttendanceWeekSelect from "../../components/AttendanceWeekSelect";
+import AttendanceLessonSelect from "../../components/AttendancelessonSelect";
 import { Table, ScrollArea } from '@mantine/core';
 import styles from '../../styles/TableScrollArea.module.css';
 import { IconArrowRight, IconSearch, IconChevronLeft, IconChevronRight } from '@tabler/icons-react';
 import { ActionIcon, TextInput, useMantineTheme } from '@mantine/core';
 import { useStudentsHistory } from '../../lib/api/students';
+import { useNationalSystem, getCourseFieldLabels } from '../../lib/api/system';
 import LoadingSkeleton from '../../components/LoadingSkeleton';
 
 export function InputWithButton(props) {
@@ -35,13 +38,16 @@ export function InputWithButton(props) {
 // No client-side token handling; auth is enforced in _app.js
 
 export default function History() {
+  const isNational = useNationalSystem();
+  const courseLabels = getCourseFieldLabels(isNational);
   const router = useRouter();
   const containerRef = useRef(null);
-  const [selectedGrade, setSelectedGrade] = useState("");
+  const [selectedCourse, setSelectedCourse] = useState("");
+  const [selectedCourseType, setSelectedCourseType] = useState("");
   const [selectedCenter, setSelectedCenter] = useState("");
-  const [selectedWeek, setSelectedWeek] = useState("");
+  const [selectedLesson, setSelectedLesson] = useState("");
   const [filteredStudents, setFilteredStudents] = useState([]);
-  const [openDropdown, setOpenDropdown] = useState(null); // 'grade', 'center', 'week', or null
+  const [openDropdown, setOpenDropdown] = useState(null); // 'course', 'courseType', 'center', 'lesson', or null
   const [searchTerm, setSearchTerm] = useState("");
   const [currentPage, setCurrentPage] = useState(1);
   const pageSize = 50; // Display 50 records per page
@@ -49,18 +55,22 @@ export default function History() {
 
   // Load remembered filter values from sessionStorage
   useEffect(() => {
-    const rememberedGrade = sessionStorage.getItem('historySelectedGrade');
+    const rememberedCourse = sessionStorage.getItem('historySelectedCourse');
+    const rememberedCourseType = sessionStorage.getItem('historySelectedCourseType');
     const rememberedCenter = sessionStorage.getItem('historySelectedCenter');
-    const rememberedWeek = sessionStorage.getItem('historySelectedWeek');
+    const rememberedLesson = sessionStorage.getItem('historySelectedLesson');
     
-    if (rememberedGrade) {
-      setSelectedGrade(rememberedGrade);
+    if (rememberedCourse) {
+      setSelectedCourse(rememberedCourse);
+    }
+    if (rememberedCourseType) {
+      setSelectedCourseType(rememberedCourseType);
     }
     if (rememberedCenter) {
       setSelectedCenter(rememberedCenter);
     }
-    if (rememberedWeek) {
-      setSelectedWeek(rememberedWeek);
+    if (rememberedLesson) {
+      setSelectedLesson(rememberedLesson);
     }
   }, []);
 
@@ -94,7 +104,7 @@ export default function History() {
 
   useEffect(() => {
     filterStudents();
-  }, [students, selectedGrade, selectedCenter, selectedWeek, searchTerm]);
+  }, [students, selectedCourse, selectedCourseType, selectedCenter, selectedLesson, searchTerm]);
 
   // Debug: Log when data changes to confirm real-time updates
   useEffect(() => {
@@ -170,13 +180,19 @@ export default function History() {
     filtered = filtered.map(student => {
       let filteredRecords = [...student.historyRecords];
 
-      if (selectedGrade) {
-        // Filter by current student grade, not the grade stored in history record
-        // This ensures that when a student's grade is edited, filtering works with the updated grade
-        if (student.grade.toLowerCase() === selectedGrade.toLowerCase()) {
-          // Keep all records for this student since their current grade matches the filter
-        } else {
-          // Filter out all records for this student since their current grade doesn't match
+      if (selectedCourse) {
+        // Filter by current student course
+        const studentCourse = student.course || student.grade; // Fallback to grade if course not set
+        if (studentCourse.toLowerCase() !== selectedCourse.toLowerCase()) {
+          // Filter out all records for this student since their current course doesn't match
+          filteredRecords = [];
+        }
+      }
+
+      if (selectedCourseType) {
+        // Filter by current student courseType
+        if (!student.courseType || student.courseType.toLowerCase() !== selectedCourseType.toLowerCase()) {
+          // Filter out all records for this student since their current courseType doesn't match
           filteredRecords = [];
         }
       }
@@ -187,13 +203,10 @@ export default function History() {
         );
       }
 
-      if (selectedWeek && selectedWeek !== '') {
+      if (selectedLesson && selectedLesson !== '') {
         filteredRecords = filteredRecords.filter(record => {
-          const recordWeek = record.week || 'n/a';
-          // Convert week string to number for comparison
-          const weekMatch = selectedWeek.match(/week (\d+)/);
-          const selectedWeekNumber = weekMatch ? parseInt(weekMatch[1]) : null;
-          return selectedWeekNumber && recordWeek === selectedWeekNumber;
+          const recordLesson = record.lesson || 'n/a';
+          return recordLesson === selectedLesson;
         });
       }
 
@@ -244,7 +257,7 @@ export default function History() {
   // Reset pagination when filters change
   useEffect(() => {
     setCurrentPage(1);
-  }, [selectedGrade, selectedCenter, selectedWeek, searchTerm]);
+  }, [selectedCourse, selectedCourseType, selectedCenter, selectedLesson, searchTerm]);
 
   // Pagination handlers
   const handlePageClick = (pageNumber) => {
@@ -593,23 +606,43 @@ export default function History() {
         <div className="filters-container">
           <div className="filter-row">
             <div className="filter-group">
-              <label className="filter-label">Filter by Grade</label>
-              <GradeSelect
-                selectedGrade={selectedGrade}
-                onGradeChange={(grade) => {
-                  setSelectedGrade(grade);
-                  // Remember the selected grade
-                  if (grade) {
-                    sessionStorage.setItem('historySelectedGrade', grade);
+              <label className="filter-label">{courseLabels.filterByCourse}</label>
+              <CourseSelect
+                selectedGrade={selectedCourse}
+                onGradeChange={(course) => {
+                  setSelectedCourse(course);
+                  // Remember the selected course
+                  if (course) {
+                    sessionStorage.setItem('historySelectedCourse', course);
                   } else {
-                    sessionStorage.removeItem('historySelectedGrade');
+                    sessionStorage.removeItem('historySelectedCourse');
                   }
                 }}
-                isOpen={openDropdown === 'grade'}
-                onToggle={() => setOpenDropdown(openDropdown === 'grade' ? null : 'grade')}
+                isOpen={openDropdown === 'course'}
+                onToggle={() => setOpenDropdown(openDropdown === 'course' ? null : 'course')}
                 onClose={() => setOpenDropdown(null)}
               />
             </div>
+            {courseLabels.showCourseType && (
+            <div className="filter-group">
+              <label className="filter-label">Filter by Course Type</label>
+              <CourseTypeSelect
+                selectedCourseType={selectedCourseType}
+                onCourseTypeChange={(courseType) => {
+                  setSelectedCourseType(courseType);
+                  // Remember the selected course type
+                  if (courseType) {
+                    sessionStorage.setItem('historySelectedCourseType', courseType);
+                  } else {
+                    sessionStorage.removeItem('historySelectedCourseType');
+                  }
+                }}
+                isOpen={openDropdown === 'courseType'}
+                onToggle={() => setOpenDropdown(openDropdown === 'courseType' ? null : 'courseType')}
+                onClose={() => setOpenDropdown(null)}
+              />
+            </div>
+            )}
             <div className="filter-group">
               <label className="filter-label">Filter by Center</label>
               <CenterSelect
@@ -629,20 +662,20 @@ export default function History() {
               />
             </div>
             <div className="filter-group">
-              <label className="filter-label">Filter by Week</label>
-              <AttendanceWeekSelect
-                selectedWeek={selectedWeek}
-                onWeekChange={(week) => {
-                  setSelectedWeek(week);
-                  // Remember the selected week
-                  if (week) {
-                    sessionStorage.setItem('historySelectedWeek', week);
+              <label className="filter-label">Filter by Lesson</label>
+              <AttendanceLessonSelect
+                selectedLesson={selectedLesson}
+                onLessonChange={(lesson) => {
+                  setSelectedLesson(lesson);
+                  // Remember the selected lesson
+                  if (lesson) {
+                    sessionStorage.setItem('historySelectedLesson', lesson);
                   } else {
-                    sessionStorage.removeItem('historySelectedWeek');
+                    sessionStorage.removeItem('historySelectedLesson');
                   }
                 }}
-                isOpen={openDropdown === 'week'}
-                onToggle={() => setOpenDropdown(openDropdown === 'week' ? null : 'week')}
+                isOpen={openDropdown === 'lesson'}
+                onToggle={() => setOpenDropdown(openDropdown === 'lesson' ? null : 'lesson')}
                 onClose={() => setOpenDropdown(null)}
               />
             </div>
@@ -670,7 +703,7 @@ export default function History() {
 
           {allHistoryRecords.length === 0 ? (
             <div className="no-results">
-              {selectedGrade || selectedCenter || selectedWeek 
+              {selectedCourse || selectedCourseType || selectedCenter || selectedLesson 
                 ? "No students found with the selected filters."
                 : "No attendance records found."
               }
@@ -678,22 +711,29 @@ export default function History() {
           ) : (
             <>
             <ScrollArea h={400} type="hover" className={styles.scrolled}>
-              <Table striped highlightOnHover withTableBorder withColumnBorders style={{ minWidth: '1400px' }}>
+              <Table striped highlightOnHover withTableBorder withColumnBorders style={{ minWidth: '1900px' }}>
                 <Table.Thead style={{ position: 'sticky', top: 0, backgroundColor: '#f8f9fa' }}>
                   <Table.Tr>
                     <Table.Th style={{ width: '60px', minWidth: '60px', textAlign: 'center' }}>ID</Table.Th>
                     <Table.Th style={{ width: '120px', minWidth: '120px', textAlign: 'center' }}>Name</Table.Th>
+                    <Table.Th style={{ width: '100px', minWidth: '100px', textAlign: 'center' }}>Gender</Table.Th>
+                    {courseLabels.showGradeField && (
                     <Table.Th style={{ width: '100px', minWidth: '100px', textAlign: 'center' }}>Grade</Table.Th>
+                    )}
+                    <Table.Th style={{ width: '100px', minWidth: '100px', textAlign: 'center' }}>{courseLabels.course}</Table.Th>
+                    {courseLabels.showCourseType && (
+                    <Table.Th style={{ width: '120px', minWidth: '120px', textAlign: 'center' }}>Course Type</Table.Th>
+                    )}
                     <Table.Th style={{ width: '180px', minWidth: '180px', textAlign: 'center' }}>School</Table.Th>
                     <Table.Th style={{ width: '120px', minWidth: '120px', textAlign: 'center' }}>Phone</Table.Th>
                     <Table.Th style={{ width: '130px', minWidth: '130px', textAlign: 'center' }}>Parent Phone</Table.Th>
-                    <Table.Th style={{ width: '100px', minWidth: '100px', textAlign: 'center' }}>Attendance Week</Table.Th>
+                    <Table.Th style={{ width: '200px', minWidth: '200px', textAlign: 'center' }}>Attendance Lesson</Table.Th>
                     <Table.Th style={{ width: '120px', minWidth: '120px', textAlign: 'center' }}>Main Center</Table.Th>
                     <Table.Th style={{ width: '140px', minWidth: '140px', textAlign: 'center' }}>Attendance Info</Table.Th>
                     <Table.Th style={{ width: '100px', minWidth: '100px', textAlign: 'center' }}>HW Status</Table.Th>
                     <Table.Th style={{ width: '100px', minWidth: '100px', textAlign: 'center' }}>Quiz Degree</Table.Th>
-                    <Table.Th style={{ width: '160px', minWidth: '160px', textAlign: 'center' }}>Main Comment</Table.Th>
-                    <Table.Th style={{ width: '160px', minWidth: '160px', textAlign: 'center' }}>Week Comment</Table.Th>
+                    <Table.Th style={{ width: '160px', minWidth: '160px', textAlign: 'center' }}>Hidden Comment</Table.Th>
+                    <Table.Th style={{ width: '160px', minWidth: '160px', textAlign: 'center' }}>Parent Comment</Table.Th>
                     <Table.Th style={{ width: '100px', minWidth: '100px', textAlign: 'center' }}>Message State</Table.Th>
                   </Table.Tr>
                 </Table.Thead>
@@ -702,18 +742,22 @@ export default function History() {
                       <Table.Tr key={key}>
                         <Table.Td style={{ fontWeight: 'bold', color: '#1FA8DC', width: '60px', minWidth: '60px', textAlign: 'center' }}>{student.id}</Table.Td>
                         <Table.Td style={{ width: '120px', minWidth: '120px', textAlign: 'center' }}>{student.name}</Table.Td>
+                        <Table.Td style={{ width: '100px', minWidth: '100px', textAlign: 'center' }}>{student.gender || 'N/A'}</Table.Td>
+                        {courseLabels.showGradeField && (
                         <Table.Td style={{ width: '100px', minWidth: '100px', textAlign: 'center' }}>{student.grade || 'N/A'}</Table.Td>
-                        <Table.Td style={{ width: '180px', minWidth: '180px', wordWrap: 'break-word', textAlign: 'center' }}>{student.school || 'N/A'}</Table.Td>
+                        )}
+                        <Table.Td style={{ width: '100px', minWidth: '100px', textAlign: 'center' }}>{student.course || student.grade || 'N/A'}</Table.Td>
+                        {courseLabels.showCourseType && (
+                        <Table.Td style={{ width: '120px', minWidth: '120px', textAlign: 'center' }}>{student.courseType || 'N/A'}</Table.Td>
+                        )}
+                        <Table.Td style={{ width: '180px', minWidth: '180px', wordWrap: 'break-word', textAlign: 'center' }}>{student.school || 'No School'}</Table.Td>
                         <Table.Td style={{ width: '120px', minWidth: '120px', textAlign: 'center' }}>{student.phone || 'N/A'}</Table.Td>
                         <Table.Td style={{ width: '130px', minWidth: '130px', textAlign: 'center' }}>{student.parentsPhone || 'N/A'}</Table.Td>
-                        <Table.Td style={{ width: '100px', minWidth: '100px', textAlign: 'center' }}>
-                          {(() => {
-                            const week = record.week || 1; // Default to week 1 if not present
-                            return `week ${String(week).padStart(2, '0')}`;
-                          })()}
+                        <Table.Td style={{ width: '200px', minWidth: '200px', textAlign: 'center' }}>
+                          {record.lesson || 'Unknown Lesson'}
                         </Table.Td>
                         <Table.Td style={{ width: '120px', minWidth: '120px', textAlign: 'center' }}>{record.main_center || 'N/A'}</Table.Td>
-                        <Table.Td style={{ width: '140px', minWidth: '140px', textAlign: 'center' }}>{record.attendanceDate || 'N/A'}</Table.Td>
+                        <Table.Td style={{ width: '140px', minWidth: '140px', textAlign: 'center' }}>{record.lastAttendance || 'N/A'}</Table.Td>
                         <Table.Td style={{ width: '100px', minWidth: '100px', textAlign: 'center' }}>
                           {(() => {
                             if (record.hwDone === "No Homework") {
@@ -772,11 +816,11 @@ export default function History() {
                         <Table.Td style={{ width: '160px', minWidth: '160px', textAlign: 'center' }}>
                           {(() => {
                             try {
-                              const weekIndex = ((record?.week ?? 0) - 1);
-                              const weekComment = (Array.isArray(student.weeks) && weekIndex >= 0)
-                                ? (student.weeks[weekIndex]?.comment ?? '').toString()
+                              const lessonName = record.lesson || '';
+                              const lessonComment = (student.lessons && typeof student.lessons === 'object' && !Array.isArray(student.lessons) && lessonName)
+                                ? (student.lessons[lessonName]?.comment ?? '').toString()
                                 : '';
-                              return weekComment.trim() !== '' ? weekComment : 'No Comment';
+                              return lessonComment.trim() !== '' ? lessonComment : 'No Comment';
                             } catch {
                               return 'No Comment';
                             }

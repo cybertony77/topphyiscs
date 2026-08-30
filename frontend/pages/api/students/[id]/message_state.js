@@ -2,6 +2,11 @@ import { MongoClient } from 'mongodb';
 import fs from 'fs';
 import path from 'path';
 import { authMiddleware } from '../../../../lib/authMiddleware';
+import {
+  createDefaultStudentLesson,
+  getStudentLesson,
+  mergeStudentLesson,
+} from '../../../../lib/studentLessons';
 
 // Load environment variables from env.config
 function loadEnvConfig() {
@@ -44,7 +49,7 @@ export default async function handler(req, res) {
   
   const { id } = req.query;
   const student_id = parseInt(id);
-  const { message_state, week } = req.body;
+  const { message_state, lesson } = req.body;
   
   if (message_state === undefined) {
     return res.status(400).json({ error: 'message_state required' });
@@ -76,28 +81,54 @@ export default async function handler(req, res) {
       return res.status(404).json({ error: 'Student not found' });
     }
     
-    // Determine which week to update
-    const weekNumber = week || 1;
-    const weekIndex = weekNumber - 1; // Convert to array index
+    // Load lessons from database
+    const lessonsFromDB = await db.collection('lessons').find({}).sort({ id: 1 }).toArray();
+    const lessonNames = lessonsFromDB.map(l => l.name);
     
-    console.log(`Updating message_state for student ${student_id}, week ${weekNumber} (index ${weekIndex}) to:`, message_state);
+    // Determine which lesson to update
+    const lessonName = lesson || (lessonNames.length > 0 ? lessonNames[0] : 'Lesson 1');
     
-    // Validate weeks array exists
-    if (!student.weeks || !Array.isArray(student.weeks)) {
-      console.error(`Student ${student_id} has no weeks array:`, student.weeks);
-      return res.status(400).json({ error: 'Student has no weeks data' });
-    }
+    console.log(`Updating message_state for student ${student_id}, lesson ${lessonName} to:`, message_state);
     
-    // Validate week index is within bounds
-    if (weekIndex < 0 || weekIndex >= student.weeks.length) {
-      console.error(`Week index ${weekIndex} out of bounds for student ${student_id}. Weeks array length: ${student.weeks.length}`);
-      return res.status(400).json({ error: `Week ${weekNumber} is out of range` });
-    }
+    // Ensure the target lesson exists; if not, create it with default schema
+    const ensureLessonExists = async () => {
+      console.log(`🔍 Current student lessons structure:`, typeof student.lessons, student.lessons);
+      
+      // Handle case where lessons might be an array (old format) or undefined
+      if (!student.lessons || Array.isArray(student.lessons)) {
+        console.log(`🔄 Converting lessons from array to object format for student ${student_id}`);
+        student.lessons = {};
+        // Update the database to use object format
+        await db.collection('students').updateOne(
+          { id: student_id },
+          { $set: { lessons: {} } }
+        );
+      }
+      
+      if (!getStudentLesson(student.lessons, lessonName)) {
+        console.log(`🧩 Creating missing lesson "${lessonName}" for student ${student_id}`);
+        const nextLessons = mergeStudentLesson(
+          student.lessons,
+          lessonName,
+          createDefaultStudentLesson(lessonName)
+        );
+        await db.collection('students').updateOne(
+          { id: student_id },
+          { $set: { lessons: nextLessons } }
+        );
+        student.lessons = nextLessons;
+      }
+    };
+
+    await ensureLessonExists();
     
-    // Update the specific week in the weeks array
+    // Update the specific lesson in the lessons object
+    const nextLessons = mergeStudentLesson(student.lessons, lessonName, {
+      message_state: !!message_state,
+    });
     const result = await db.collection('students').updateOne(
       { id: student_id },
-      { $set: { [`weeks.${weekIndex}.message_state`]: !!message_state } }
+      { $set: { lessons: nextLessons } }
     );
     
     if (result.matchedCount === 0) {
@@ -105,7 +136,7 @@ export default async function handler(req, res) {
       return res.status(404).json({ error: 'Student not found' });
     }
     
-    console.log(`Successfully updated message_state for student ${student_id}, week ${weekNumber}`);
+    console.log(`Successfully updated message_state for student ${student_id}, lesson ${lessonName}`);
     
     res.json({ success: true });
   } catch (error) {

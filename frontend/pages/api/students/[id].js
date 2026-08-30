@@ -3,7 +3,7 @@ import jwt from 'jsonwebtoken';
 import fs from 'fs';
 import path from 'path';
 import { getCookieValue } from '../../../lib/cookies';
-import { authMiddleware } from "../../../lib/authMiddleware"
+import { authMiddleware, isAuthError } from "../../../lib/authMiddleware";
 
 // Load environment variables from env.config
 function loadEnvConfig() {
@@ -36,6 +36,7 @@ const envConfig = loadEnvConfig();
 const JWT_SECRET = envConfig.JWT_SECRET || process.env.JWT_SECRET || 'topphysics_secret';
 const MONGO_URI = envConfig.MONGO_URI || process.env.MONGO_URI || 'mongodb://localhost:27017/topphysics';
 const DB_NAME = envConfig.DB_NAME || process.env.DB_NAME || 'topphysics';
+const NATIONAL_SYSTEM = envConfig.NATIONAL_SYSTEM === 'true' || process.env.NATIONAL_SYSTEM === 'true';
 
 console.log('🔗 Using Mongo URI:', MONGO_URI);
 
@@ -57,65 +58,173 @@ export default async function handler(req, res) {
       const student = await db.collection('students').findOne({ id: student_id });
       if (!student) return res.status(404).json({ error: 'Student not found' });
       
-      // Find the current week (last attended week or default if none)
-      const hasWeeks = Array.isArray(student.weeks) && student.weeks.length > 0;
-      const currentWeek = hasWeeks ?
-        (student.weeks.find(w => w && w.attended) || student.weeks.find(w => w) || student.weeks[0]) :
-        { week: 1, attended: false, lastAttendance: null, lastAttendanceCenter: null, hwDone: false, quizDegree: null, message_state: false };
+      // Find the current lesson (last attended lesson or default if none)
+      let currentLesson;
+      if (student.lessons && typeof student.lessons === 'object') {
+        const attendedLessons = Object.values(student.lessons).filter(l => l && l.attended);
+        currentLesson = attendedLessons.length > 0 ? 
+          attendedLessons[attendedLessons.length - 1] : 
+          Object.values(student.lessons)[0];
+      }
+      if (!currentLesson) {
+        // Load lessons from database
+        const lessonsFromDB = await db.collection('lessons').find({}).sort({ id: 1 }).toArray();
+        const lessonNames = lessonsFromDB.map(l => l.name);
+        const defaultLessonName = lessonNames.length > 0 ? lessonNames[0] : 'Lesson 1';
+        currentLesson = { lesson: defaultLessonName, attended: false, lastAttendance: null, lastAttendanceCenter: null, hwDone: false, quizDegree: null, message_state: false, homework_degree: null };
+      }
       
-      let lastAttendance = currentWeek.lastAttendance;
-      if (currentWeek.lastAttendance && currentWeek.lastAttendanceCenter) {
+      let lastAttendance = currentLesson.lastAttendance;
+      if (currentLesson.lastAttendance && currentLesson.lastAttendanceCenter && !/\bat\s+\d{1,2}:\d{2}\s+(?:AM|PM)\b/i.test(currentLesson.lastAttendance)) {
         // Try to parse the date part and reformat
-        const dateMatch = currentWeek.lastAttendance.match(/(\d{2})[-/](\d{2})[-/](\d{4})/);
-        let dateStr = currentWeek.lastAttendance;
+        const dateMatch = currentLesson.lastAttendance.match(/(\d{2})[-/](\d{2})[-/](\d{4})/);
+        let dateStr = currentLesson.lastAttendance;
         if (dateMatch) {
           dateStr = `${dateMatch[1]}/${dateMatch[2]}/${dateMatch[3]}`;
         }
-        lastAttendance = `${dateStr} in ${currentWeek.lastAttendanceCenter}`;
+        lastAttendance = `${dateStr} in ${currentLesson.lastAttendanceCenter}`;
       }
       
+      // Email lives in users collection (only present after student signup)
+      const userAccount = await db.collection('users').findOne(
+        { id: student_id, role: 'student' },
+        { projection: { email: 1 } }
+      );
+      const studentEmail = (userAccount?.email && String(userAccount.email).trim()) || null;
+
       res.json({
         id: student.id,
         name: student.name,
         gender: student.gender || null,
         grade: student.grade,
+        course: student.course !== undefined && student.course !== null && student.course !== '' ? student.course : null, // Return course if it exists and is not empty, otherwise null
+        courseType: student.courseType || null,
         phone: student.phone,
-        parents_phone: student.parentsPhone,
+        parents_phone: student.parentsPhone || student.parentsPhone1 || null,
         center: student.center,
         main_center: student.main_center,
         main_comment: (student.main_comment ?? student.comment ?? null),
-        attended_the_session: currentWeek.attended,
+        attended_the_session: currentLesson.attended,
         lastAttendance: lastAttendance,
-        lastAttendanceCenter: currentWeek.lastAttendanceCenter,
-        attendanceWeek: `week ${String(currentWeek.week).padStart(2, '0')}`,
-        hwDone: currentWeek.hwDone,
+        lastAttendanceCenter: currentLesson.lastAttendanceCenter,
+        attendanceLesson: currentLesson.lesson,
+        hwDone: currentLesson.hwDone,
+        homework_degree: currentLesson.homework_degree,
         school: student.school || null,
         age: student.age || null,
-        quizDegree: currentWeek.quizDegree,
-        message_state: currentWeek.message_state,
-        account_state: student.account_state || "Deactivated", // Default to Deactivated if not found
+        email: studentEmail,
+        quizDegree: currentLesson.quizDegree,
+        message_state: currentLesson.message_state,
+        account_state: student.account_state || "Activated", // Default to Activated
         score: student.score !== null && student.score !== undefined ? student.score : 0,
-        weeks: student.weeks || [], // Include the full weeks array
+        lessons: student.lessons || {}, // Include the full lessons object
+        payment: student.payment || null, // Include payment data
         online_sessions: student.online_sessions || [], // Include online_sessions for VVC restore
         homeworks_videos: student.homeworks_videos || [], // Include homeworks_videos for VHC restore
         online_homeworks: student.online_homeworks || [], // Include online_homeworks for degree lookup
-        online_quizzes: student.online_quizzes || [] // Include online_quizzes for degree lookup
+        online_quizzes: student.online_quizzes || [], // Include online_quizzes for degree lookup
+        online_mock_exams: student.online_mock_exams || [], // Include online_mock_exams for degree lookup
+        mockExams: student.mockExams || [] // Include mockExams array for charts
       });
     } else if (req.method === 'PUT') {
       // Edit student - handle partial updates properly
-      const { name, grade, phone, parents_phone, main_center, age, gender, school, main_comment, comment, account_state, score } = req.body;
+      const { name, grade, course, courseType, phone, parents_phone, main_center, age, gender, school, main_comment, comment, account_state, score, email } = req.body;
       
+      // Validate grade is required (except NATIONAL_SYSTEM, where CourseSelect is the grade)
+      if (!NATIONAL_SYSTEM && grade !== undefined && (grade === null || grade === '')) {
+        return res.status(400).json({ error: 'Grade is required' });
+      }
+
+      // Email is stored on users collection (only editable when the student already has one)
+      let emailUpdated = false;
+      if (email !== undefined) {
+        const userAccount = await db.collection('users').findOne({
+          id: student_id,
+          role: 'student'
+        });
+
+        if (!userAccount) {
+          return res.status(400).json({ error: 'Student does not have a user account' });
+        }
+        if (!userAccount.email || String(userAccount.email).trim() === '') {
+          return res.status(400).json({ error: 'Student does not have an email to edit' });
+        }
+
+        if (email === null || (typeof email === 'string' && email.trim() === '')) {
+          return res.status(400).json({ error: 'Email cannot be empty' });
+        }
+        if (typeof email !== 'string') {
+          return res.status(400).json({ error: 'Invalid email type' });
+        }
+
+        const trimmedEmail = email.trim();
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+        if (!emailRegex.test(trimmedEmail)) {
+          return res.status(400).json({ error: 'Invalid email format' });
+        }
+
+        if (trimmedEmail !== String(userAccount.email).trim()) {
+          await db.collection('users').updateOne(
+            { id: student_id, role: 'student' },
+            { $set: { email: trimmedEmail } }
+          );
+          emailUpdated = true;
+        }
+      }
+
       // Build update object with only defined values (not null or undefined)
       const update = {};
       
       if (name !== undefined && name !== null) {
         update.name = name;
       }
-      if (grade !== undefined && grade !== null) {
-        update.grade = grade;
+      if (grade !== undefined) {
+        // Allow null (NATIONAL_SYSTEM clears the GradeSelect field)
+        update.grade = grade === '' ? null : grade;
+      }
+      if (course !== undefined && course !== null) {
+        update.course = course;
+      }
+      if (courseType !== undefined) {
+        // Allow null when NATIONAL_SYSTEM hides course type
+        update.courseType = courseType === '' ? null : courseType;
       }
       if (phone !== undefined && phone !== null) {
-        update.phone = phone;
+        const normalizePhone = (phoneValue) => {
+          if (!phoneValue) return '';
+          let p = String(phoneValue).replace(/[^0-9]/g, '');
+          if (p.match(/^(012|011|010|015)/)) {
+            p = '20' + p.substring(1);
+          }
+          if (p.startsWith('20') && p.length > 2 && p[2] === '0') {
+            p = '20' + p.substring(3);
+          }
+          return p;
+        };
+        const phoneVariants = (normalized) => {
+          const variants = new Set([normalized]);
+          if (normalized.startsWith('20') && normalized.length > 2) {
+            const local = normalized.substring(2);
+            variants.add(local);
+            variants.add('0' + local);
+          }
+          return Array.from(variants).filter(Boolean);
+        };
+
+        const normalizedPhone = normalizePhone(phone);
+        if (!normalizedPhone || normalizedPhone.length < 8) {
+          return res.status(400).json({ error: 'Please enter a valid student phone number' });
+        }
+        if (NATIONAL_SYSTEM) {
+          const phoneTaken = await db.collection('students').findOne({
+            phone: { $in: phoneVariants(normalizedPhone) },
+            id: { $ne: student_id },
+          });
+          if (phoneTaken) {
+            return res.status(409).json({ error: 'This phone number is already used by another student' });
+          }
+        }
+        update.phone = normalizedPhone;
       }
       if (parents_phone !== undefined && parents_phone !== null) {
         update.parentsPhone = parents_phone;
@@ -134,8 +243,8 @@ export default async function handler(req, res) {
       if (gender !== undefined && gender !== null) {
         update.gender = gender;
       }
-      if (school !== undefined && school !== null) {
-        update.school = school;
+      if (school !== undefined) {
+        update.school = school === null || school === '' ? null : String(school).trim();
       }
       if (main_comment !== undefined) {
         update.main_comment = main_comment; // allow null or string
@@ -149,6 +258,11 @@ export default async function handler(req, res) {
       if (score !== undefined && score !== null) {
         // Handle score updates - ensure it's a number
         update.score = typeof score === 'number' ? score : parseInt(score, 10);
+        if (Number.isNaN(update.score)) {
+          delete update.score;
+        } else {
+          update.score = Math.max(0, update.score);
+        }
       }
       
       // Handle weeks array updates (for hwDone and quizDegree)
@@ -194,16 +308,66 @@ export default async function handler(req, res) {
         }
       }
       
-      // Only proceed if there are fields to update
-      if (Object.keys(update).length === 0) {
+      // Only proceed if there are fields to update (email alone is also valid)
+      if (Object.keys(update).length === 0 && !emailUpdated && email === undefined) {
         return res.status(400).json({ error: 'No valid fields to update' });
       }
-      
-      const result = await db.collection('students').updateOne(
-        { id: student_id },
-        { $set: update }
-      );
-      if (result.matchedCount === 0) return res.status(404).json({ error: 'Student not found' });
+
+      if (Object.keys(update).length > 0) {
+        const existingStudent = update.score !== undefined
+          ? await db.collection('students').findOne({ id: student_id }, { projection: { score: 1 } })
+          : null;
+        const previousScore = Number(existingStudent?.score || 0);
+
+        const result = await db.collection('students').updateOne(
+          { id: student_id },
+          { $set: update }
+        );
+        if (result.matchedCount === 0) return res.status(404).json({ error: 'Student not found' });
+
+        if (update.score !== undefined && update.score !== previousScore) {
+          const appliedDelta = update.score - previousScore;
+          const processId = `${student_id}_manual_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+          try {
+            await db.collection('scoring_system_history').insertOne({
+              student_id,
+              process_id: processId,
+              process_name: `Staff adjustment: ${appliedDelta >= 0 ? '+' : ''}${appliedDelta}`,
+              process_lesson: null,
+              type: 'manual',
+              source_key: `student:${student_id}|type:manual|kind:staff_adjustment|id:${processId}`,
+              source_kind: 'staff_adjustment',
+              source_id: processId,
+              source_label: 'Student record update',
+              score_before_process: previousScore,
+              score_after_process: update.score,
+              score_added: appliedDelta,
+              requested_delta: appliedDelta,
+              applied_delta: appliedDelta,
+              desired_total_points: appliedDelta,
+              previous_awarded_contribution: 0,
+              awarded_total_points: appliedDelta,
+              awarded_base_points: appliedDelta,
+              awarded_bonus_points: 0,
+              base_points: appliedDelta,
+              bonus_points: 0,
+              bonus_lessons: [],
+              data: {
+                delta: appliedDelta,
+                reason: 'Score updated on student record',
+              },
+              timestamp: new Date(),
+            });
+          } catch (historyError) {
+            console.error('[SCORING] Failed to write staff score history from student PUT:', historyError);
+          }
+        }
+      } else {
+        // Email-only update: ensure student exists
+        const studentExists = await db.collection('students').findOne({ id: student_id }, { projection: { id: 1 } });
+        if (!studentExists) return res.status(404).json({ error: 'Student not found' });
+      }
+
       res.json({ success: true });
     } else if (req.method === 'DELETE') {
       // Delete student
@@ -244,12 +408,11 @@ export default async function handler(req, res) {
       res.status(405).json({ error: 'Method not allowed' });
     }
   } catch (error) {
-    if (error.message.includes('Unauthorized') || error.message.includes('Invalid token')) {
-      res.status(401).json({ error: error.message });
-    } else {
-      console.error('Error:', error);
-      res.status(500).json({ error: 'Internal server error' });
+    if (isAuthError(error)) {
+      return res.status(401).json({ error: 'Unauthorized' });
     }
+    console.error('Error:', error);
+    return res.status(500).json({ error: 'Internal server error' });
   } finally {
     if (client) await client.close();
   }

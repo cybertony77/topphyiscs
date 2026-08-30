@@ -5,15 +5,20 @@ import { Table, ScrollArea, Modal } from '@mantine/core';
 import styles from '../../styles/TableScrollArea.module.css';
 import { useStudent } from '../../lib/api/students';
 import { useProfile, useUpdateProfile, useProfilePicture } from '../../lib/api/auth';
-import { useSystemConfig } from '../../lib/api/system';
+import { useSystemConfig, useNationalSystem, getCourseFieldLabels } from '../../lib/api/system';
 import apiClient from '../../lib/axios';
 import Image from 'next/image';
 import NeedHelp from '../../components/NeedHelp';
 import ChartTabs from '../../components/ChartTabs';
+import { useQuery } from '@tanstack/react-query';
 
 export default function MyInfo() {
   const { data: systemConfig } = useSystemConfig();
+  const isNational = useNationalSystem();
+  const courseLabels = getCourseFieldLabels(isNational);
   const isScoringEnabled = systemConfig?.scoring_system === true || systemConfig?.scoring_system === 'true';
+  const isPaymentSystemEnabled = systemConfig?.payment_system === true || systemConfig?.payment_system === 'true';
+  const isMockExamsEnabled = systemConfig?.mock_exams === true || systemConfig?.mock_exams === 'true';
   
   const containerRef = useRef(null);
   const [error, setError] = useState("");
@@ -21,7 +26,7 @@ export default function MyInfo() {
   const router = useRouter();
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [detailsType, setDetailsType] = useState('absent');
-  const [detailsWeeks, setDetailsWeeks] = useState([]);
+  const [detailsLessons, setDetailsLessons] = useState([]);
   const [detailsTitle, setDetailsTitle] = useState('');
   const [emailEditOpen, setEmailEditOpen] = useState(false);
   const [emailValue, setEmailValue] = useState('');
@@ -32,6 +37,19 @@ export default function MyInfo() {
   const { data: profile, isLoading: profileLoading } = useProfile();
   const { data: profilePictureUrl } = useProfilePicture();
   const updateProfileMutation = useUpdateProfile();
+
+  // Fetch lessons from database
+  const { data: lessonsResponse } = useQuery({
+    queryKey: ['lessons'],
+    queryFn: async () => {
+      const response = await apiClient.get('/api/lessons');
+      return response.data.lessons || [];
+    },
+    staleTime: 5 * 60 * 1000, // Cache for 5 minutes
+    refetchOnWindowFocus: false
+  });
+
+  const lessons = lessonsResponse?.map(lesson => lesson.name) || [];
   
   // Profile picture state
   const [imagePreview, setImagePreview] = useState(null);
@@ -52,13 +70,17 @@ export default function MyInfo() {
     }
   }, [profile?.profile_picture]);
   
-  // Set image preview from signed URL when available
+  const localPreviewActiveRef = useRef(false);
+
+  // Set image preview from signed URL when available (skip while user picked a new local file)
   useEffect(() => {
-    if (profilePictureUrl && profilePicturePublicId) {
-      // Use signed URL for preview (this will update when profile picture changes)
-      setImagePreview(profilePictureUrl);
-    } else if (!profilePicturePublicId) {
+    if (!profilePicturePublicId) {
       setImagePreview(null);
+      localPreviewActiveRef.current = false;
+      return;
+    }
+    if (profilePictureUrl && !localPreviewActiveRef.current) {
+      setImagePreview(profilePictureUrl);
     }
   }, [profilePictureUrl, profilePicturePublicId]);
   
@@ -75,6 +97,55 @@ export default function MyInfo() {
     refetchOnMount: true, // Always refetch when component mounts/page entered
   });
 
+  // Fetch mock exam performance chart data from API
+  const { data: mockExamPerformanceData } = useQuery({
+    queryKey: ['mock-exam-performance', studentId],
+    queryFn: async () => {
+      if (!studentId) return { chartData: [] };
+      try {
+        const response = await apiClient.get(`/api/students/${studentId}/mock-exam-performance`);
+        return response.data || { chartData: [] };
+      } catch (error) {
+        console.error('Error fetching mock exam performance:', error);
+        return { chartData: [] };
+      }
+    },
+    enabled: !!(isMockExamsEnabled && studentId),
+    staleTime: 30 * 1000,
+  });
+
+  const { data: homeworkPerformanceData, isLoading: homeworkPerfLoading, isSuccess: homeworkPerfOk, isError: homeworkPerfErr } = useQuery({
+    queryKey: ['homework-performance', studentId],
+    queryFn: async () => {
+      if (!studentId) return { chartData: [] };
+      try {
+        const response = await apiClient.get(`/api/students/${studentId}/homework-performance`);
+        return response.data || { chartData: [] };
+      } catch (error) {
+        console.error('Error fetching homework performance:', error);
+        return { chartData: [] };
+      }
+    },
+    enabled: !!studentId,
+    staleTime: 30 * 1000,
+  });
+
+  const { data: quizPerformanceData, isLoading: quizPerfLoading, isSuccess: quizPerfOk, isError: quizPerfErr } = useQuery({
+    queryKey: ['quiz-performance', studentId],
+    queryFn: async () => {
+      if (!studentId) return { chartData: [] };
+      try {
+        const response = await apiClient.get(`/api/students/${studentId}/quiz-performance`);
+        return response.data || { chartData: [] };
+      } catch (error) {
+        console.error('Error fetching quiz performance:', error);
+        return { chartData: [] };
+      }
+    },
+    enabled: !!studentId,
+    staleTime: 30 * 1000,
+  });
+
   // Debug logging for React Query status
   useEffect(() => {
     if (student && studentId) {
@@ -83,7 +154,7 @@ export default function MyInfo() {
         studentName: student.name,
         isRefetching,
         dataUpdatedAt: new Date(dataUpdatedAt).toLocaleTimeString(),
-        attendanceStatus: student.weeks?.[0]?.attended || false
+        attendanceStatus: student.lessons ? Object.values(student.lessons).some(l => l?.attended === true) : false
       });
     }
   }, [student, isRefetching, dataUpdatedAt, studentId]);
@@ -125,39 +196,80 @@ export default function MyInfo() {
     }
   }, [studentError, studentId, student]);
 
-  // Helper function to get attendance status for a week
-  const getWeekAttendance = (weekNumber) => {
-    if (!student || !student.weeks) return { attended: false, hwDone: false, hwDegree: null, quizDegree: null, message_state: false, lastAttendance: null, view_homework_video: false };
+  // Helper function to get attendance status for a lesson
+  const getLessonAttendance = (lessonName) => {
+    if (!student || !student.lessons) return { attended: false, hwDone: false, homework_degree: null, quizDegree: null, message_state: false, parent_message_state: false, lastAttendance: null, view_homework_video: false };
     
-    const weekData = student.weeks.find(w => w.week === weekNumber);
-    if (!weekData) return { attended: false, hwDone: false, hwDegree: null, quizDegree: null, message_state: false, lastAttendance: null, view_homework_video: false };
+    // Handle both new object format and old array format for backward compatibility
+    let lessonData;
+    if (typeof student.lessons === 'object' && !Array.isArray(student.lessons)) {
+      // New object format
+      lessonData = student.lessons[lessonName];
+    } else if (Array.isArray(student.lessons)) {
+      // Old array format - find by lesson name
+      lessonData = student.lessons.find(l => l && l.lesson === lessonName);
+    } else if (student.weeks && Array.isArray(student.weeks)) {
+      // Very old weeks format - convert lesson name to week number
+      const weekIndex = lessons.indexOf(lessonName);
+      lessonData = weekIndex >= 0 ? student.weeks[weekIndex] : null;
+    }
+    
+    if (!lessonData) return { attended: false, hwDone: false, homework_degree: null, quizDegree: null, message_state: false, parent_message_state: false, lastAttendance: null, view_homework_video: false };
     
     return {
-      attended: weekData.attended || false,
-      hwDone: weekData.hwDone || false,
-      hwDegree: weekData.hwDegree || null,
-      view_homework_video: weekData.view_homework_video || false,
-      quizDegree: weekData.quizDegree || null,
-      comment: weekData.comment || null,
-      message_state: weekData.message_state || false,
-      lastAttendance: weekData.lastAttendance || null
+      attended: lessonData.attended || false,
+      hwDone: lessonData.hwDone || false,
+      homework_degree: lessonData.homework_degree || null,
+      quizDegree: lessonData.quizDegree || null,
+      comment: lessonData.comment || null,
+      message_state: lessonData.message_state || false,
+      parent_message_state: lessonData.parent_message_state || false,
+      lastAttendance: lessonData.lastAttendance || null,
+      view_homework_video: lessonData.view_homework_video || false
     };
   };
 
-  // Helper function to get available weeks (all weeks that exist in the database)
-  const getAvailableWeeks = () => {
-    if (!student || !student.weeks || student.weeks.length === 0) return [];
+  // Helper function to get available lessons (all lessons that exist in the database)
+  const getAvailableLessons = () => {
+    if (!student) return [];
     
-    // Return all weeks that exist in the database, sorted by week number
-    return student.weeks.sort((a, b) => a.week - b.week);
+    // Handle new object format - get all lessons that exist in the student's database
+    if (student.lessons && typeof student.lessons === 'object' && !Array.isArray(student.lessons)) {
+      return Object.keys(student.lessons).map(lessonName => ({
+        lesson: lessonName,
+        ...student.lessons[lessonName]
+      })).filter(lesson => lesson.lesson); // Filter out any invalid lessons
+    }
+    
+    // Handle old array format
+    if (student.lessons && Array.isArray(student.lessons)) {
+      return student.lessons.filter(l => l && l.lesson);
+    }
+    
+    // Handle very old weeks format
+    if (student.weeks && Array.isArray(student.weeks)) {
+      return student.weeks.map((week, index) => ({
+        lesson: lessons[index] || `Lesson ${index + 1}`,
+        ...week
+      })).filter(week => week.attended !== undefined);
+    }
+    
+    return [];
   };
 
-  // Helper to compute totals for the student across all weeks
+  // Helper to compute totals for the student across all lessons
   const getTotals = () => {
-    const weeks = Array.isArray(student?.weeks) ? student.weeks : [];
-    const absent = weeks.filter(w => w && w.attended === false).length;
-    const missingHW = weeks.filter(w => w && (w.hwDone === false || w.hwDone === "Not Completed" || w.hwDone === "not completed" || w.hwDone === "NOT COMPLETED")).length;
-    const unattendQuiz = weeks.filter(w => w && (w.quizDegree === "Didn't Attend The Quiz" || w.quizDegree == null)).length;
+    const availableLessons = getAvailableLessons();
+    
+    // Count lessons where student was absent (attended = false)
+    const absent = availableLessons.filter(lesson => lesson.attended === false).length;
+    
+    // Count missing homework (only for lessons that exist in student records)
+    const missingHW = availableLessons.filter(l => l && (l.hwDone === false || l.hwDone === "Not Completed" || l.hwDone === "not completed" || l.hwDone === "NOT COMPLETED")).length;
+    
+    // Count unattended quizzes (only for lessons that exist in student records) - exclude "No Quiz" and null
+    const unattendQuiz = availableLessons.filter(l => l && l.quizDegree === "Didn't Attend The Quiz").length;
+    
     return { absent, missingHW, unattendQuiz };
   };
 
@@ -173,15 +285,16 @@ export default function MyInfo() {
       return;
     }
 
-    // Validate file size (5 MB)
-    if (file.size > 5 * 1024 * 1024) {
-      setError('Sorry, Max profile picture size is 5 MB, Please try another picture');
+    // Validate file size (10 MB)
+    if (file.size > 10 * 1024 * 1024) {
+      setError('Sorry, Max profile picture size is 10 MB, Please try another picture');
       return;
     }
 
     // Create preview
     const reader = new FileReader();
     reader.onloadend = () => {
+      localPreviewActiveRef.current = true;
       setImagePreview(reader.result);
     };
     reader.readAsDataURL(file);
@@ -214,7 +327,8 @@ export default function MyInfo() {
         
         // Update profile in database
         await updateProfileMutation.mutateAsync({ profile_picture: newPublicId });
-        
+        localPreviewActiveRef.current = false;
+
         // The signed URL will be fetched and update the preview automatically
         // Keep the base64 preview until the signed URL is ready
       } else {
@@ -222,6 +336,7 @@ export default function MyInfo() {
       }
     } catch (err) {
       setError(err.response?.data?.error || 'Failed to upload image. Please try again.');
+      localPreviewActiveRef.current = false;
       setImagePreview(null);
       setProfilePicturePublicId(null);
     } finally {
@@ -267,6 +382,7 @@ export default function MyInfo() {
       setUploadingImage(true);
       // Update profile to remove picture
       await updateProfileMutation.mutateAsync({ profile_picture: null });
+      localPreviewActiveRef.current = false;
       setProfilePicturePublicId(null);
       setImagePreview(null);
       const fileInput = document.getElementById('profile-picture-upload-myinfo');
@@ -278,57 +394,59 @@ export default function MyInfo() {
     }
   };
 
-  // Helpers to build detailed week lists
-  const getAbsentWeeks = (weeks) => {
-    if (!Array.isArray(weeks)) return [];
-    return weeks
-      .map((w, idx) => ({ idx, w }))
-      .filter(({ w }) => w && w.attended === false)
-      .map(({ idx, w }) => ({
-        week: (w.week ?? idx + 1),
-        quizDegree: w.quizDegree
+  // Helpers to build detailed lesson lists
+  const getAbsentLessons = () => {
+    const availableLessons = getAvailableLessons();
+    
+    return availableLessons
+      .filter(lesson => {
+        return lesson.attended === false; // Only include lessons where attended is explicitly false
+      })
+      .map(lesson => ({
+        lesson: lesson.lesson,
+        quizDegree: null // Absent lessons don't have quiz data
       }));
   };
 
-  const getMissingHWWeeks = (weeks) => {
-    if (!Array.isArray(weeks)) return [];
-    return weeks
-      .map((w, idx) => ({ idx, w }))
-      .filter(({ w }) => w && (w.hwDone === false || w.hwDone === "Not Completed" || w.hwDone === "not completed" || w.hwDone === "NOT COMPLETED"))
-      .map(({ idx, w }) => ({
-        week: (w.week ?? idx + 1),
-        hwDone: w.hwDone,
-        quizDegree: w.quizDegree
+  const getMissingHWLessons = () => {
+    const availableLessons = getAvailableLessons();
+    
+    return availableLessons
+      .filter(l => l && (l.hwDone === false || l.hwDone === "Not Completed" || l.hwDone === "not completed" || l.hwDone === "NOT COMPLETED"))
+      .map(l => ({
+        lesson: l.lesson,
+        hwDone: l.hwDone,
+        quizDegree: l.quizDegree
       }));
   };
 
-  const getUnattendQuizWeeks = (weeks) => {
-    if (!Array.isArray(weeks)) return [];
-    return weeks
-      .map((w, idx) => ({ idx, w }))
-      .filter(({ w }) => w && (w.quizDegree === "Didn't Attend The Quiz" || w.quizDegree == null))
-      .map(({ idx, w }) => ({
-        week: (w.week ?? idx + 1),
-        quizDegree: w.quizDegree
+  const getUnattendQuizLessons = () => {
+    const availableLessons = getAvailableLessons();
+    
+    return availableLessons
+      .filter(l => l && l.quizDegree === "Didn't Attend The Quiz")
+      .map(l => ({
+        lesson: l.lesson,
+        quizDegree: l.quizDegree
       }));
   };
 
   const openDetails = (type) => {
     if (!student) return;
     let title = '';
-    let weeksList = [];
+    let lessonsList = [];
     if (type === 'absent') {
       title = `Absent Sessions for ${student.name} • ID: ${student.id}`;
-      weeksList = getAbsentWeeks(student.weeks);
+      lessonsList = getAbsentLessons();
     } else if (type === 'hw') {
       title = `Missing Homework for ${student.name} • ID: ${student.id}`;
-      weeksList = getMissingHWWeeks(student.weeks);
+      lessonsList = getMissingHWLessons();
     } else if (type === 'quiz') {
       title = `Unattended Quizzes for ${student.name} • ID: ${student.id}`;
-      weeksList = getUnattendQuizWeeks(student.weeks);
+      lessonsList = getUnattendQuizLessons();
     }
     setDetailsType(type);
-    setDetailsWeeks(weeksList);
+    setDetailsLessons(lessonsList);
     setDetailsTitle(title);
     setDetailsOpen(true);
   };
@@ -474,7 +592,7 @@ export default function MyInfo() {
               {/* Profile Picture Upload */}
               <div className="detail-item" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '12px' }}>
                 <div className="detail-label" style={{ textAlign: 'center', width: '100%' }}>Profile Picture</div>
-                {profilePicturePublicId && imagePreview ? (
+                {imagePreview ? (
                   // Show uploaded image in circle
                   <div
                     style={{
@@ -505,6 +623,7 @@ export default function MyInfo() {
                       title="Drag & drop new image"
                     >
                       <img
+                        key={profilePicturePublicId || 'local-preview'}
                         src={imagePreview}
                         alt="Profile preview"
                         className="profile-picture-image"
@@ -637,7 +756,7 @@ export default function MyInfo() {
                   style={{ display: 'none' }}
                 />
                 <small style={{ color: '#6c757d', fontSize: '0.85rem', textAlign: 'center', marginTop: '4px' }}>
-                  Max size: 5 MB. Formats: JPEG, PNG, GIF, WEBP
+                  Max size: 10 MB. Formats: JPEG, PNG, GIF, WEBP
                 </small>
               </div>
 
@@ -694,18 +813,73 @@ export default function MyInfo() {
                   <div className="detail-value">{student.age}</div>
                 </div>
               )}
+              {courseLabels.showGradeField && (
               <div className="detail-item">
                 <div className="detail-label">Grade</div>
                 <div className="detail-value">{student.grade}</div>
               </div>
+              )}
+              <div className="detail-item">
+                <div className="detail-label">{courseLabels.course}</div>
+                <div className="detail-value">{student.course || student.grade || 'N/A'}</div>
+              </div>
+              {courseLabels.showCourseType && (
+              <div className="detail-item">
+                <div className="detail-label">Course Type</div>
+                <div className="detail-value">{student.courseType || 'N/A'}</div>
+              </div>
+              )}
               <div className="detail-item">
                 <div className="detail-label">School</div>
-                <div className="detail-value">{student.school || 'N/A'}</div>
+                <div className="detail-value">{student.school || 'No School'}</div>
               </div>
+              {isPaymentSystemEnabled && (
+                <div className="detail-item">
+                  <div className="detail-label">Remaining Number of Sessions</div>
+                  <div className="detail-value" style={{ 
+                    color: (() => {
+                      const sessions = student?.payment?.numberOfSessions || 0;
+                      if (sessions <= 2) return '#dc3545';
+                      if (sessions <= 5) return '#ffc107';
+                      if (sessions <= 8) return '#28a745';
+                      return '#1FA8DC';
+                    })(),
+                    fontWeight: 'bold',
+                    fontSize: '16px',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    fontFamily: 'system-ui, -apple-system, sans-serif'
+                  }}>
+                    <span style={{ 
+                      fontSize: '18px', 
+                      fontWeight: '800',
+                      lineHeight: '1.2'
+                    }}>
+                      {(student?.payment?.numberOfSessions || 0)}
+                    </span>
+                    <span style={{ 
+                      fontSize: '17px', 
+                      fontWeight: '600',
+                      opacity: '0.9',
+                      textTransform: 'lowercase'
+                    }}>
+                      sessions
+                    </span>
+                  </div>
+                </div>
+              )}
               {isScoringEnabled && (
-              <div className="detail-item">
-                <div className="detail-label">Score</div>
-                <div className="detail-value" style={{ fontWeight: '700', color: '#1FA8DC' }}>{student?.score !== null && student?.score !== undefined ? student.score : 0}</div>
+              <div className="detail-item" style={{ borderLeft: '4px solid #f59e0b' }}>
+                <div className="detail-label">SCORE</div>
+                <div className="detail-value" style={{ 
+                  fontSize: '1.4rem', 
+                  fontWeight: '800',
+                  color: (student?.score !== undefined && student?.score !== null && student?.score >= 0) ? '#059669' : '#dc2626'
+                }}>
+                  {student?.score !== null && student?.score !== undefined ? student.score : 0}
+                  <span style={{ fontSize: '0.8rem', fontWeight: '500', color: '#6c757d', marginLeft: '6px' }}>pts</span>
+                </div>
               </div>
               )}
               <div className="detail-item">
@@ -751,8 +925,8 @@ export default function MyInfo() {
               })()}
             </div>
             
-            <div className="weeks-title">All Weeks Records - Available Weeks ({getAvailableWeeks().length} weeks)</div>
-            {getAvailableWeeks().length === 0 ? (
+            <div className="weeks-title">All Lessons Records - Available Lessons ({getAvailableLessons().length} lessons)</div>
+            {getAvailableLessons().length === 0 ? (
               <div style={{
                 textAlign: 'center',
                 padding: '40px 20px',
@@ -763,58 +937,57 @@ export default function MyInfo() {
                 borderRadius: '8px',
                 border: '1px solid #dee2e6'
               }}>
-                📋 No weeks records found for this student
+                📋 No lessons records found for this student
               </div>
             ) : (
-              <ScrollArea h="calc(30rem * var(--mantine-scale))" type="hover" className={styles.scrolled}>
+              <ScrollArea h={500} type="always" className={styles.scrolled} scrollbars="xy">
                 <Table striped highlightOnHover withTableBorder withColumnBorders style={{ minWidth: '950px' }}>
                   <Table.Thead style={{ position: 'sticky', top: 0, backgroundColor: '#f8f9fa', zIndex: 10 }}>
                     <Table.Tr>
-                      <Table.Th style={{ width: '120px', minWidth: '120px', textAlign: 'center' }}>Week</Table.Th>
+                      <Table.Th style={{ width: '200px', minWidth: '200px', textAlign: 'center' }}>Lesson</Table.Th>
                       <Table.Th style={{ width: '120px', minWidth: '120px', textAlign: 'center' }}>Attendance Info</Table.Th>
                       <Table.Th style={{ width: '120px', minWidth: '120px', textAlign: 'center' }}>Homework</Table.Th>
                       <Table.Th style={{ width: '140px', minWidth: '140px', textAlign: 'center' }}>Homework Video</Table.Th>
                       <Table.Th style={{ width: '120px', minWidth: '120px', textAlign: 'center' }}>Quiz Degree</Table.Th>
-                      <Table.Th style={{ width: '200px', minWidth: '200px', textAlign: 'center' }}>Comment</Table.Th>
-                      <Table.Th style={{ width: '130px', minWidth: '130px', textAlign: 'center' }}>Message Status</Table.Th>
+                      <Table.Th style={{ width: '200px', minWidth: '200px', textAlign: 'center' }}>Parent Comment</Table.Th>
                     </Table.Tr>
                   </Table.Thead>
                   <Table.Tbody>
-                    {getAvailableWeeks().map((week) => {
-                      const weekName = `week ${String(week.week).padStart(2, '0')}`;
-                      const weekData = getWeekAttendance(week.week);
+                    {getAvailableLessons().map((lesson) => {
+                      const lessonName = lesson.lesson;
+                      const lessonData = getLessonAttendance(lessonName);
                       
                       return (
-                        <Table.Tr key={weekName}>
-                          <Table.Td style={{ fontWeight: 'bold', color: '#1FA8DC', width: '120px', minWidth: '120px', textAlign: 'center', fontSize: '1rem' }}>
-                            {weekName}
+                        <Table.Tr key={lessonName}>
+                          <Table.Td style={{ fontWeight: 'bold', color: '#1FA8DC', width: '200px', minWidth: '200px', textAlign: 'center', fontSize: '1rem' }}>
+                            {lessonName}
                           </Table.Td>
                           <Table.Td style={{ width: '120px', minWidth: '120px', textAlign: 'center' }}>
                             <span style={{ 
-                              color: weekData.attended ? (weekData.lastAttendance ? '#212529' : '#28a745') : '#dc3545',
+                              color: lessonData.attended ? (lessonData.lastAttendance ? '#212529' : '#28a745') : '#dc3545',
                               fontWeight: 'bold',
                               fontSize: '1rem'
                             }}>
-                              {weekData.attended ? (weekData.lastAttendance || '✅ Yes') : '❌ Absent'}
+                              {lessonData.attended ? (lessonData.lastAttendance || '✅ Yes') : '❌ Absent'}
                             </span>
                           </Table.Td>
                           <Table.Td style={{ width: '120px', minWidth: '120px', textAlign: 'center' }}>
                             {(() => {
-                              if (weekData.hwDone === "No Homework") {
+                              if (lessonData.hwDone === "No Homework") {
                                 return <span style={{ 
                                   color: '#dc3545',
                                   fontWeight: 'bold',
                                   fontSize: '1rem'
                                 }}>🚫 No Homework</span>;
-                              } else if (weekData.hwDone === "Not Completed" || weekData.hwDone === "not completed" || weekData.hwDone === "NOT COMPLETED") {
+                              } else if (lessonData.hwDone === "Not Completed" || lessonData.hwDone === "not completed" || lessonData.hwDone === "NOT COMPLETED") {
                                 return <span style={{ 
                                   color: '#ffc107',
                                   fontWeight: 'bold',
                                   fontSize: '1rem'
                                 }}>⚠️ Not Completed</span>;
-                              } else if (weekData.hwDone === true) {
+                              } else if (lessonData.hwDone === true) {
                                 // Show homework degree if it exists
-                                const hwDegree = weekData.hwDegree;
+                                const hwDegree = lessonData.homework_degree;
                                 if (hwDegree && String(hwDegree).trim() !== '') {
                                   return <span style={{ 
                                     color: '#28a745',
@@ -837,7 +1010,7 @@ export default function MyInfo() {
                             })()}
                           </Table.Td>
                           <Table.Td style={{ width: '140px', minWidth: '140px', textAlign: 'center' }}>
-                            {weekData.view_homework_video === true ? (
+                            {lessonData.view_homework_video === true ? (
                               <span style={{ 
                                 color: '#28a745',
                                 fontWeight: 'bold',
@@ -853,7 +1026,7 @@ export default function MyInfo() {
                           </Table.Td>
                           <Table.Td style={{ width: '120px', minWidth: '120px', textAlign: 'center' }}>
                             {(() => {
-                              const value = weekData.quizDegree !== null && weekData.quizDegree !== undefined && weekData.quizDegree !== '' ? weekData.quizDegree : '0/0';
+                              const value = lessonData.quizDegree !== null && lessonData.quizDegree !== undefined && lessonData.quizDegree !== '' ? lessonData.quizDegree : 'No Quiz';
                               if (value === "Didn't Attend The Quiz") {
                                 return <span style={{ color: '#dc3545', fontWeight: 'bold', fontSize: '1rem' }}>❌ Didn't Attend The Quiz</span>;
                               } else if (value === "No Quiz") {
@@ -872,19 +1045,10 @@ export default function MyInfo() {
                           </Table.Td>
                           <Table.Td style={{ width: '200px', minWidth: '200px', textAlign: 'center' }}>
                             {(() => {
-                              const weekComment = weekData.comment;
-                              const val = (weekComment && String(weekComment).trim() !== '') ? weekComment : 'No Comment';
+                              const lessonComment = lessonData.comment;
+                              const val = (lessonComment && String(lessonComment).trim() !== '') ? lessonComment : 'No Comment';
                               return <span style={{ fontSize: '1rem' }}>{val}</span>;
                             })()}
-                          </Table.Td>
-                          <Table.Td style={{ width: '130px', minWidth: '130px', textAlign: 'center' }}>
-                            <span style={{ 
-                              color: weekData.message_state ? '#28a745' : '#dc3545',
-                              fontWeight: 'bold',
-                              fontSize: '1rem'
-                            }}>
-                              {weekData.message_state ? '✅ Sent' : '❌ Not Sent'}
-                            </span>
                           </Table.Td>
                         </Table.Tr>
                       );
@@ -900,8 +1064,14 @@ export default function MyInfo() {
         {student && !studentDeleted && (
           <div className="info-container" style={{ marginTop: '24px' }}>
             <ChartTabs 
-              studentId={student.id} 
-              hasAuthToken={true} 
+              lessons={student.lessons || {}} 
+              mockExams={student.mockExams || []} 
+              onlineMockExams={student.online_mock_exams || []}
+              mockExamChartData={mockExamPerformanceData?.chartData}
+              homeworkChartData={homeworkPerfErr ? [] : (homeworkPerfOk ? (homeworkPerformanceData?.chartData ?? []) : undefined)}
+              homeworkChartLoading={homeworkPerfLoading}
+              quizChartData={quizPerfErr ? [] : (quizPerfOk ? (quizPerformanceData?.chartData ?? []) : undefined)}
+              quizChartLoading={quizPerfLoading}
             />
             <NeedHelp style={{ padding: '16px', marginTop: '16px' }} />
           </div>
@@ -1029,7 +1199,7 @@ export default function MyInfo() {
             height: '100%',
             '@media (max-width: 768px)': { padding: '16px' } 
           }}>
-            {(!detailsWeeks || detailsWeeks.length === 0) ? (
+            {(!detailsLessons || detailsLessons.length === 0) ? (
               <div style={{ 
                 textAlign: 'center', 
                 padding: '60px 20px',
@@ -1116,7 +1286,7 @@ export default function MyInfo() {
                       <Table.Tr>
                         <Table.Th style={{ width: '140px', textAlign: 'center' }}>
                           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}>
-                            📅 Week
+                            📚 Lesson
                           </div>
                         </Table.Th>
                         <Table.Th style={{ textAlign: 'center' }}>
@@ -1129,8 +1299,8 @@ export default function MyInfo() {
                       </Table.Tr>
                     </Table.Thead>
                     <Table.Tbody>
-                      {detailsWeeks.map((info, index) => (
-                        <Table.Tr key={`student-${studentId}-${info.week}`} style={{
+                      {detailsLessons.map((info, index) => (
+                        <Table.Tr key={`student-${studentId}-${info.lesson}`} style={{
                           background: index % 2 === 0 ? '#ffffff' : '#f8f9fa',
                           transition: 'all 0.2s ease'
                         }}>
@@ -1150,7 +1320,7 @@ export default function MyInfo() {
                               background: 'white',
                               boxShadow: '0 2px 4px rgba(0,0,0,0.1)'
                             }}>
-                              Week {String(info.week).padStart(2, '0')}
+                              {info.lesson}
                             </div>
                           </Table.Td>
                           <Table.Td style={{ textAlign: 'center' }}>
@@ -1237,7 +1407,7 @@ export default function MyInfo() {
                                   info.quizDegree === "No Quiz" ?
                                   '0 2px 4px rgba(244, 67, 54, 0.2)' : '0 2px 4px rgba(66, 165, 245, 0.2)'
                               }}>
-                                {info.quizDegree == null ? '0/0' : 
+                                {info.quizDegree == null || info.quizDegree === '' ? '🚫 No Quiz' : 
                                   info.quizDegree === "Didn't Attend The Quiz" ? '❌ Didn\'t Attend' : 
                                   info.quizDegree === "No Quiz" ? "🚫 No Quiz" : 
                                   String(info.quizDegree)}
@@ -1276,7 +1446,7 @@ export default function MyInfo() {
                       border: '1px solid #dee2e6',
                       boxShadow: '0 2px 4px rgba(0,0,0,0.1)'
                     }}>
-                      📊 Total: {detailsWeeks.length} {detailsType === 'absent' ? 'absent sessions' : 
+                      📊 Total: {detailsLessons.length} {detailsType === 'absent' ? 'absent sessions' : 
                                  detailsType === 'hw' ? 'missing homework' : 'unattended quizzes'}
                     </div>
                   </div>

@@ -3,16 +3,19 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "dev": "next dev --turbopack",
+    "dev:webpack": "next dev",
     "build": "next build",
-    "start": "next start",
+    "start": "next start -p 3300",
     "lint": "next lint"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.989.0",
     "@aws-sdk/lib-storage": "^3.990.0",
+    "@aws-sdk/node-http-handler": "^3.370.0",
     "@aws-sdk/s3-request-presigner": "^3.989.0",
     "@gorules/zen-engine": "^0.52.1",
+    "@mantine/carousel": "^8.2.1",
     "@mantine/core": "^8.2.1",
     "@mantine/hooks": "^8.2.1",
     "@tabler/icons-react": "^3.34.1",
@@ -24,6 +27,7 @@
     "bcryptjs": "^3.0.2",
     "cloudinary": "^2.8.0",
     "clsx": "^2.1.1",
+    "embla-carousel-auto-height": "^8.6.0",
     "formidable": "^3.5.4",
     "googleapis": "^171.0.0",
     "html2canvas": "^1.4.1",
@@ -34,9 +38,11 @@
     "mongodb": "^6.18.0",
     "next": "15.4.2",
     "nodemailer": "^7.0.12",
+    "opentype.js": "^2.0.0",
     "qrcode.react": "^4.2.0",
     "react": "19.1.0",
     "react-dom": "19.1.0",
+    "react-pdf": "^10.4.1",
     "react-phone-input-2": "^2.15.1",
     "react-qr-code": "^2.0.18",
     "react-qrcode-logo": "^3.0.0",
@@ -47,6 +53,7 @@
   "devDependencies": {
     "@eslint/eslintrc": "^3",
     "eslint": "^9",
-    "eslint-config-next": "15.4.2"
+    "eslint-config-next": "15.4.2",
+    "sharp": "^0.35.3"
   }
 }

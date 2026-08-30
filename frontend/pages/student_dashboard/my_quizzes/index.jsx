@@ -1,15 +1,22 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { useRouter } from "next/router";
 import Image from 'next/image';
+import dynamic from 'next/dynamic';
 import Title from '../../../components/Title';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import apiClient from '../../../lib/axios';
+import { downloadFileUrl } from '../../../lib/downloadFileUrl';
 import { useProfile } from '../../../lib/api/auth';
-import { useSystemConfig } from '../../../lib/api/system';
+import { useSystemConfig, useNationalSystem } from '../../../lib/api/system';
 import NeedHelp from '../../../components/NeedHelp';
 import QuizPerformanceChart from '../../../components/QuizPerformanceChart';
+const PdfViewerModal = dynamic(() => import('../../../components/PdfViewerModal'), { ssr: false });
+import StudentLessonSelect from '../../../components/StudentLessonSelect';
+import { isDownloadingAllowed } from '../../../components/AllowDownloadingRadio';
 import { TextInput, ActionIcon, useMantineTheme } from '@mantine/core';
 import { IconSearch, IconArrowRight } from '@tabler/icons-react';
+import { clientItemVisibleByCenter } from '../../../lib/studentCenterMatch';
+import { formatDeadlineCardLabel, isDeadlinePassedEgypt } from '../../../lib/deadlineTimeEgypt';
 
 // Input with Button Component (matching manage online system style)
 function InputWithButton(props) {
@@ -31,119 +38,9 @@ function InputWithButton(props) {
   );
 }
 
-// Custom Week Select for Student Dashboard (only shows available weeks)
-function StudentWeekSelect({ availableWeeks = [], selectedWeek, onWeekChange, isOpen, onToggle, onClose, placeholder = 'Select Week' }) {
-  const dropdownRef = useRef(null);
-
-  useEffect(() => {
-    const handleClickOutside = (event) => {
-      if (dropdownRef.current && !dropdownRef.current.contains(event.target)) {
-        onClose();
-      }
-    };
-
-    if (isOpen) {
-      document.addEventListener('mousedown', handleClickOutside);
-    }
-
-    return () => {
-      document.removeEventListener('mousedown', handleClickOutside);
-    };
-  }, [isOpen, onClose]);
-
-  const handleWeekSelect = (week) => {
-    onWeekChange(week);
-    onClose();
-  };
-
-  return (
-    <div ref={dropdownRef} style={{ position: 'relative', width: '100%' }}>
-      <div
-        style={{
-          padding: '14px 16px',
-          border: isOpen ? '2px solid #1FA8DC' : '2px solid #e9ecef',
-          borderRadius: '10px',
-          backgroundColor: '#ffffff',
-          cursor: 'pointer',
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'center',
-          fontSize: '1rem',
-          color: selectedWeek && selectedWeek !== 'n/a' ? '#000000' : '#adb5bd',
-          transition: 'all 0.3s ease',
-          boxShadow: isOpen ? '0 0 0 3px rgba(31, 168, 220, 0.1)' : 'none'
-        }}
-        onClick={onToggle}
-      >
-        <span>{selectedWeek && selectedWeek !== 'n/a' ? selectedWeek : placeholder}</span>
-        <Image
-          src={isOpen ? "/chevron-down.svg" : "/chevron-right.svg"}
-          alt={isOpen ? "Close" : "Open"}
-          width={20}
-          height={20}
-          style={{
-            transition: 'transform 0.2s ease'
-          }}
-        />
-
-      </div>
-      
-      {isOpen && (
-        <div style={{
-          position: 'absolute',
-          top: '100%',
-          left: 0,
-          right: 0,
-          backgroundColor: '#ffffff',
-          border: '2px solid #e9ecef',
-          borderRadius: '10px',
-          boxShadow: '0 4px 16px rgba(0,0,0,0.1)',
-          zIndex: 1000,
-          maxHeight: '200px',
-          overflowY: 'auto',
-          marginTop: '4px'
-        }}>
-          {/* Clear selection option */}
-          <div
-            style={{
-              padding: '12px 16px',
-              cursor: 'pointer',
-              borderBottom: '1px solid #f8f9fa',
-              transition: 'background-color 0.2s ease',
-              color: '#dc3545',
-              fontWeight: '500'
-            }}
-            onClick={() => handleWeekSelect('')}
-            onMouseEnter={(e) => e.target.style.backgroundColor = '#fff5f5'}
-            onMouseLeave={(e) => e.target.style.backgroundColor = '#ffffff'}
-          >
-            ✕ Clear selection
-          </div>
-          {availableWeeks.map((week) => (
-            <div
-              key={week}
-              style={{
-                padding: '12px 16px',
-                cursor: 'pointer',
-                borderBottom: '1px solid #f8f9fa',
-                transition: 'background-color 0.2s ease',
-                color: '#000000'
-              }}
-              onClick={() => handleWeekSelect(week)}
-              onMouseEnter={(e) => e.target.style.backgroundColor = '#f8f9fa'}
-              onMouseLeave={(e) => e.target.style.backgroundColor = '#ffffff'}
-            >
-              {week}
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
 export default function MyQuizzes() {
   const { data: systemConfig } = useSystemConfig();
+  const isNational = useNationalSystem();
   const isScoringEnabled = systemConfig?.scoring_system === true || systemConfig?.scoring_system === 'true';
   const isQuizzesEnabled = systemConfig?.quizzes === true || systemConfig?.quizzes === 'true';
   
@@ -164,9 +61,16 @@ export default function MyQuizzes() {
   const { data: profile } = useProfile();
   const [completedQuizzes, setCompletedQuizzes] = useState(new Set());
   const [errorMessage, setErrorMessage] = useState('');
-  const [studentWeeks, setStudentWeeks] = useState([]);
+  const [notePopup, setNotePopup] = useState(null);
   const [onlineQuizzes, setOnlineQuizzes] = useState([]);
-  
+  const [pdfViewer, setPdfViewer] = useState({ isOpen: false, url: '', name: '' });
+  const [deadlineClockTick, setDeadlineClockTick] = useState(0);
+
+  useEffect(() => {
+    const id = setInterval(() => setDeadlineClockTick((n) => n + 1), 15000);
+    return () => clearInterval(id);
+  }, []);
+
   // Check for error message in URL query
   useEffect(() => {
     if (router.query.error) {
@@ -183,59 +87,62 @@ export default function MyQuizzes() {
       const response = await apiClient.get('/api/quizzes/student');
       return response.data;
     },
-    // No auto refetch interval; fetch on mount/reconnect only (no window focus to prevent auto-refresh)
+    refetchInterval: 15000,
     refetchOnWindowFocus: false, // Disabled to prevent auto-refresh on window focus
-    refetchOnMount: true, // Refetch on mount
-    refetchOnReconnect: true, // Refetch on reconnect
+    refetchOnMount: true,
+    refetchOnReconnect: true,
   });
 
   const quizzes = quizzesData?.quizzes || [];
 
+  const centerFilteredQuizzes = useMemo(
+    () =>
+      quizzes
+        .filter((quiz) => (quiz.state || quiz.account_state || 'Activated') !== 'Deactivated')
+        .filter((q) => clientItemVisibleByCenter(q.center, profile?.main_center)),
+    [quizzes, profile?.main_center]
+  );
+
   // Search and filter states
   const [searchInput, setSearchInput] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
-  const [filterWeek, setFilterWeek] = useState('');
-  const [filterWeekDropdownOpen, setFilterWeekDropdownOpen] = useState(false);
+  const [filterLesson, setFilterLesson] = useState('');
+  const [filterLessonDropdownOpen, setFilterLessonDropdownOpen] = useState(false);
 
-  // Extract week number from week string (e.g., "week 01" -> 1)
-  const extractWeekNumber = (weekString) => {
-    if (!weekString) return null;
-    const match = weekString.match(/week\s*(\d+)/i);
-    return match ? parseInt(match[1], 10) : null;
-  };
-
-  // Convert week number to week string (e.g., 1 -> "week 01")
-  const weekNumberToString = (weekNumber) => {
-    if (weekNumber === null || weekNumber === undefined) return '';
-    return `week ${String(weekNumber).padStart(2, '0')}`;
-  };
-
-  // Get available weeks from quizzes (only weeks that exist in the data and are Activated)
-  const getAvailableWeeks = () => {
-    const weekSet = new Set();
-    quizzes.forEach(quiz => {
-      const effectiveState = quiz.state || quiz.account_state || 'Activated';
-      if (effectiveState === 'Deactivated') return;
-      if (quiz.week !== undefined && quiz.week !== null) {
-        weekSet.add(weekNumberToString(quiz.week));
+  // Get available lessons from quizzes (only lessons that exist in quizzes and match student's course/courseType)
+  const getAvailableLessons = () => {
+    const lessonSet = new Set();
+    const studentCourse = (profile?.course || '').trim();
+    const studentCourseType = (profile?.courseType || '').trim();
+    
+    centerFilteredQuizzes.forEach(quiz => {
+      if (quiz.lesson && quiz.lesson.trim()) {
+        // Check if quiz matches student's course and courseType
+        const quizCourse = (quiz.course || '').trim();
+        const quizCourseType = (quiz.courseType || '').trim();
+        
+        // Course match: if quiz course is "All", it matches any student course
+        const courseMatch = quizCourse.toLowerCase() === 'all' || 
+                           quizCourse.toLowerCase() === studentCourse.toLowerCase();
+        
+        // CourseType match: skip when national system; otherwise match as before
+        const courseTypeMatch = isNational ||
+                               !quizCourseType || 
+                               !studentCourseType ||
+                               quizCourseType.toLowerCase() === studentCourseType.toLowerCase();
+        
+        if (courseMatch && courseTypeMatch) {
+          lessonSet.add(quiz.lesson);
+        }
       }
     });
-    return Array.from(weekSet).sort((a, b) => {
-      const aNum = extractWeekNumber(a);
-      const bNum = extractWeekNumber(b);
-      return (aNum || 0) - (bNum || 0);
-    });
+    return Array.from(lessonSet).sort();
   };
 
-  const availableWeeks = getAvailableWeeks();
+  const availableLessons = getAvailableLessons();
 
   // Filter quizzes based on search and filters
-  const filteredQuizzes = quizzes.filter(quiz => {
-    // Hide deactivated quizzes
-    const effectiveState = quiz.state || quiz.account_state || 'Activated';
-    if (effectiveState === 'Deactivated') {
-      return false;
-    }
+  const filteredQuizzes = centerFilteredQuizzes.filter(quiz => {
     // Search filter (by lesson name - case-insensitive)
     if (searchTerm.trim()) {
       const lessonName = quiz.lesson_name || '';
@@ -244,10 +151,9 @@ export default function MyQuizzes() {
       }
     }
 
-    // Week filter
-    if (filterWeek) {
-      const weekNumber = extractWeekNumber(filterWeek);
-      if (quiz.week !== weekNumber) {
+    // Lesson filter
+    if (filterLesson) {
+      if (quiz.lesson !== filterLesson) {
         return false;
       }
     }
@@ -289,7 +195,7 @@ export default function MyQuizzes() {
       }
     },
     enabled: !!profile?.id,
-    // No auto refetch interval; rely on mount/reconnect + manual invalidation (no window focus to prevent auto-refresh)
+    refetchInterval: 15000,
     refetchOnWindowFocus: false, // Disabled to prevent auto-refresh on window focus
     refetchOnMount: true,
     refetchOnReconnect: true,
@@ -298,22 +204,38 @@ export default function MyQuizzes() {
 
   const chartData = performanceData?.chartData || [];
 
-  // Only show chart weeks that have at least one Activated quiz
-  const activeQuizWeeks = new Set(
-    quizzes
-      .filter(quiz => (quiz.state || quiz.account_state || 'Activated') === 'Activated' && quiz.week !== undefined && quiz.week !== null)
-      .map(quiz => quiz.week)
+  // Only show chart lessons that have at least one Activated quiz
+  const activeLessons = new Set(
+    centerFilteredQuizzes
+      .map(quiz => quiz.lesson)
+      .filter(Boolean)
   );
 
   const filteredChartData = Array.isArray(chartData)
     ? chartData.filter(item => {
-        const weekNum = typeof item.weekNumber === 'number'
-          ? item.weekNumber
-          : extractWeekNumber(item.week);
-        if (weekNum === null || weekNum === undefined) return false;
-        return activeQuizWeeks.has(weekNum);
+        const label = (item.lesson_name || item.lesson || '').toString().toLowerCase();
+        if (!label) return false;
+        if (activeLessons.size === 0) return true;
+        return Array.from(activeLessons).some(lesson =>
+          label.includes(String(lesson).toLowerCase()) || String(lesson).toLowerCase().includes(label)
+        );
       })
     : [];
+
+  // Fetch student's online_quizzes to check quizDegree
+  const fetchStudentData = async () => {
+    if (!profile?.id) return;
+    try {
+      const response = await apiClient.get(`/api/students/${profile.id}`);
+      if (response.data) {
+        if (Array.isArray(response.data.online_quizzes)) {
+          setOnlineQuizzes(response.data.online_quizzes);
+        }
+      }
+    } catch (err) {
+      console.error('Error fetching student data:', err);
+    }
+  };
 
   // Refetch chart data when returning to this page
   useEffect(() => {
@@ -322,6 +244,8 @@ export default function MyQuizzes() {
       if (profile?.id) {
         queryClient.invalidateQueries({ queryKey: ['quiz-performance', profile.id] });
         queryClient.invalidateQueries({ queryKey: ['quizzes-student'] });
+        queryClient.invalidateQueries({ queryKey: ['profile'] });
+        fetchStudentData();
       }
     };
 
@@ -330,6 +254,8 @@ export default function MyQuizzes() {
       if (document.visibilityState === 'visible' && profile?.id) {
         refetchChart();
         queryClient.invalidateQueries({ queryKey: ['quizzes-student'] });
+        queryClient.invalidateQueries({ queryKey: ['profile'] });
+        fetchStudentData();
       }
     };
 
@@ -337,6 +263,8 @@ export default function MyQuizzes() {
     if (profile?.id) {
       queryClient.invalidateQueries({ queryKey: ['quiz-performance', profile.id] });
       queryClient.invalidateQueries({ queryKey: ['quizzes-student'] });
+      queryClient.invalidateQueries({ queryKey: ['profile'] });
+      fetchStudentData();
     }
 
     // Listen for route changes
@@ -350,38 +278,26 @@ export default function MyQuizzes() {
     };
   }, [router, queryClient, profile?.id, refetchChart]);
 
-  // Fetch student's weeks data and online_quizzes to check quizDegree
   useEffect(() => {
-    if (!profile?.id) return;
-
-    const fetchStudentData = async () => {
-      try {
-        const response = await apiClient.get(`/api/students/${profile.id}`);
-        if (response.data) {
-          if (Array.isArray(response.data.weeks)) {
-            setStudentWeeks(response.data.weeks);
-          }
-          if (Array.isArray(response.data.online_quizzes)) {
-            setOnlineQuizzes(response.data.online_quizzes);
-          }
-          setWeeksLoaded(true); // Mark as loaded
-        }
-      } catch (err) {
-        console.error('Error fetching student data:', err);
-        setWeeksLoaded(true); // Mark as loaded even on error to prevent infinite waiting
-      }
-    };
-
     fetchStudentData();
+  }, [profile?.id]);
+
+  // Keep Done/Start buttons in sync with admin resets (same cadence as charts)
+  useEffect(() => {
+    if (!profile?.id) return undefined;
+    const id = setInterval(() => {
+      fetchStudentData();
+    }, 15000);
+    return () => clearInterval(id);
   }, [profile?.id]);
 
   // Check which quizzes exist in online_quizzes array
   useEffect(() => {
-    if (!profile?.id || quizzes.length === 0 || !Array.isArray(onlineQuizzes)) return;
+    if (!profile?.id || centerFilteredQuizzes.length === 0 || !Array.isArray(onlineQuizzes)) return;
 
     const checkCompletions = () => {
       const completed = new Set();
-      for (const quiz of quizzes) {
+      for (const quiz of centerFilteredQuizzes) {
         // Check if quiz exists in online_quizzes array
         const exists = onlineQuizzes.some(oqz => {
           const qzId = oqz.quiz_id?.toString();
@@ -396,22 +312,15 @@ export default function MyQuizzes() {
     };
 
     checkCompletions();
-  }, [profile?.id, quizzes, onlineQuizzes]);
+  }, [profile?.id, centerFilteredQuizzes, onlineQuizzes]);
 
   // Helper function to get quizDegree for a given week and quiz_id
-  const getQuizDegree = (weekNumber, quizId = null) => {
-    // First, try to get from weeks array
-    if (weekNumber !== null && weekNumber !== undefined) {
-      const weekNum = typeof weekNumber === 'number' ? weekNumber : parseInt(weekNumber, 10);
-      if (!isNaN(weekNum)) {
-        const weekData = studentWeeks.find(w => {
-          const wWeek = typeof w.week === 'number' ? w.week : parseInt(w.week, 10);
-          return !isNaN(wWeek) && wWeek === weekNum;
-        });
-        
-        if (weekData?.quizDegree) {
-          return weekData.quizDegree;
-        }
+  const getQuizDegree = (lessonName, quizId = null) => {
+    // First, try to get from lessons object
+    if (lessonName && profile?.lessons) {
+      const lessonData = profile.lessons[lessonName];
+      if (lessonData?.quizDegree) {
+        return lessonData.quizDegree;
       }
     }
     
@@ -431,241 +340,47 @@ export default function MyQuizzes() {
     return null;
   };
 
-  // Helper function to check if deadline has passed
-  const isDeadlinePassed = (deadlineDate) => {
-    if (!deadlineDate) return false;
-    
-    try {
-      // Parse date in local timezone to avoid timezone shift
-      let deadline;
-      if (typeof deadlineDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(deadlineDate)) {
-        // If it's a string in YYYY-MM-DD format, parse it in local timezone
-        const [year, month, day] = deadlineDate.split('-').map(Number);
-        deadline = new Date(year, month - 1, day);
-      } else if (deadlineDate instanceof Date) {
-        deadline = new Date(deadlineDate);
-      } else {
-        deadline = new Date(deadlineDate);
-      }
-      
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
-      deadline.setHours(0, 0, 0, 0);
-      
-      return deadline <= today; // Deadline passed if deadline <= today
-    } catch (e) {
-      return false;
-    }
-  };
-
-  // Track if we've loaded student weeks data at least once
-  const [weeksLoaded, setWeeksLoaded] = useState(false);
-  // Track which quizzes have already had deadline penalties applied (to prevent duplicate scoring)
-  const deadlinePenaltiesAppliedRef = useRef(new Set());
-  
-  // Check deadlines and update student weeks if needed
+  // After deadline: mark missed quiz + apply scoring (server-side idempotent).
   useEffect(() => {
-    if (!profile?.id || quizzes.length === 0) return;
-    // Allow the check to proceed even if weeksLoaded is false - we'll treat studentWeeks as empty array
-    // The API will create the week if it doesn't exist
+    if (!profile?.id || centerFilteredQuizzes.length === 0) return;
 
     const checkDeadlines = async () => {
-      for (const quiz of quizzes) {
-        // Only check if quiz has deadline and is not completed
+      let profileInvalidated = false;
+
+      for (const quiz of centerFilteredQuizzes) {
         if (
-          quiz.deadline_type === 'with_deadline' &&
-          quiz.deadline_date &&
-          !completedQuizzes.has(quiz._id) &&
-          quiz.week !== null &&
-          quiz.week !== undefined
+          quiz.deadline_type !== 'with_deadline' ||
+          !quiz.deadline_date ||
+          completedQuizzes.has(quiz._id) ||
+          !quiz.lesson?.trim()
         ) {
-          if (isDeadlinePassed(quiz.deadline_date)) {
-            const weekNum = typeof quiz.week === 'number' ? quiz.week : parseInt(quiz.week, 10);
-            if (!isNaN(weekNum)) {
-              // Check current week data to see if we need to update
-              let weekData = studentWeeks.find(w => {
-                const wWeek = typeof w.week === 'number' ? w.week : parseInt(w.week, 10);
-                return !isNaN(wWeek) && wWeek === weekNum;
-              });
-              
-              // Ensure week exists - if not, create it with default schema
-              if (!weekData) {
-                try {
-                  // Create week with default schema by calling the quiz_degree API
-                  // The API will create the week if it doesn't exist
-                  await apiClient.post(`/api/students/${profile.id}/quiz_degree`, {
-                    week: weekNum,
-                    quizDegree: null
-                  });
-                  // Refresh student data to get the newly created week
-                  const studentResponse = await apiClient.get(`/api/students/${profile.id}`);
-                  if (studentResponse.data && Array.isArray(studentResponse.data.weeks)) {
-                    setStudentWeeks(studentResponse.data.weeks);
-                    weekData = studentResponse.data.weeks.find(w => {
-                      const wWeek = typeof w.week === 'number' ? w.week : parseInt(w.week, 10);
-                      return !isNaN(wWeek) && wWeek === weekNum;
-                    });
-                  }
-                } catch (createErr) {
-                  console.error(`Error creating week ${weekNum}:`, createErr);
-                  continue; // Skip this quiz if we can't create the week
-                }
-              }
-              
-              // Protected values that should never be overwritten
-              // Protected: "Didn't Attend The Quiz", "No Quiz", and any score text (e.g. "8 / 10")
-              const protectedQuizDegreeValues = ["Didn't Attend The Quiz", "No Quiz"];
-              const isScoreText = (value) => {
-                if (!value || typeof value !== 'string') return false;
-                // Check if it's a score format like "8 / 10" or contains numbers
-                return /\d+\s*\/\s*\d+/.test(value) || /^\d+$/.test(value.trim());
-              };
-              
-              // Check if quizDegree is protected or score text - if so, skip this quiz
-              if (weekData && weekData.quizDegree !== null && weekData.quizDegree !== undefined) {
-                if (protectedQuizDegreeValues.includes(weekData.quizDegree) || 
-                    isScoreText(weekData.quizDegree)) {
-                  // Skip - protected value or score, don't override
-                  continue;
-                }
-              }
-              
-              // Create unique key for this quiz deadline check
-              const deadlineKey = `quiz_${quiz._id}_week_${weekNum}`;
-              
-              // Only update and apply scoring if:
-              // 1. We haven't already applied penalty for this quiz (tracked in ref)
-              // 2. quizDegree is strictly null (not undefined, not protected values, not score text)
-              const shouldApplyDeadlinePenalty = !deadlinePenaltiesAppliedRef.current.has(deadlineKey) &&
-                                                 (!weekData || 
-                                                  weekData.quizDegree === null);
-              
-              if (shouldApplyDeadlinePenalty) {
-                try {
-                  // Check history first to see if deadline penalty was already applied (only if scoring is enabled)
-                  let alreadyApplied = false;
-                  if (isScoringEnabled) {
-                    try {
-                      const historyResponse = await apiClient.post('/api/scoring/get-last-history', {
-                        studentId: profile.id,
-                        type: 'quiz',
-                        week: weekNum
-                      });
-                      
-                      if (historyResponse.data.found && historyResponse.data.history) {
-                        const lastHistory = historyResponse.data.history;
-                        // Check if this is already a deadline penalty (0%) for this week
-                        if (lastHistory.data?.percentage === 0 && lastHistory.process_week === weekNum) {
-                          // Check if it was applied recently (within last hour) to avoid duplicates
-                          const historyTime = new Date(lastHistory.timestamp);
-                          const now = new Date();
-                          const timeDiff = now - historyTime;
-                          if (timeDiff < 3600000) { // 1 hour
-                            alreadyApplied = true;
-                            console.log(`[DEADLINE] Deadline penalty already applied for quiz ${quiz._id}, week ${weekNum}`);
-                          }
-                        }
-                      }
-                    } catch (historyErr) {
-                      console.error('Error checking history for deadline penalty:', historyErr);
-                    }
-                  }
-                  
-                  if (!alreadyApplied) {
-                  // Mark as applied immediately to prevent duplicate calls
-                  deadlinePenaltiesAppliedRef.current.add(deadlineKey);
-                  
-                  // Get previous percentage ONLY from online_quizzes (actual submissions)
-                  // Don't check weeks.quizDegree as that might have "Didn't Attend The Quiz" from deadline
-                  let previousPercentage = null;
-                    if (isScoringEnabled) {
-                  const studentResponseBefore = await apiClient.get(`/api/students/${profile.id}`);
-                  
-                  // Only check online_quizzes for previous result (actual quiz submission)
-                  if (studentResponseBefore.data && studentResponseBefore.data.online_quizzes) {
-                    const previousResult = studentResponseBefore.data.online_quizzes.find(
-                      oqz => {
-                        const qzIdStr = oqz.quiz_id ? String(oqz.quiz_id) : null;
-                        const targetIdStr = quiz._id.toString();
-                        return qzIdStr === targetIdStr;
-                      }
-                    );
-                    if (previousResult && previousResult.percentage) {
-                      // Extract percentage from "X%" format
-                      const prevPercentageStr = String(previousResult.percentage).replace('%', '');
-                      previousPercentage = parseInt(prevPercentageStr, 10);
-                        }
-                    }
-                  }
-                  
-                  console.log(`[DEADLINE] Applying quiz deadline penalty for quiz ${quiz._id}, week ${weekNum}, previousPercentage: ${previousPercentage}`);
-                  
-                    // Update weeks first (always apply this, regardless of scoring system)
-                  await apiClient.put(`/api/students/${profile.id}`, {
-                    weeks_update: {
-                      week: weekNum,
-                      quizDegree: "Didn't Attend The Quiz"
-                    }
-                  });
-                  
-                    // Apply scoring: 0% = -25 points (only if scoring is enabled)
-                    if (isScoringEnabled) {
-                      // Get previous percentage from history (for this week)
-                      let actualPreviousPercentage = previousPercentage;
-                      try {
-                        const historyResponse = await apiClient.post('/api/scoring/get-last-history', {
-                          studentId: profile.id,
-                          type: 'quiz',
-                          week: weekNum
-                        });
-                        
-                        if (historyResponse.data.found && historyResponse.data.history) {
-                          const lastHistory = historyResponse.data.history;
-                          if (lastHistory.data?.percentage !== undefined) {
-                            actualPreviousPercentage = lastHistory.data.percentage;
-                          }
-                        }
-                      } catch (historyErr) {
-                        console.error('Error getting quiz history, using provided previousPercentage:', historyErr);
-                      }
-                      
-                  // If previousPercentage is null (no previous submission), it will just apply -25
-                  // If previousPercentage exists, it will reverse those points and apply -25
-                  try {
-                    const scoringResponse = await apiClient.post('/api/scoring/calculate', {
-                      studentId: profile.id,
-                      type: 'quiz',
-                          week: weekNum,
-                          data: { percentage: 0, previousPercentage: actualPreviousPercentage }
-                    });
-                    console.log(`[DEADLINE] Scoring response:`, scoringResponse.data);
-                  } catch (scoreErr) {
-                    console.error('Error calculating quiz score:', scoreErr);
-                    // Remove from ref if scoring failed so it can be retried
-                    deadlinePenaltiesAppliedRef.current.delete(deadlineKey);
-                      }
-                  }
-                  
-                  // Refetch student data to update state
-                  const response = await apiClient.get(`/api/students/${profile.id}`);
-                  if (response.data && Array.isArray(response.data.weeks)) {
-                    setStudentWeeks(response.data.weeks);
-                    }
-                  }
-                } catch (err) {
-                  console.error('Error updating student weeks:', err);
-                  // Remove from ref if update failed so it can be retried
-                  deadlinePenaltiesAppliedRef.current.delete(deadlineKey);
-                }
-              }
-            }
-          }
+          continue;
         }
+
+        if (!isDeadlinePassedEgypt(quiz.deadline_date, quiz.deadline_time)) {
+          continue;
+        }
+
+        try {
+          await apiClient.post('/api/scoring/apply-deadline', {
+            studentId: profile.id,
+            kind: 'quiz',
+            itemId: quiz._id.toString(),
+            lesson: quiz.lesson.trim(),
+          });
+          profileInvalidated = true;
+        } catch (err) {
+          console.error(`[DEADLINE] Quiz ${quiz._id} apply-deadline failed:`, err);
+        }
+      }
+
+      if (profileInvalidated) {
+        queryClient.invalidateQueries(['profile']);
       }
     };
 
     checkDeadlines();
-  }, [profile?.id, quizzes, completedQuizzes, weeksLoaded]); // Removed studentWeeks from deps to prevent re-runs
+  }, [profile?.id, profile?.lessons, centerFilteredQuizzes, completedQuizzes, queryClient, deadlineClockTick]);
 
   if (isLoading) {
     return (
@@ -754,7 +469,7 @@ export default function MyQuizzes() {
             fontWeight: '700',
             color: '#212529'
           }}>
-            Quiz Performance by Week
+            Quiz Performance by Lesson
           </h2>
           {isChartLoading ? (
             <div style={{
@@ -782,7 +497,7 @@ export default function MyQuizzes() {
         </div>
 
         {/* Filters */}
-        {quizzes.length > 0 && (
+        {centerFilteredQuizzes.length > 0 && (
           <div className="filters-container" style={{
             background: 'white',
             borderRadius: 16,
@@ -799,20 +514,20 @@ export default function MyQuizzes() {
             }}>
               <div className="filter-group" style={{ flex: 1, minWidth: 180 }}>
                 <label className="filter-label" style={{ display: 'block', marginBottom: '8px', fontWeight: 600, color: '#495057', fontSize: '0.95rem' }}>
-                  Filter by Week
+                  Filter by Lesson
                 </label>
-                <StudentWeekSelect
-                  availableWeeks={availableWeeks}
-                  selectedWeek={filterWeek}
-                  onWeekChange={(week) => {
-                    setFilterWeek(week);
+                <StudentLessonSelect
+                  availableLessons={availableLessons}
+                  selectedLesson={filterLesson}
+                  onLessonChange={(lesson) => {
+                    setFilterLesson(lesson);
                   }}
-                  isOpen={filterWeekDropdownOpen}
+                  isOpen={filterLessonDropdownOpen}
                   onToggle={() => {
-                    setFilterWeekDropdownOpen(!filterWeekDropdownOpen);
+                    setFilterLessonDropdownOpen(!filterLessonDropdownOpen);
                   }}
-                  onClose={() => setFilterWeekDropdownOpen(false)}
-                  placeholder="Select Week"
+                  onClose={() => setFilterLessonDropdownOpen(false)}
+                  placeholder="Select Lesson"
                 />
               </div>
             </div>
@@ -829,7 +544,7 @@ export default function MyQuizzes() {
           {/* Quizzes List */}
           {filteredQuizzes.length === 0 ? (
             <div style={{ textAlign: 'center', padding: '40px', color: '#6c757d' }}>
-              {quizzes.length === 0 ? 'No quizzes available.' : 'No quizzes match your filters.'}
+              {centerFilteredQuizzes.length === 0 ? '❌ No quizzes available.' : '❌ No quizzes match your filters.'}
             </div>
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
@@ -857,8 +572,15 @@ export default function MyQuizzes() {
                 >
                   <div style={{ flex: 1 }}>
                     <div style={{ fontSize: '1.2rem', fontWeight: '600', marginBottom: '8px' }}>
-                      {[quiz.week !== undefined && quiz.week !== null ? `Week ${quiz.week}` : null, quiz.lesson_name].filter(Boolean).join(' • ')}
+                      {[quiz.lesson, quiz.lesson_name].filter(Boolean).join(' • ')}
                     </div>
+                    {quiz.quiz_type === 'pdf' ? (
+                      <div style={{ padding: '12px 16px', backgroundColor: '#ffffff', border: '2px solid #e9ecef', borderRadius: '8px', fontSize: '0.95rem', color: '#495057', textAlign: 'left', display: 'inline-block', maxWidth: '350px' }}>
+                        <div style={{ fontWeight: '600', marginBottom: '4px' }}>
+                          {`File Name : ${quiz.pdf_file_name || 'file'}.pdf`}
+                        </div>
+                      </div>
+                    ) : (
                     <div style={{
                       padding: '12px 16px',
                       backgroundColor: '#ffffff',
@@ -882,31 +604,45 @@ export default function MyQuizzes() {
                             <span>•</span>
                             <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
                               <Image src="/clock.svg" alt="Deadline" width={18} height={18} />
-                              {quiz.deadline_date ? (() => {
-                                try {
-                                  // Parse date in local timezone
-                                  let deadline;
-                                  if (typeof quiz.deadline_date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(quiz.deadline_date)) {
-                                    const [year, month, day] = quiz.deadline_date.split('-').map(Number);
-                                    deadline = new Date(year, month - 1, day);
-                                  } else {
-                                    deadline = new Date(quiz.deadline_date);
-                                  }
-                                  return `With deadline date : ${deadline.toLocaleDateString('en-US', { year: 'numeric', month: '2-digit', day: '2-digit' })}`;
-                                } catch (e) {
-                                  return `With deadline date : ${quiz.deadline_date}`;
-                                }
-                              })() : 'With no deadline date'}
+                              {formatDeadlineCardLabel(quiz.deadline_date, quiz.deadline_time)}
                             </span>
                           </>
                         )}
                       </div>
                     </div>
+                    )}
                   </div>
-                  <div className="quiz-buttons" style={{ display: 'flex', gap: '12px' }}>
+                  <div className="quiz-buttons" style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+                    {quiz.quiz_type === 'pdf' && quiz.pdf_url && isDownloadingAllowed(quiz.allow_downloading) && (
+                      <button onClick={(e) => { e.stopPropagation(); downloadFileUrl(quiz.pdf_url, `${quiz.pdf_file_name || 'file'}.pdf`).catch((err) => alert(err.message || 'Download failed')); }} className="qz-action-btn"
+                        style={{ padding: '8px 16px', backgroundColor: '#32b750', color: 'white', border: 'none', borderRadius: '8px', cursor: 'pointer', fontSize: '0.9rem', fontWeight: '600', transition: 'all 0.2s ease', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}>
+                        <Image src="/pdf.svg" alt="PDF" width={18} height={18} style={{ display: 'inline-block' }} />
+                        Download PDF
+                      </button>
+                    )}
+                    {quiz.quiz_type === 'pdf' && quiz.pdf_url && (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setPdfViewer({ isOpen: true, url: quiz.pdf_url, name: `${quiz.pdf_file_name || 'file'}.pdf` });
+                        }}
+                        className="qz-action-btn"
+                        style={{ padding: '8px 16px', backgroundColor: '#0d6efd', color: 'white', border: 'none', borderRadius: '8px', cursor: 'pointer', fontSize: '0.9rem', fontWeight: '600', transition: 'all 0.2s ease', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}
+                      >
+                        <Image src="/external-link.svg" alt="Open PDF" width={18} height={18} style={{ display: 'inline-block' }} />
+                        Open PDF
+                      </button>
+                    )}
+                    {quiz.comment && (
+                      <button onClick={(e) => { e.stopPropagation(); setNotePopup(quiz.comment); }} className="qz-action-btn"
+                        style={{ padding: '8px 16px', backgroundColor: '#1FA8DC', color: 'white', border: 'none', borderRadius: '8px', cursor: 'pointer', fontSize: '0.9rem', fontWeight: '600', transition: 'all 0.2s ease', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}>
+                        <Image src="/notes4.svg" alt="Notes" width={18} height={18} style={{ display: 'inline-block' }} />
+                        Notes
+                      </button>
+                    )}
                     {(() => {
                       // Get quizDegree from weeks database (for display purposes only)
-                      const quizDegree = getQuizDegree(quiz.week, quiz._id);
+                      const quizDegree = getQuizDegree(quiz.lesson, quiz._id);
                       
                       // IMPORTANT: Only hide Start button if quiz exists in online_quizzes
                       // Don't hide Start button just because weeks array has quizDegree
@@ -964,9 +700,33 @@ export default function MyQuizzes() {
                           </>
                         );
                       }
-                      
-                      // If quizDegree is "Didn't Attend The Quiz" or "No Quiz", show that status
-                      // (but still allow Start button if not in online_quizzes)
+
+                      if (
+                        quiz.deadline_type === 'with_deadline' &&
+                        quiz.deadline_date &&
+                        isDeadlinePassedEgypt(quiz.deadline_date, quiz.deadline_time)
+                      ) {
+                        return (
+                          <button
+                            style={{
+                              padding: '8px 16px',
+                              backgroundColor: '#dc3545',
+                              color: 'white',
+                              border: 'none',
+                              borderRadius: '20px',
+                              cursor: 'default',
+                              fontSize: '0.9rem',
+                              fontWeight: '600',
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '8px'
+                            }}
+                          >
+                            {`❌ Didn't Attend The Quiz`}
+                          </button>
+                        );
+                      }
+
                       if (quizDegree === "Didn't Attend The Quiz" || quizDegree === "No Quiz") {
                         return (
                           <button
@@ -988,34 +748,10 @@ export default function MyQuizzes() {
                           </button>
                         );
                       }
-                      
-                      // Check if deadline has passed and quiz not submitted
-                      if (quiz.deadline_type === 'with_deadline' && 
-                          quiz.deadline_date && 
-                          isDeadlinePassed(quiz.deadline_date)) {
-                        return (
-                          <button
-                            style={{
-                              padding: '8px 16px',
-                              backgroundColor: '#dc3545',
-                              color: 'white',
-                              border: 'none',
-                              borderRadius: '20px',
-                              cursor: 'default',
-                              fontSize: '0.9rem',
-                              fontWeight: '600',
-                              display: 'flex',
-                              alignItems: 'center',
-                              gap: '8px'
-                            }}
-                          >
-                            ❌ Didn't Attend The Quiz
-                          </button>
-                        );
-                      }
-                      
+
+                      if (quiz.quiz_type === 'pdf') return null;
+
                       // Default: show Start button
-                      // (Even if weeks array has quizDegree, if not in online_quizzes, show Start)
                       return (
                         <button
                           onClick={() => router.push(`/student_dashboard/my_quizzes/start?id=${quiz._id}`)}
@@ -1077,8 +813,11 @@ export default function MyQuizzes() {
           }
           .quiz-buttons {
             width: 100%;
+            flex-direction: column;
           }
-          .quiz-buttons button {
+          .quiz-buttons button,
+          .quiz-buttons a,
+          .quiz-buttons .qz-action-btn {
             width: 100%;
             justify-content: center;
           }
@@ -1126,6 +865,33 @@ export default function MyQuizzes() {
           }
         }
       `}</style>
+
+      {notePopup && (
+        <div onClick={() => setNotePopup(null)} style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(6px)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999, padding: '16px' }}>
+          <div onClick={(e) => e.stopPropagation()} style={{ background: 'linear-gradient(145deg, #ffffff 0%, #f8f9fa 100%)', borderRadius: '20px', padding: '0', maxWidth: '500px', width: '100%', position: 'relative', boxShadow: '0 25px 60px rgba(0,0,0,0.3)', overflow: 'hidden', maxHeight: '80vh', display: 'flex', flexDirection: 'column' }}>
+            <div style={{ background: 'linear-gradient(135deg, #1FA8DC 0%, #17a2b8 100%)', padding: '20px 24px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <Image src="/notes4.svg" alt="Notes" width={22} height={22} style={{ filter: 'brightness(0) invert(1)' }} />
+                <h3 style={{ margin: 0, fontSize: '1.2rem', color: 'white', fontWeight: '700' }}>Note</h3>
+              </div>
+              <button onClick={() => setNotePopup(null)} style={{ background: '#dc3545', color: 'white', border: 'none', borderRadius: '50%', width: '32px', height: '32px', cursor: 'pointer', fontSize: '18px', fontWeight: '700', display: 'flex', alignItems: 'center', justifyContent: 'center', transition: 'all 0.2s', padding: 0, lineHeight: 1 }}
+                onMouseEnter={(e) => { e.currentTarget.style.background = '#c82333'; e.currentTarget.style.transform = 'scale(1.1)'; }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = '#dc3545'; e.currentTarget.style.transform = 'scale(1)'; }}
+                onMouseDown={(e) => e.currentTarget.style.transform = 'scale(0.95)'}
+                onMouseUp={(e) => e.currentTarget.style.transform = 'scale(1.1)'}>✕</button>
+            </div>
+            <div style={{ padding: '24px', overflowY: 'auto', flex: 1 }}>
+              <div style={{ fontSize: '1rem', lineHeight: '1.8', color: '#495057', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{notePopup}</div>
+            </div>
+          </div>
+        </div>
+      )}
+      <PdfViewerModal
+        isOpen={pdfViewer.isOpen}
+        fileUrl={pdfViewer.url}
+        fileName={pdfViewer.name}
+        onClose={() => setPdfViewer({ isOpen: false, url: '', name: '' })}
+      />
     </div>
   );
 }

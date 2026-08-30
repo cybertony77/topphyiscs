@@ -2,6 +2,9 @@ import { MongoClient, ObjectId } from 'mongodb';
 import fs from 'fs';
 import path from 'path';
 import { authMiddleware } from '../../../lib/authMiddleware';
+import { resolveGoogleMeetVideoForSave } from '../../../lib/googleServer';
+import { maskGoogleMeetIdsInDocuments } from '../../../lib/googleVideoIds';
+import { normalizeViewingSettingsForSave } from '../../../lib/onlineSessionViewing';
 
 function loadEnvConfig() {
   try {
@@ -40,6 +43,17 @@ function extractYouTubeId(url) {
     /(?:youtu\.be\/|youtube\.com\/(?:watch\?v=|embed\/))([a-zA-Z0-9_-]{11})/
   );
   return match ? match[1] : null;
+}
+
+function extractZoomMeetingId(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  const noSpaces = raw.replace(/\s+/g, '');
+  if (/^[0-9]+$/.test(noSpaces)) return noSpaces;
+  const match = noSpaces.match(/zoom\.us\/(?:j|wc\/j(?:oin)?)\/([0-9]+)/i);
+  if (match?.[1]) return match[1];
+  // UUID value coming from recordings list selection
+  return noSpaces;
 }
 
 // Format date as MM/DD/YYYY at hour:minute AM/PM
@@ -83,37 +97,54 @@ export default async function handler(req, res) {
     }
 
     if (req.method === 'GET') {
-      // Get all online sessions, sorted by week ascending, then date descending
+      // Get all online sessions, sorted by course, courseType, lesson, then date descending
       const sessions = await db.collection('online_sessions')
         .find({})
-        .sort({ week: 1, date: -1 })
+        .sort({ course: 1, courseType: 1, lesson: 1, date: -1 })
         .toArray();
       
-      res.json({ sessions });
+      res.json({ sessions: maskGoogleMeetIdsInDocuments(sessions) });
 
     } else if (req.method === 'POST') {
       // Create new online session
-      const { name, video_urls, videos, description, week, grade, payment_state, state } = req.body;
+      const {
+        name,
+        video_urls,
+        videos,
+        description,
+        course,
+        courseType,
+        lesson,
+        payment_state,
+        state,
+        viewing_limit_type,
+        viewing_limit_value,
+      } = req.body;
 
       // Validate required fields
-      if (!grade || !grade.trim()) {
-        return res.status(400).json({ error: 'Grade is required' });
+      if (!course || !course.trim()) {
+        return res.status(400).json({ error: 'Course is required' });
+      }
+
+      if (!lesson || !lesson.trim()) {
+        return res.status(400).json({ error: 'Lesson is required' });
       }
 
       if (!name || !name.trim()) {
         return res.status(400).json({ error: 'Name is required' });
       }
 
-      // Validate payment_state
-      if (!payment_state || (payment_state !== 'paid' && payment_state !== 'free')) {
-        return res.status(400).json({ error: 'Video Payment State is required and must be "paid" or "free"' });
+      const viewingNormalized = normalizeViewingSettingsForSave(
+        payment_state,
+        viewing_limit_type,
+        viewing_limit_value
+      );
+      if (viewingNormalized.error) {
+        return res.status(400).json({ error: viewingNormalized.error });
       }
 
-      // Normalize state (Activated/Deactivated), default to Activated
-      const normalizedState = state === 'Deactivated' ? 'Deactivated' : 'Activated';
-
       // Handle both old format (video_urls) and new format (videos array)
-      // YouTube and R2 video types are supported
+      // Supports YouTube and Cloudflare R2 video types
       let videoData = {};
       
       if (videos && Array.isArray(videos) && videos.length > 0) {
@@ -133,13 +164,38 @@ export default async function handler(req, res) {
               if (video.video_name && video.video_name.trim()) {
                 videoData[`video_name_${index + 1}`] = video.video_name.trim();
               }
+            } else if (video.video_type === 'zoom') {
+              const zoomMeetingId = extractZoomMeetingId(video.video_id);
+              if (!zoomMeetingId) {
+                return res.status(400).json({ error: `Invalid Zoom meeting ID at position ${index + 1}` });
+              }
+              videoData[`video_ID_${index + 1}`] = zoomMeetingId;
+              videoData[`video_type_${index + 1}`] = 'zoom';
+              if (video.video_name && video.video_name.trim()) {
+                videoData[`video_name_${index + 1}`] = video.video_name.trim();
+              }
+            } else if (video.video_type === 'google_meet') {
+              const resolved = resolveGoogleMeetVideoForSave(
+                video.video_id,
+                user.assistant_id ?? user.id
+              );
+              if (!resolved?.fileId) {
+                return res.status(400).json({
+                  error: `Invalid Google Meet recording at position ${index + 1}. Re-select the recording.`,
+                });
+              }
+              videoData[`video_ID_${index + 1}`] = resolved.fileId;
+              videoData[`video_type_${index + 1}`] = 'google_meet';
+              videoData[`video_google_owner_${index + 1}`] = resolved.ownerUserId;
+              if (video.video_name && video.video_name.trim()) {
+                videoData[`video_name_${index + 1}`] = video.video_name.trim();
+              }
             } else {
-              return res.status(400).json({ error: `Invalid video type at position ${index + 1}. Only YouTube and R2 are supported.` });
+              return res.status(400).json({ error: `Invalid video type at position ${index + 1}. Supported types: youtube, r2, zoom, google_meet.` });
             }
           } else if (video && video.video_id) {
             // If no video_type specified, assume YouTube and extract ID from URL if needed
             let videoId = video.video_id;
-            // Check if it's a URL and extract ID
             if (videoId.includes('youtube.com') || videoId.includes('youtu.be')) {
               videoId = extractYouTubeId(videoId);
               if (!videoId) {
@@ -148,7 +204,6 @@ export default async function handler(req, res) {
             }
             videoData[`video_ID_${index + 1}`] = videoId;
             videoData[`video_type_${index + 1}`] = 'youtube';
-            // Add video_name if provided
             if (video.video_name && video.video_name.trim()) {
               videoData[`video_name_${index + 1}`] = video.video_name.trim();
             }
@@ -178,16 +233,25 @@ export default async function handler(req, res) {
         return res.status(400).json({ error: 'At least one valid video is required' });
       }
 
+      // Normalize session state (default to "Activated")
+      let finalState = 'Activated';
+      if (state === 'Activated' || state === 'Deactivated') {
+        finalState = state;
+      }
+
       // Create session document
       const session = {
-        week: week !== undefined && week !== null ? parseInt(week) : null,
-        grade: grade.trim(),
+        course: course.trim(),
+        courseType: courseType && courseType.trim() ? courseType.trim() : null,
+        lesson: lesson.trim(),
         payment_state: payment_state,
+        viewing_limit_type: viewingNormalized.viewing_limit_type,
+        viewing_limit_value: viewingNormalized.viewing_limit_value,
         name: name.trim(),
         ...videoData,
         description: description && description.trim() ? description.trim() : null,
-        state: normalizedState,
-        date: formatDate(new Date())
+        date: formatDate(new Date()),
+        state: finalState
       };
 
       // Insert into database
@@ -201,31 +265,48 @@ export default async function handler(req, res) {
     } else if (req.method === 'PUT') {
       // Update online session
       const { id } = req.query;
-      const { name, video_urls, videos, description, week, grade, payment_state, state } = req.body;
+      const {
+        name,
+        video_urls,
+        videos,
+        description,
+        course,
+        courseType,
+        lesson,
+        payment_state,
+        state,
+        viewing_limit_type,
+        viewing_limit_value,
+      } = req.body;
 
       if (!id) {
         return res.status(400).json({ error: 'Session ID is required' });
       }
 
       // Validate required fields
-      if (!grade || !grade.trim()) {
-        return res.status(400).json({ error: 'Grade is required' });
+      if (!course || !course.trim()) {
+        return res.status(400).json({ error: 'Course is required' });
+      }
+
+      if (!lesson || !lesson.trim()) {
+        return res.status(400).json({ error: 'Lesson is required' });
       }
 
       if (!name || !name.trim()) {
         return res.status(400).json({ error: 'Name is required' });
       }
 
-      // Validate payment_state
-      if (!payment_state || (payment_state !== 'paid' && payment_state !== 'free')) {
-        return res.status(400).json({ error: 'Video Payment State is required and must be "paid" or "free"' });
+      const viewingNormalized = normalizeViewingSettingsForSave(
+        payment_state,
+        viewing_limit_type,
+        viewing_limit_value
+      );
+      if (viewingNormalized.error) {
+        return res.status(400).json({ error: viewingNormalized.error });
       }
 
-      // Normalize state (Activated/Deactivated), default to Activated
-      const normalizedState = state === 'Deactivated' ? 'Deactivated' : 'Activated';
-
       // Handle both old format (video_urls) and new format (videos array)
-      // YouTube and R2 video types are supported
+      // Supports YouTube and Cloudflare R2 video types
       let videoData = {};
       
       if (videos && Array.isArray(videos) && videos.length > 0) {
@@ -245,13 +326,38 @@ export default async function handler(req, res) {
               if (video.video_name && video.video_name.trim()) {
                 videoData[`video_name_${index + 1}`] = video.video_name.trim();
               }
+            } else if (video.video_type === 'zoom') {
+              const zoomMeetingId = extractZoomMeetingId(video.video_id);
+              if (!zoomMeetingId) {
+                return res.status(400).json({ error: `Invalid Zoom meeting ID at position ${index + 1}` });
+              }
+              videoData[`video_ID_${index + 1}`] = zoomMeetingId;
+              videoData[`video_type_${index + 1}`] = 'zoom';
+              if (video.video_name && video.video_name.trim()) {
+                videoData[`video_name_${index + 1}`] = video.video_name.trim();
+              }
+            } else if (video.video_type === 'google_meet') {
+              const resolved = resolveGoogleMeetVideoForSave(
+                video.video_id,
+                user.assistant_id ?? user.id
+              );
+              if (!resolved?.fileId) {
+                return res.status(400).json({
+                  error: `Invalid Google Meet recording at position ${index + 1}. Re-select the recording.`,
+                });
+              }
+              videoData[`video_ID_${index + 1}`] = resolved.fileId;
+              videoData[`video_type_${index + 1}`] = 'google_meet';
+              videoData[`video_google_owner_${index + 1}`] = resolved.ownerUserId;
+              if (video.video_name && video.video_name.trim()) {
+                videoData[`video_name_${index + 1}`] = video.video_name.trim();
+              }
             } else {
-              return res.status(400).json({ error: `Invalid video type at position ${index + 1}. Only YouTube and R2 are supported.` });
+              return res.status(400).json({ error: `Invalid video type at position ${index + 1}. Supported types: youtube, r2, zoom, google_meet.` });
             }
           } else if (video && video.video_id) {
             // If no video_type specified, assume YouTube and extract ID from URL if needed
             let videoId = video.video_id;
-            // Check if it's a URL and extract ID
             if (videoId.includes('youtube.com') || videoId.includes('youtu.be')) {
               videoId = extractYouTubeId(videoId);
               if (!videoId) {
@@ -260,7 +366,6 @@ export default async function handler(req, res) {
             }
             videoData[`video_ID_${index + 1}`] = videoId;
             videoData[`video_type_${index + 1}`] = 'youtube';
-            // Add video_name if provided
             if (video.video_name && video.video_name.trim()) {
               videoData[`video_name_${index + 1}`] = video.video_name.trim();
             }
@@ -296,25 +401,44 @@ export default async function handler(req, res) {
         return res.status(404).json({ error: 'Session not found' });
       }
 
+      // Normalize session state if provided
+      let finalState = null;
+      if (state === 'Activated' || state === 'Deactivated') {
+        finalState = state;
+      }
+
       // Update session document
       const updateData = {
-        week: week !== undefined && week !== null ? parseInt(week) : null,
-        grade: grade.trim(),
+        course: course.trim(),
+        courseType: courseType && courseType.trim() ? courseType.trim() : null,
+        lesson: lesson.trim(),
         payment_state: payment_state,
+        viewing_limit_type: viewingNormalized.viewing_limit_type,
+        viewing_limit_value: viewingNormalized.viewing_limit_value,
         name: name.trim(),
         ...videoData,
         description: description && description.trim() ? description.trim() : null,
-        state: normalizedState,
         date: formatDate(new Date())
       };
 
-      // Remove old video_ID, video_type, and video_name fields that are not in the new list
+      if (finalState) {
+        updateData.state = finalState;
+      }
+
+      // Remove old video_ID, video_type, video_name, and google owner fields that are not in the new list
       const keysToRemove = Object.keys(session).filter(key => 
-        (key.startsWith('video_ID_') || key.startsWith('video_type_') || key.startsWith('video_name_')) && 
+        (key.startsWith('video_ID_') || key.startsWith('video_type_') || key.startsWith('video_name_') || key.startsWith('video_google_owner_')) && 
         !videoData[key]
       );
       
       const updateQuery = { $set: updateData };
+      // Also remove old account_state field if present (we now use "state")
+      if (session.account_state !== undefined) {
+        if (!updateQuery.$unset) {
+          updateQuery.$unset = {};
+        }
+        updateQuery.$unset.account_state = '';
+      }
       if (keysToRemove.length > 0) {
         const unsetFields = {};
         keysToRemove.forEach(key => {

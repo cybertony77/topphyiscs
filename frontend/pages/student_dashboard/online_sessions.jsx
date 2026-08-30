@@ -2,15 +2,46 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { useRouter } from "next/router";
 import Image from 'next/image';
 import Title from '../../components/Title';
-import R2VideoPlayer from '../../components/R2VideoPlayer';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import apiClient from '../../lib/axios';
 import { useProfile } from '../../lib/api/auth';
-import { useSystemConfig } from '../../lib/api/system';
-import { useStudent } from '../../lib/api/students';
+import { useSystemConfig, useNationalSystem } from '../../lib/api/system';
+import { useStudent, studentKeys } from '../../lib/api/students';
+import StudentLessonSelect from '../../components/StudentLessonSelect';
 import NeedHelp from '../../components/NeedHelp';
+import R2VideoPlayer from '../../components/R2VideoPlayer';
+import YoutubeEmbedWithProgress from '../../components/YoutubeEmbedWithProgress';
+import ZoomVideoPlayer from '../../components/ZoomVideoPlayer';
+import GoogleMeetVideoPlayer from '../../components/GoogleMeetVideoPlayer';
 import { TextInput, ActionIcon, useMantineTheme } from '@mantine/core';
 import { IconSearch, IconArrowRight } from '@tabler/icons-react';
+import {
+  FREE_ONLINE_SESSION_PAYMENT_STATES,
+  isFreeViewingAccessValid,
+  isFreeViewingExpired,
+  attendedInCenter,
+} from '../../lib/onlineSessionViewing';
+import { getStudentLesson } from '../../lib/studentLessons';
+import { isDeadlinePassedEgypt } from '../../lib/deadlineTimeEgypt';
+import { isCodeNumberOfDaysValid } from '../../lib/codeNumberOfDays';
+import CodePopupMessage from '../../components/CodePopupMessage';
+import {
+  CODE_ERROR,
+  getVerificationCodeMessage,
+  resolveVerificationCodeError,
+} from '../../lib/verificationCodeMessages';
+
+function unlockInfoFromVvcResponse(data) {
+  if (!data) return null;
+  return {
+    vvc_id: data.vvc_id,
+    code_settings: data.code_settings || 'number_of_views',
+    number_of_views: data.number_of_views ?? null,
+    number_of_days: data.number_of_days ?? null,
+    access_started_at: data.access_started_at || null,
+    deadline_date: data.deadline_date || null,
+  };
+}
 
 // Input with Button Component (matching manage online system style)
 function InputWithButton(props) {
@@ -32,142 +63,55 @@ function InputWithButton(props) {
   );
 }
 
-// Custom Week Select for Student Dashboard (only shows available weeks)
-function StudentWeekSelect({ availableWeeks = [], selectedWeek, onWeekChange, isOpen, onToggle, onClose, placeholder = 'Select Week' }) {
-  const dropdownRef = useRef(null);
-
-  useEffect(() => {
-    const handleClickOutside = (event) => {
-      if (dropdownRef.current && !dropdownRef.current.contains(event.target)) {
-        onClose();
-      }
-    };
-
-    if (isOpen) {
-      document.addEventListener('mousedown', handleClickOutside);
-    }
-
-    return () => {
-      document.removeEventListener('mousedown', handleClickOutside);
-    };
-  }, [isOpen, onClose]);
-
-  const handleWeekSelect = (week) => {
-    onWeekChange(week);
-    onClose();
-  };
-
-  return (
-    <div ref={dropdownRef} style={{ position: 'relative', width: '100%' }}>
-      <div
-        style={{
-          padding: '14px 16px',
-          border: isOpen ? '2px solid #1FA8DC' : '2px solid #e9ecef',
-          borderRadius: '10px',
-          backgroundColor: '#ffffff',
-          cursor: 'pointer',
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'center',
-          fontSize: '1rem',
-          color: selectedWeek && selectedWeek !== 'n/a' ? '#000000' : '#adb5bd',
-          transition: 'all 0.3s ease',
-          boxShadow: isOpen ? '0 0 0 3px rgba(31, 168, 220, 0.1)' : 'none'
-        }}
-        onClick={onToggle}
-      >
-        <span>{selectedWeek && selectedWeek !== 'n/a' ? selectedWeek : placeholder}</span>
-        <Image
-          src={isOpen ? "/chevron-down.svg" : "/chevron-right.svg"}
-          alt={isOpen ? "Close" : "Open"}
-          width={20}
-          height={20}
-          style={{
-            transition: 'transform 0.2s ease'
-          }}
-        />
-
-      </div>
-      
-      {isOpen && (
-        <div style={{
-          position: 'absolute',
-          top: '100%',
-          left: 0,
-          right: 0,
-          backgroundColor: '#ffffff',
-          border: '2px solid #e9ecef',
-          borderRadius: '10px',
-          boxShadow: '0 4px 16px rgba(0,0,0,0.1)',
-          zIndex: 1000,
-          maxHeight: '200px',
-          overflowY: 'auto',
-          marginTop: '4px'
-        }}>
-          {/* Clear selection option */}
-          <div
-            style={{
-              padding: '12px 16px',
-              cursor: 'pointer',
-              borderBottom: '1px solid #f8f9fa',
-              transition: 'background-color 0.2s ease',
-              color: '#dc3545',
-              fontWeight: '500'
-            }}
-            onClick={() => handleWeekSelect('')}
-            onMouseEnter={(e) => e.target.style.backgroundColor = '#fff5f5'}
-            onMouseLeave={(e) => e.target.style.backgroundColor = '#ffffff'}
-          >
-            ✕ Clear selection
-          </div>
-          {availableWeeks.map((week) => (
-            <div
-              key={week}
-              style={{
-                padding: '12px 16px',
-                cursor: 'pointer',
-                borderBottom: '1px solid #f8f9fa',
-                transition: 'background-color 0.2s ease',
-                color: '#000000'
-              }}
-              onClick={() => handleWeekSelect(week)}
-              onMouseEnter={(e) => e.target.style.backgroundColor = '#f8f9fa'}
-              onMouseLeave={(e) => e.target.style.backgroundColor = '#ffffff'}
-            >
-              {week}
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// Check if a video ID is an R2 key (not a YouTube ID)
-// YouTube IDs are exactly 11 characters matching [a-zA-Z0-9_-]
-// R2 keys contain '/' or are not matching YouTube ID format
-function isR2Key(videoId) {
-  if (!videoId) return false;
-  return !/^[a-zA-Z0-9_-]{11}$/.test(videoId);
-}
 
 // Build embed URL
 function buildEmbedUrl(videoId) {
-  return `https://www.youtube.com/embed/${videoId}?controls=1&rel=0&modestbranding=1&disablekb=1&fs=1`;
+  return `https://www.youtube.com/embed/${videoId}?controls=0&rel=0&modestbranding=1&disablekb=1&fs=0&iv_load_policy=3&playsinline=1`;
+}
+
+const VVC_UNLOCK_STORAGE_PREFIX = 'vvc-unlocked:';
+
+function readUnlockMap(studentId) {
+  if (typeof window === 'undefined' || !studentId) return new Map();
+  try {
+    const raw = window.sessionStorage.getItem(`${VVC_UNLOCK_STORAGE_PREFIX}${studentId}`);
+    if (!raw) return new Map();
+    const entries = JSON.parse(raw);
+    return Array.isArray(entries) ? new Map(entries) : new Map();
+  } catch {
+    return new Map();
+  }
+}
+
+function writeUnlockMap(studentId, map) {
+  if (typeof window === 'undefined' || !studentId) return;
+  try {
+    window.sessionStorage.setItem(
+      `${VVC_UNLOCK_STORAGE_PREFIX}${studentId}`,
+      JSON.stringify([...map.entries()])
+    );
+  } catch {
+    /* ignore quota / private mode */
+  }
 }
 
 
 export default function OnlineSessions() {
   const { data: systemConfig } = useSystemConfig();
+  const isNational = useNationalSystem();
   const isScoringEnabled = systemConfig?.scoring_system === true || systemConfig?.scoring_system === 'true';
   const isOnlineVideosEnabled = systemConfig?.online_videos === true || systemConfig?.online_videos === 'true';
   
   const router = useRouter();
+  const queryClient = useQueryClient();
   const { data: profile } = useProfile();
   
   // Fetch student data to get available lessons
   const studentId = profile?.id ? profile.id.toString() : null;
-  const { data: studentData } = useStudent(studentId, { enabled: !!studentId });
+  const { data: studentData } = useStudent(studentId, {
+    enabled: !!studentId,
+    refetchOnMount: 'always',
+  });
   
   // Redirect if feature is disabled
   useEffect(() => {
@@ -187,12 +131,25 @@ export default function OnlineSessions() {
   const videoStartTimeRef = useRef(null); // Track when video was opened
   const isClosingVideoRef = useRef(false); // Prevent multiple close calls
   const r2CompletedRef = useRef(false); // Track if R2 video was completed (>= 90%)
+  const watchedTenPercentRef = useRef(false); // Attendance/watch marker at >=10%
+  const selectedVideoRef = useRef(null);
+  const vvcViewsDecrementDoneRef = useRef(false);
+  const freeViewsDecrementDoneRef = useRef(false);
+  const attendancePostedRef = useRef(false);
+  const lastUnlockStudentIdRef = useRef(null);
   const [vvcPopupOpen, setVvcPopupOpen] = useState(false);
   const [vvc, setVvc] = useState('');
   const [vvcError, setVvcError] = useState('');
   const [isCheckingVvc, setIsCheckingVvc] = useState(false);
   const [pendingVideo, setPendingVideo] = useState(null); // Store video info while waiting for VVC
   const [unlockedSessions, setUnlockedSessions] = useState(new Map()); // Store unlocked sessions with VVC info
+
+  // Auto-hide VVC popup messages after 6s
+  useEffect(() => {
+    if (!vvcError) return undefined;
+    const timer = setTimeout(() => setVvcError(''), 6000);
+    return () => clearTimeout(timer);
+  }, [vvcError]);
 
   // Fetch online sessions
   const { data: sessionsData, isLoading } = useQuery({
@@ -210,51 +167,54 @@ export default function OnlineSessions() {
 
   const sessions = sessionsData?.sessions || [];
 
+  // Hide deactivated sessions from students (support both new state and legacy account_state)
+  const visibleSessions = sessions.filter((session) => {
+    const effectiveState = session.state || session.account_state || 'Activated';
+    return effectiveState !== 'Deactivated';
+  });
+
   // Search and filter states
   const [searchInput, setSearchInput] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
-  const [filterWeek, setFilterWeek] = useState('');
-  const [filterWeekDropdownOpen, setFilterWeekDropdownOpen] = useState(false);
+  const [filterLesson, setFilterLesson] = useState('');
+  const [filterLessonDropdownOpen, setFilterLessonDropdownOpen] = useState(false);
 
-  // Extract week number from week string (e.g., "week 01" -> 1)
-  const extractWeekNumber = (weekString) => {
-    if (!weekString) return null;
-    const match = weekString.match(/week\s*(\d+)/i);
-    return match ? parseInt(match[1], 10) : null;
-  };
-
-  // Convert week number to week string (e.g., 1 -> "week 01")
-  const weekNumberToString = (weekNumber) => {
-    if (weekNumber === null || weekNumber === undefined) return '';
-    return `week ${String(weekNumber).padStart(2, '0')}`;
-  };
-
-  // Get available weeks from sessions (only weeks that exist in the data and are Activated)
-  const getAvailableWeeks = () => {
-    const weekSet = new Set();
+  // Get available lessons from sessions (only lessons that exist in sessions, are Activated, and match student's course/courseType)
+  const getAvailableLessons = () => {
+    const lessonSet = new Set();
+    const studentCourse = (studentData?.course || '').trim();
+    const studentCourseType = (studentData?.courseType || '').trim();
+    
     sessions.forEach(session => {
       const effectiveState = session.state || session.account_state || 'Activated';
       if (effectiveState === 'Deactivated') return;
-      if (session.week !== undefined && session.week !== null) {
-        weekSet.add(weekNumberToString(session.week));
+      if (session.lesson && session.lesson.trim()) {
+        // Check if session matches student's course and courseType
+        const sessionCourse = (session.course || '').trim();
+        const sessionCourseType = (session.courseType || '').trim();
+        
+        // Course match: if session course is "All", it matches any student course
+        const courseMatch = sessionCourse.toLowerCase() === 'all' || 
+                           sessionCourse.toLowerCase() === studentCourse.toLowerCase();
+        
+        // CourseType match: skip when national system; otherwise match as before
+        const courseTypeMatch = isNational ||
+                               !sessionCourseType || 
+                               !studentCourseType ||
+                               sessionCourseType.toLowerCase() === studentCourseType.toLowerCase();
+        
+        if (courseMatch && courseTypeMatch) {
+          lessonSet.add(session.lesson);
+        }
       }
     });
-    return Array.from(weekSet).sort((a, b) => {
-      const aNum = extractWeekNumber(a);
-      const bNum = extractWeekNumber(b);
-      return (aNum || 0) - (bNum || 0);
-    });
+    return Array.from(lessonSet).sort();
   };
 
-  const availableWeeks = getAvailableWeeks();
+  const availableLessons = getAvailableLessons();
 
   // Filter sessions based on search and filters
-  const filteredSessions = sessions.filter(session => {
-    // Hide deactivated sessions
-    const effectiveState = session.state || session.account_state || 'Activated';
-    if (effectiveState === 'Deactivated') {
-      return false;
-    }
+  const filteredSessions = visibleSessions.filter(session => {
     // Search filter (by lesson name - case-insensitive)
     if (searchTerm.trim()) {
       const lessonName = session.name || '';
@@ -263,10 +223,9 @@ export default function OnlineSessions() {
       }
     }
 
-    // Week filter
-    if (filterWeek) {
-      const weekNumber = extractWeekNumber(filterWeek);
-      if (session.week !== weekNumber) {
+    // Lesson filter
+    if (filterLesson) {
+      if (session.lesson !== filterLesson) {
         return false;
       }
     }
@@ -280,6 +239,96 @@ export default function OnlineSessions() {
       setSearchTerm("");
     }
   }, [searchInput, searchTerm]);
+
+  useEffect(() => {
+    selectedVideoRef.current = selectedVideo;
+  }, [selectedVideo]);
+
+  useEffect(() => {
+    if (videoPopupOpen) {
+      vvcViewsDecrementDoneRef.current = false;
+      freeViewsDecrementDoneRef.current = false;
+      watchedTenPercentRef.current = false;
+      attendancePostedRef.current = false;
+    }
+  }, [videoPopupOpen, selectedVideo?._id]);
+
+  useEffect(() => {
+    if (!studentId) return;
+    if (lastUnlockStudentIdRef.current !== studentId) {
+      lastUnlockStudentIdRef.current = studentId;
+      const stored = readUnlockMap(studentId);
+      if (stored.size > 0) {
+        setUnlockedSessions((prev) => {
+          const merged = new Map(stored);
+          prev.forEach((value, key) => merged.set(key, value));
+          return merged;
+        });
+      }
+      return;
+    }
+    writeUnlockMap(studentId, unlockedSessions);
+  }, [studentId, unlockedSessions]);
+
+  // Restore unlocked sessions from student's online_sessions on page load
+  useEffect(() => {
+    const restoreUnlockedSessions = async () => {
+      console.log('[RESTORE] studentData:', studentData);
+      if (!studentData?.online_sessions || !Array.isArray(studentData.online_sessions)) {
+        console.log('[RESTORE] No online_sessions found in studentData');
+        return;
+      }
+
+      console.log('[RESTORE] Starting restore process, found', studentData.online_sessions.length, 'online_sessions');
+      const newUnlocked = new Map();
+      const invalidIds = [];
+      
+      // Process each online_session entry
+      for (const onlineSession of studentData.online_sessions) {
+        if (!onlineSession.vvc_id || !onlineSession.video_id) {
+          console.log('[RESTORE] Skipping entry - missing vvc_id or video_id:', onlineSession);
+          continue;
+        }
+
+        const videoId = typeof onlineSession.video_id === 'string' 
+          ? onlineSession.video_id 
+          : onlineSession.video_id.toString();
+
+        try {
+          console.log('[RESTORE] Fetching VVC details for video_id:', onlineSession.video_id, 'vvc_id:', onlineSession.vvc_id);
+          // Fetch VVC details by ID
+          const response = await apiClient.post('/api/vvc/get-by-id', {
+            vvc_id: onlineSession.vvc_id
+          });
+
+          console.log('[RESTORE] VVC response:', response.data);
+          if (response.data.success && response.data.valid) {
+            console.log('[RESTORE] Adding to unlocked sessions - videoId:', videoId, 'vvc_id:', response.data.vvc_id);
+            newUnlocked.set(videoId, unlockInfoFromVvcResponse(response.data));
+          } else {
+            console.log('[RESTORE] VVC not valid:', response.data);
+            invalidIds.push(videoId);
+          }
+        } catch (err) {
+          console.error('[RESTORE] Failed to restore VVC for video:', onlineSession.video_id, err);
+          // Continue with other entries even if one fails
+        }
+      }
+
+      // Update unlocked sessions state (add valid, remove expired/invalid)
+      console.log('[RESTORE] Restored', newUnlocked.size, 'unlocked sessions');
+      if (newUnlocked.size > 0 || invalidIds.length > 0) {
+        setUnlockedSessions((prev) => {
+          const merged = new Map(prev);
+          invalidIds.forEach((id) => merged.delete(id));
+          newUnlocked.forEach((value, key) => merged.set(key, value));
+          return merged;
+        });
+      }
+    };
+
+    restoreUnlockedSessions();
+  }, [studentData, sessionsData]);
 
   // Handle search
   const handleSearch = () => {
@@ -306,120 +355,88 @@ export default function OnlineSessions() {
     }
   };
 
-  // Restore unlocked sessions from student's online_sessions on page load
-  useEffect(() => {
-    const restoreUnlockedSessions = async () => {
-      console.log('[RESTORE] studentData:', studentData);
-      if (!studentData?.online_sessions || !Array.isArray(studentData.online_sessions)) {
-        console.log('[RESTORE] No online_sessions found in studentData');
-        return;
-      }
-
-      console.log('[RESTORE] Starting restore process, found', studentData.online_sessions.length, 'online_sessions');
-      const newUnlocked = new Map();
-      
-      // Process each online_session entry
-      for (const onlineSession of studentData.online_sessions) {
-        if (!onlineSession.vvc_id || !onlineSession.video_id) {
-          console.log('[RESTORE] Skipping entry - missing vvc_id or video_id:', onlineSession);
-          continue;
-        }
-
-        try {
-          console.log('[RESTORE] Fetching VVC details for video_id:', onlineSession.video_id, 'vvc_id:', onlineSession.vvc_id);
-          // Fetch VVC details by ID
-          const response = await apiClient.post('/api/vvc/get-by-id', {
-            vvc_id: onlineSession.vvc_id
-          });
-
-          console.log('[RESTORE] VVC response:', response.data);
-          if (response.data.success && response.data.valid) {
-            // Add to unlocked sessions Map
-            const videoId = typeof onlineSession.video_id === 'string' 
-              ? onlineSession.video_id 
-              : onlineSession.video_id.toString();
-            
-            console.log('[RESTORE] Adding to unlocked sessions - videoId:', videoId, 'vvc_id:', response.data.vvc_id);
-            newUnlocked.set(videoId, {
-              vvc_id: response.data.vvc_id,
-              code_settings: response.data.code_settings || 'number_of_views',
-              number_of_views: response.data.number_of_views || null,
-              deadline_date: response.data.deadline_date || null
-            });
-          } else {
-            console.log('[RESTORE] VVC not valid:', response.data);
-          }
-        } catch (err) {
-          console.error('[RESTORE] Failed to restore VVC for video:', onlineSession.video_id, err);
-          // Continue with other entries even if one fails
-        }
-      }
-
-      // Update unlocked sessions state
-      console.log('[RESTORE] Restored', newUnlocked.size, 'unlocked sessions');
-      if (newUnlocked.size > 0) {
-        setUnlockedSessions(newUnlocked);
-      }
-    };
-
-    restoreUnlockedSessions();
-  }, [studentData]);
 
   // Helper function to check if video is unlocked
-  const isVideoUnlocked = (session) => {
-    if (session.payment_state === 'free') {
-      return true; // Free videos are always unlocked
-    } else if (session.payment_state === 'paid') {
-      // Check if session is in unlockedSessions
-      const sessionId = session._id?.toString() || session._id;
-      const unlockedInfo = unlockedSessions.get(sessionId);
-      
-      console.log('[UNLOCK CHECK] Session ID:', sessionId, 'Unlocked info:', unlockedInfo, 'All unlocked keys:', Array.from(unlockedSessions.keys()));
-      
-      if (!unlockedInfo) {
-        return false; // Not unlocked yet
+  const getFreeViewingEntry = (sessionId) => {
+    const list = studentData?.online_sessions;
+    if (!Array.isArray(list) || !sessionId) return null;
+    return list.find((s) => {
+      const videoIdStr = typeof s.video_id === 'string' ? s.video_id : s.video_id?.toString();
+      return videoIdStr === String(sessionId) && s.free_viewing === true;
+    }) || null;
+  };
+
+  const isVvcUnlockValid = (unlockedInfo) => {
+    if (!unlockedInfo) return false;
+    if (unlockedInfo.code_settings === 'number_of_days') {
+      // Use live number_of_days from code (admin can extend days; window starts from first open)
+      if (unlockedInfo.access_started_at != null && unlockedInfo.number_of_days != null) {
+        return isCodeNumberOfDaysValid(unlockedInfo.access_started_at, unlockedInfo.number_of_days);
       }
-      
-      // Check deadline date if code_settings is 'deadline_date'
-      if (unlockedInfo.code_settings === 'deadline_date' && unlockedInfo.deadline_date) {
-        const deadlineDate = new Date(unlockedInfo.deadline_date);
-        const today = new Date();
-        today.setHours(0, 0, 0, 0);
-        deadlineDate.setHours(0, 0, 0, 0);
-        
-        // Allow use until the end of the deadline day (deadlineDate < today means expired)
-        if (deadlineDate < today) {
-          // Expired - remove from unlocked sessions
-          const newUnlocked = new Map(unlockedSessions);
-          newUnlocked.delete(sessionId);
-          setUnlockedSessions(newUnlocked);
-          return false;
-        }
-      } else if (unlockedInfo.code_settings === 'number_of_views') {
-        // Check if views are remaining
-        if (unlockedInfo.number_of_views <= 0) {
-          // No views remaining - remove from unlocked sessions
-          const newUnlocked = new Map(unlockedSessions);
-          newUnlocked.delete(sessionId);
-          setUnlockedSessions(newUnlocked);
-          return false;
-        }
+      if (unlockedInfo.deadline_date && isDeadlinePassedEgypt(unlockedInfo.deadline_date, null)) {
+        return false;
       }
-      
-      return true; // Unlocked and valid
+      return !!unlockedInfo.deadline_date;
     }
-    return false; // Default to locked
+    if (unlockedInfo.code_settings === 'deadline_date' && unlockedInfo.deadline_date) {
+      if (isDeadlinePassedEgypt(unlockedInfo.deadline_date, null)) return false;
+    } else if (unlockedInfo.code_settings === 'number_of_views') {
+      const views = Number(unlockedInfo.number_of_views);
+      if (!Number.isFinite(views) || views <= 0) return false;
+    }
+    return true;
+  };
+
+  const isVideoUnlocked = (session) => {
+    const sessionId = session._id?.toString() || session._id;
+    const unlockedInfo = unlockedSessions.get(sessionId);
+    const lessonData = getStudentLesson(studentData?.lessons, session.lesson);
+
+    if (session.payment_state === 'free' || session.payment_state === 'free_if_attended_in_center') {
+      const entry = getFreeViewingEntry(sessionId);
+      const freeExpired = isFreeViewingExpired(session, entry, lessonData);
+
+      if (session.payment_state === 'free_if_attended_in_center' && !freeExpired) {
+        // Prefer live student lesson data: attended=true + lastAttendanceCenter not Online
+        let attended = attendedInCenter(lessonData);
+        // Fallback to API flag if lesson data not loaded yet
+        if (!attended && lessonData == null && session._attendedInCenter === true) {
+          attended = true;
+        }
+        if (!attended) return false;
+      }
+
+      // After free viewing expires → paid path: VVC unlock
+      if (isVvcUnlockValid(unlockedInfo)) {
+        return true;
+      }
+
+      // Still within free window
+      if (!freeExpired) {
+        return isFreeViewingAccessValid(session, entry, lessonData);
+      }
+
+      return false;
+    }
+
+    if (session.payment_state === 'paid') {
+      if (!isVvcUnlockValid(unlockedInfo)) {
+        return false;
+      }
+      return true;
+    }
+    return false;
   };
 
   // Handle VVC submission
   const handleVVCSubmit = async () => {
     if (!vvc || vvc.length !== 9) {
-      setVvcError('❌ VVC code must be 9 characters');
+      setVvcError(getVerificationCodeMessage('vvc', CODE_ERROR.INVALID_LENGTH));
       return;
     }
 
     if (!pendingVideo) {
-      setVvcError('❌ No video pending');
+      setVvcError(getVerificationCodeMessage('vvc', CODE_ERROR.NO_VIDEO_PENDING));
       return;
     }
 
@@ -433,7 +450,8 @@ export default function OnlineSessions() {
 
       const response = await apiClient.post('/api/vvc/check', {
         VVC: vvc,
-        session_id: sessionId
+        session_id: sessionId,
+        lesson: pendingVideo.session.lesson || ''
       });
 
       if (response.data.valid) {
@@ -444,53 +462,45 @@ export default function OnlineSessions() {
         
         // Store unlocked session info
         const newUnlocked = new Map(unlockedSessions);
-        newUnlocked.set(sessionId, {
-          vvc_id: response.data.vvc_id,
-          code_settings: response.data.code_settings || 'number_of_views',
-          number_of_views: response.data.number_of_views || null,
-          deadline_date: response.data.deadline_date || null
-        });
+        newUnlocked.set(sessionId, unlockInfoFromVvcResponse(response.data));
         setUnlockedSessions(newUnlocked);
+
+        if (studentId) {
+          queryClient.setQueryData(studentKeys.detail(studentId), (old) => {
+            if (!old) return old;
+            const list = Array.isArray(old.online_sessions) ? [...old.online_sessions] : [];
+            const entry = {
+              video_id: sessionId,
+              vvc_id: String(response.data.vvc_id),
+              date: new Date().toISOString(),
+            };
+            const idx = list.findIndex((s) => String(s.video_id) === sessionId);
+            if (idx !== -1) list[idx] = entry;
+            else list.push(entry);
+            return { ...old, online_sessions: list };
+          });
+          queryClient.invalidateQueries({ queryKey: studentKeys.detail(studentId) });
+        }
         
         setVvcPopupOpen(false);
         setSelectedVideo({ 
           ...pendingVideo.session, 
           video_ID: pendingVideo.videoId, 
           video_type: pendingVideo.videoType,
-          vvc_id: response.data.vvc_id,
-          code_settings: response.data.code_settings || 'number_of_views',
-          number_of_views: response.data.number_of_views || null,
-          deadline_date: response.data.deadline_date || null
+          ...unlockInfoFromVvcResponse(response.data),
         });
         setVideoPopupOpen(true);
         videoStartTimeRef.current = Date.now();
         r2CompletedRef.current = false;
+        watchedTenPercentRef.current = false;
+        attendancePostedRef.current = false;
         setPendingVideo(null);
         setVvc('');
-        
-        // Decrement views if code_settings is 'number_of_views'
-        if (response.data.code_settings === 'number_of_views' && response.data.vvc_id) {
-          try {
-            await apiClient.post('/api/vvc/decrement-views', {
-              vvc_id: response.data.vvc_id
-            });
-            // Update unlocked sessions with new view count
-            const updatedUnlocked = new Map(newUnlocked);
-            const sessionInfo = updatedUnlocked.get(sessionId);
-            if (sessionInfo && sessionInfo.number_of_views > 0) {
-              sessionInfo.number_of_views -= 1;
-              updatedUnlocked.set(sessionId, sessionInfo);
-              setUnlockedSessions(updatedUnlocked);
-            }
-          } catch (err) {
-            console.error('Failed to decrement views:', err);
-          }
-        }
       } else {
-        setVvcError(response.data.error || '❌ Invalid VVC code');
+        setVvcError(resolveVerificationCodeError('vvc', response.data));
       }
     } catch (err) {
-      setVvcError(err.response?.data?.error || '❌ Failed to verify VVC code');
+      setVvcError(resolveVerificationCodeError('vvc', err.response?.data || CODE_ERROR.VERIFY_FAILED));
     } finally {
       setIsCheckingVvc(false);
     }
@@ -504,6 +514,210 @@ export default function OnlineSessions() {
     setVvcError('');
   };
 
+  const tryDecrementVvcViewsOnWatchProgress = useCallback(async () => {
+    if (vvcViewsDecrementDoneRef.current) return;
+    const v = selectedVideoRef.current;
+    if (!v?.vvc_id || v.code_settings !== 'number_of_views') return;
+    vvcViewsDecrementDoneRef.current = true;
+    try {
+      const decrementResponse = await apiClient.post('/api/vvc/decrement-views', {
+        vvc_id: v.vvc_id
+      });
+      if (decrementResponse.data.success) {
+        const sessionId = typeof v._id === 'string' ? v._id : v._id.toString();
+        const remaining = Number(decrementResponse.data.number_of_views);
+        setUnlockedSessions((prev) => {
+          const updatedUnlocked = new Map(prev);
+          const sessionInfo = updatedUnlocked.get(sessionId);
+          if (!sessionInfo) return updatedUnlocked;
+          if (!Number.isFinite(remaining) || remaining <= 0) {
+            updatedUnlocked.delete(sessionId);
+          } else {
+            updatedUnlocked.set(sessionId, {
+              ...sessionInfo,
+              number_of_views: remaining,
+            });
+          }
+          return updatedUnlocked;
+        });
+        if (studentId && (!Number.isFinite(remaining) || remaining <= 0)) {
+          queryClient.invalidateQueries({ queryKey: studentKeys.detail(studentId) });
+        }
+      } else {
+        vvcViewsDecrementDoneRef.current = false;
+      }
+    } catch (err) {
+      console.error('Failed to decrement VVC views:', err);
+      vvcViewsDecrementDoneRef.current = false;
+      if (err.response?.data?.error_code === CODE_ERROR.NO_VIEWS_REMAINING
+        || err.response?.data?.error?.includes('no views remaining')) {
+        const sessionId = typeof v._id === 'string' ? v._id : v._id.toString();
+        setUnlockedSessions((prev) => {
+          const next = new Map(prev);
+          next.delete(sessionId);
+          return next;
+        });
+        if (studentId) {
+          queryClient.invalidateQueries({ queryKey: studentKeys.detail(studentId) });
+        }
+        setVvcError(resolveVerificationCodeError('vvc', err.response?.data || CODE_ERROR.NO_VIEWS_REMAINING));
+      }
+    }
+  }, [studentId, queryClient]);
+
+  const postWatchAttendance = useCallback(async (currentVideo) => {
+    if (attendancePostedRef.current) return;
+    if (!currentVideo || !profile?.id || !currentVideo._id) return;
+
+    // Free / free-if-attended-in-center: only views/days — never overwrite DB attendance
+    if (FREE_ONLINE_SESSION_PAYMENT_STATES.includes(currentVideo.payment_state)) {
+      attendancePostedRef.current = true;
+      return;
+    }
+
+    attendancePostedRef.current = true;
+    try {
+      const sessionId = typeof currentVideo._id === 'string'
+        ? currentVideo._id
+        : currentVideo._id.toString();
+
+      await apiClient.post(`/api/students/${profile.id}/watch-video`, {
+        session_id: sessionId,
+        action: 'finish',
+        payment_state: currentVideo.payment_state
+      });
+
+      if (isScoringEnabled) {
+        try {
+          const sessionLesson = currentVideo.lesson || null;
+          let alreadyScored = false;
+          try {
+            const historyResponse = await apiClient.post('/api/scoring/get-last-history', {
+              studentId: profile.id,
+              type: 'attendance',
+              lesson: sessionLesson
+            });
+
+            if (historyResponse.data.found && historyResponse.data.history) {
+              const lastHistory = historyResponse.data.history;
+              if (lastHistory.data?.status === 'attend' &&
+                  (sessionLesson === null || lastHistory.process_lesson === sessionLesson)) {
+                const historyTime = new Date(lastHistory.timestamp);
+                const now = new Date();
+                if (now - historyTime < 3600000) {
+                  alreadyScored = true;
+                }
+              }
+            }
+          } catch (historyErr) {
+            console.error('Error checking attendance history:', historyErr);
+          }
+
+          if (!alreadyScored) {
+            let previousStatus = null;
+            try {
+              const historyResponse = await apiClient.post('/api/scoring/get-last-history', {
+                studentId: profile.id,
+                type: 'attendance',
+                lesson: sessionLesson
+              });
+              if (historyResponse.data.found && historyResponse.data.history) {
+                previousStatus = historyResponse.data.history.data?.status;
+              }
+            } catch (historyErr) {
+              console.error('Error getting attendance history:', historyErr);
+            }
+
+            await apiClient.post('/api/scoring/calculate', {
+              studentId: profile.id,
+              type: 'attendance',
+              lesson: sessionLesson,
+              source: {
+                kind: 'attendance',
+                id: sessionLesson,
+                label: sessionLesson,
+              },
+              data: {
+                status: 'attend',
+                previousStatus: previousStatus
+              }
+            });
+          }
+        } catch (err) {
+          console.error('Error calculating attendance score:', err);
+        }
+      }
+    } catch (err) {
+      attendancePostedRef.current = false;
+      console.error('Failed to mark video as finished:', err);
+    }
+  }, [profile?.id, isScoringEnabled]);
+
+  const applyFreeViewingEntryToCache = useCallback(
+    (sessionId, entry) => {
+      if (!studentId || !sessionId || !entry) return;
+      queryClient.setQueryData(studentKeys.detail(studentId), (old) => {
+        if (!old) return old;
+        const list = Array.isArray(old.online_sessions) ? [...old.online_sessions] : [];
+        const idx = list.findIndex((s) => {
+          const videoIdStr =
+            typeof s.video_id === 'string' ? s.video_id : s.video_id?.toString();
+          return videoIdStr === String(sessionId) && s.free_viewing === true;
+        });
+        if (idx >= 0) list[idx] = entry;
+        else list.push(entry);
+        return { ...old, online_sessions: list };
+      });
+      queryClient.invalidateQueries({ queryKey: studentKeys.detail(studentId) });
+    },
+    [studentId, queryClient]
+  );
+
+  const tryDecrementFreeViewsOnWatchProgress = useCallback(async () => {
+    const v = selectedVideoRef.current;
+    if (!v?._id || !profile?.id || !studentId) return;
+    if (!FREE_ONLINE_SESSION_PAYMENT_STATES.includes(v.payment_state)) return;
+    if (v.viewing_limit_type !== 'number_of_views') return;
+    if (v.vvc_id) return; // unlocked via VVC — don't consume free views
+    if (freeViewsDecrementDoneRef.current) return;
+    freeViewsDecrementDoneRef.current = true;
+    try {
+      const sessionId = typeof v._id === 'string' ? v._id : v._id.toString();
+      const decrementResponse = await apiClient.post(`/api/students/${profile.id}/watch-video`, {
+        session_id: sessionId,
+        action: 'decrement_free_views',
+        payment_state: v.payment_state,
+      });
+      if (decrementResponse.data.success && !decrementResponse.data.skipped) {
+        if (decrementResponse.data.entry) {
+          applyFreeViewingEntryToCache(sessionId, decrementResponse.data.entry);
+        } else {
+          queryClient.invalidateQueries({ queryKey: studentKeys.detail(studentId) });
+        }
+      } else if (!decrementResponse.data.success) {
+        freeViewsDecrementDoneRef.current = false;
+      }
+    } catch (err) {
+      console.error('Failed to decrement free views:', err);
+      freeViewsDecrementDoneRef.current = false;
+      if (err.response?.data?.require_vvc || err.response?.data?.expired) {
+        const sessionId = typeof v._id === 'string' ? v._id : v._id.toString();
+        if (err.response?.data?.entry) {
+          applyFreeViewingEntryToCache(sessionId, err.response.data.entry);
+        } else {
+          queryClient.invalidateQueries({ queryKey: studentKeys.detail(studentId) });
+        }
+      }
+    }
+  }, [profile?.id, studentId, queryClient, applyFreeViewingEntryToCache]);
+
+  const handleWatchTenPercent = useCallback(async () => {
+    watchedTenPercentRef.current = true;
+    await tryDecrementVvcViewsOnWatchProgress();
+    await tryDecrementFreeViewsOnWatchProgress();
+    await postWatchAttendance(selectedVideoRef.current);
+  }, [tryDecrementVvcViewsOnWatchProgress, tryDecrementFreeViewsOnWatchProgress, postWatchAttendance]);
+
   // Handle R2 video completion (>= 90% watched)
   const handleR2VideoComplete = useCallback(async (videoId, percent) => {
     r2CompletedRef.current = true;
@@ -513,68 +727,97 @@ export default function OnlineSessions() {
   // Open video popup
   const openVideoPopup = async (session, videoId, videoIndex) => {
     // Get video type, default to 'youtube' for backward compatibility
-    // Also detect R2 keys by format if video_type is missing
-    const storedType = session[`video_type_${videoIndex}`];
-    const videoType = storedType || (isR2Key(videoId) ? 'r2' : 'youtube');
+    const videoType = session[`video_type_${videoIndex}`] || 'youtube';
+    const sessionId = session._id?.toString() || session._id;
+    const freeEntry = getFreeViewingEntry(sessionId);
     
     // Check if video is unlocked
     if (isVideoUnlocked(session)) {
-      // Video is unlocked - check deadline date and decrement views if needed
-      const sessionId = session._id?.toString() || session._id;
-      const unlockedInfo = unlockedSessions.get(sessionId);
-      
-      if (unlockedInfo) {
-        // Check deadline date expiration
+      // Video is unlocked - check deadline date (views decrement after >=10% watch via player)
+      let unlockedInfo = unlockedSessions.get(sessionId);
+
+      // Sync number_of_days from server so admin day extensions apply automatically
+      if (unlockedInfo?.vvc_id && unlockedInfo.code_settings === 'number_of_days') {
+        try {
+          const syncRes = await apiClient.post('/api/vvc/get-by-id', {
+            vvc_id: unlockedInfo.vvc_id,
+          });
+          if (syncRes.data?.success && syncRes.data?.valid) {
+            unlockedInfo = unlockInfoFromVvcResponse(syncRes.data);
+            setUnlockedSessions((prev) => {
+              const next = new Map(prev);
+              next.set(sessionId, unlockedInfo);
+              return next;
+            });
+          } else {
+            setVvcError(resolveVerificationCodeError('vvc', syncRes.data));
+            setUnlockedSessions((prev) => {
+              const next = new Map(prev);
+              next.delete(sessionId);
+              return next;
+            });
+            setPendingVideo({ session, videoId, videoIndex, videoType });
+            setVvcPopupOpen(true);
+            setVvc('');
+            return;
+          }
+        } catch (err) {
+          console.error('Failed to sync VVC number_of_days:', err);
+        }
+      } else if (unlockedInfo) {
+        // Fixed deadline_date expiration (Africa/Cairo)
         if (unlockedInfo.code_settings === 'deadline_date' && unlockedInfo.deadline_date) {
-          const deadlineDate = new Date(unlockedInfo.deadline_date);
-          const today = new Date();
-          today.setHours(0, 0, 0, 0);
-          deadlineDate.setHours(0, 0, 0, 0);
-          
-          // Allow use until the end of the deadline day (deadlineDate < today means expired)
-          if (deadlineDate < today) {
-            // Expired
-            setVvcError('❌ Sorry, This code is expired');
+          if (isDeadlinePassedEgypt(unlockedInfo.deadline_date, null)) {
+            setVvcError(getVerificationCodeMessage('vvc', CODE_ERROR.DEADLINE_EXPIRED, {
+              code_settings: 'deadline_date',
+              deadline_date: unlockedInfo.deadline_date,
+            }));
             const newUnlocked = new Map(unlockedSessions);
             newUnlocked.delete(sessionId);
             setUnlockedSessions(newUnlocked);
             return;
           }
         }
-        
-        // Decrement views if code_settings is 'number_of_views'
-        if (unlockedInfo.code_settings === 'number_of_views' && unlockedInfo.vvc_id) {
-          try {
-            const decrementResponse = await apiClient.post('/api/vvc/decrement-views', {
-              vvc_id: unlockedInfo.vvc_id
-            });
-            
-            if (decrementResponse.data.success) {
-              // Update unlocked sessions with new view count
-              const updatedUnlocked = new Map(unlockedSessions);
-              const sessionInfo = updatedUnlocked.get(sessionId);
-              if (sessionInfo) {
-                sessionInfo.number_of_views = decrementResponse.data.number_of_views;
-                if (sessionInfo.number_of_views <= 0) {
-                  // No views remaining - remove from unlocked
-                  updatedUnlocked.delete(sessionId);
-                } else {
-                  updatedUnlocked.set(sessionId, sessionInfo);
-                }
-                setUnlockedSessions(updatedUnlocked);
-              }
-            }
-          } catch (err) {
-            console.error('Failed to decrement views:', err);
-            if (err.response?.data?.error?.includes('no views remaining')) {
-              // Remove from unlocked sessions
-              const newUnlocked = new Map(unlockedSessions);
-              newUnlocked.delete(sessionId);
-              setUnlockedSessions(newUnlocked);
-              setVvcError('❌ Sorry, this code has no views remaining');
-              return;
-            }
+      }
+
+      // Free / free-if-attended: continue free access (days/views start on first open)
+      if (
+        FREE_ONLINE_SESSION_PAYMENT_STATES.includes(session.payment_state) &&
+        profile?.id &&
+        !unlockedInfo &&
+        isFreeViewingAccessValid(
+          session,
+          freeEntry,
+          getStudentLesson(studentData?.lessons, session.lesson)
+        )
+      ) {
+        try {
+          const startRes = await apiClient.post(`/api/students/${profile.id}/watch-video`, {
+            session_id: sessionId,
+            action: 'start_free_access',
+            payment_state: session.payment_state,
+          });
+          if (startRes.data?.entry) {
+            applyFreeViewingEntryToCache(sessionId, startRes.data.entry);
+          } else if (studentId) {
+            queryClient.invalidateQueries({ queryKey: studentKeys.detail(studentId) });
           }
+        } catch (err) {
+          // Free window expired / failed → require VVC (paid path)
+          if (err.response?.data?.entry) {
+            applyFreeViewingEntryToCache(sessionId, err.response.data.entry);
+          } else if (studentId) {
+            queryClient.invalidateQueries({ queryKey: studentKeys.detail(studentId) });
+          }
+          setPendingVideo({ session, videoId, videoIndex, videoType });
+          setVvcPopupOpen(true);
+          setVvc('');
+          setVvcError(
+            err.response?.data?.require_vvc || err.response?.data?.expired
+              ? getVerificationCodeMessage('vvc', CODE_ERROR.FREE_VIEWING_ENDED)
+              : ''
+          );
+          return;
         }
       }
       
@@ -586,134 +829,96 @@ export default function OnlineSessions() {
         vvc_id: unlockedInfo?.vvc_id,
         code_settings: unlockedInfo?.code_settings,
         number_of_views: unlockedInfo?.number_of_views,
+        number_of_days: unlockedInfo?.number_of_days,
+        access_started_at: unlockedInfo?.access_started_at,
         deadline_date: unlockedInfo?.deadline_date
       });
       setVideoPopupOpen(true);
       videoStartTimeRef.current = Date.now();
       r2CompletedRef.current = false;
+      watchedTenPercentRef.current = false;
+      freeViewsDecrementDoneRef.current = false;
+      attendancePostedRef.current = false;
     } else {
-      // Video is locked - require VVC
+      // Locked locally — but if student already redeemed a VVC, re-check server
+      // (admin may have extended number_of_days)
+      const redeemed = Array.isArray(studentData?.online_sessions)
+        ? studentData.online_sessions.find((s) => {
+            const videoIdStr = typeof s.video_id === 'string' ? s.video_id : s.video_id?.toString();
+            return videoIdStr === String(sessionId) && s.vvc_id;
+          })
+        : null;
+      if (redeemed?.vvc_id) {
+        try {
+          const syncRes = await apiClient.post('/api/vvc/get-by-id', {
+            vvc_id: redeemed.vvc_id,
+          });
+          if (syncRes.data?.success && syncRes.data?.valid) {
+            const unlockedInfo = unlockInfoFromVvcResponse(syncRes.data);
+            setUnlockedSessions((prev) => {
+              const next = new Map(prev);
+              next.set(sessionId, unlockedInfo);
+              return next;
+            });
+            setSelectedVideo({
+              ...session,
+              video_ID: videoId,
+              video_type: videoType,
+              ...unlockedInfo,
+            });
+            setVideoPopupOpen(true);
+            videoStartTimeRef.current = Date.now();
+            r2CompletedRef.current = false;
+            watchedTenPercentRef.current = false;
+            freeViewsDecrementDoneRef.current = false;
+            attendancePostedRef.current = false;
+            return;
+          }
+        } catch (err) {
+          console.error('Failed to revive VVC after day extension:', err);
+        }
+      }
+
+      // Locked (paid, free expired, or free-if-attended without center attendance) → VVC popup
       setPendingVideo({ session, videoId, videoIndex, videoType });
       setVvcPopupOpen(true);
       setVvc('');
-      setVvcError('');
+      setVvcError(
+        FREE_ONLINE_SESSION_PAYMENT_STATES.includes(session.payment_state) &&
+          isFreeViewingExpired(
+            session,
+            freeEntry,
+            getStudentLesson(studentData?.lessons, session.lesson)
+          )
+          ? getVerificationCodeMessage('vvc', CODE_ERROR.FREE_VIEWING_ENDED)
+          : ''
+      );
     }
   };
 
-  // Close video popup and mark attendance
+  // Close video popup; attendance is marked at >=10% watch (fallback if still pending)
   const closeVideoPopup = async () => {
-    // Prevent multiple calls
     if (isClosingVideoRef.current) {
       return;
     }
     
-    // Only decrement views and mark attendance if video was actually watched
-    // For YouTube: at least 5 seconds to prevent accidental closes
-    // For R2: must have reached >= 90% of the video
-    const minWatchTime = 5000; // 5 seconds in milliseconds
-    const watchTime = videoStartTimeRef.current ? Date.now() - videoStartTimeRef.current : 0;
-    
-    // Close popup immediately (UI feedback)
     const currentVideo = selectedVideo;
-    const isR2Video = currentVideo?.video_type === 'r2' || isR2Key(currentVideo?.video_ID);
-    const r2Completed = r2CompletedRef.current;
     setVideoPopupOpen(false);
     setSelectedVideo(null);
     videoStartTimeRef.current = null;
     r2CompletedRef.current = false;
-    
-    // Determine if video was actually watched
-    const videoWasWatched = isR2Video ? r2Completed : (watchTime >= minWatchTime);
-    
-    // Call watch-video API for both free and paid videos (mark attendance and create history)
-    if (currentVideo && profile?.id && currentVideo._id && videoWasWatched) {
+    const videoWasWatched = watchedTenPercentRef.current;
+    watchedTenPercentRef.current = false;
+
+    if (videoWasWatched) {
       isClosingVideoRef.current = true;
       try {
-        // Convert _id to string if it's an ObjectId
-        const sessionId = typeof currentVideo._id === 'string' 
-          ? currentVideo._id 
-          : currentVideo._id.toString();
-        
-        await apiClient.post(`/api/students/${profile.id}/watch-video`, {
-          session_id: sessionId,
-          action: 'finish',
-          payment_state: currentVideo.payment_state // Pass payment state to API
-        });
-        
-        // Calculate score for attendance (watching full video = attend)
-        // Check history first to avoid duplicate scoring (only if scoring is enabled)
-        if (isScoringEnabled) {
-          try {
-            // Get session week if available
-          const sessionWeek = currentVideo.week !== undefined && currentVideo.week !== null ? currentVideo.week : null;
-          
-          // Check if attendance was already scored for this session
-          let alreadyScored = false;
-          try {
-            const historyResponse = await apiClient.post('/api/scoring/get-last-history', {
-              studentId: profile.id,
-              type: 'attendance',
-              week: sessionWeek
-            });
-            
-            if (historyResponse.data.found && historyResponse.data.history) {
-              const lastHistory = historyResponse.data.history;
-              // Check if this is attendance for the same week and was scored recently (within last hour)
-              if (lastHistory.data?.status === 'attend' && 
-                  (sessionWeek === null || lastHistory.process_week === sessionWeek)) {
-                const historyTime = new Date(lastHistory.timestamp);
-                const now = new Date();
-                const timeDiff = now - historyTime;
-                if (timeDiff < 3600000) { // 1 hour
-                  alreadyScored = true;
-                  console.log(`[ONLINE SESSIONS] Attendance already scored for session ${sessionId}, skipping`);
-                }
-              }
-            }
-          } catch (historyErr) {
-            console.error('Error checking attendance history:', historyErr);
-          }
-          
-          if (!alreadyScored) {
-            // Get previous attendance status from history
-            let previousStatus = null;
-            try {
-              const historyResponse = await apiClient.post('/api/scoring/get-last-history', {
-                studentId: profile.id,
-                type: 'attendance',
-                week: sessionWeek
-              });
-              
-              if (historyResponse.data.found && historyResponse.data.history) {
-                previousStatus = historyResponse.data.history.data?.status;
-              }
-            } catch (historyErr) {
-              console.error('Error getting attendance history:', historyErr);
-            }
-            
-            await apiClient.post('/api/scoring/calculate', {
-              studentId: profile.id,
-              type: 'attendance',
-              week: sessionWeek,
-              data: { 
-                status: 'attend',
-                previousStatus: previousStatus
-              }
-            });
-            console.log(`[ONLINE SESSIONS] Attendance score calculated for session ${sessionId}`);
-          }
-          } catch (err) {
-            console.error('Error calculating attendance score:', err);
-          }
-        }
-      } catch (err) {
-        console.error('Failed to mark video as finished:', err);
+        await postWatchAttendance(currentVideo);
       } finally {
         isClosingVideoRef.current = false;
       }
     }
   };
-
 
   return (
     <div className="page-wrapper" style={{ 
@@ -724,7 +929,7 @@ export default function OnlineSessions() {
         <Title backText="Back" href="/student_dashboard">
           <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
             <Image src="/video.svg" alt="Videos" width={35} height={35} />
-            Online Sessions
+            Recorded Sessions
           </div>
         </Title>
 
@@ -756,20 +961,20 @@ export default function OnlineSessions() {
             }}>
               <div className="filter-group" style={{ flex: 1, minWidth: 180 }}>
                 <label className="filter-label" style={{ display: 'block', marginBottom: '8px', fontWeight: 600, color: '#495057', fontSize: '0.95rem' }}>
-                  Filter by Week
+                  Filter by Lesson
                 </label>
-                <StudentWeekSelect
-                  availableWeeks={availableWeeks}
-                  selectedWeek={filterWeek}
-                  onWeekChange={(week) => {
-                    setFilterWeek(week);
+                <StudentLessonSelect
+                  availableLessons={availableLessons}
+                  selectedLesson={filterLesson}
+                  onLessonChange={(lesson) => {
+                    setFilterLesson(lesson);
                   }}
-                  isOpen={filterWeekDropdownOpen}
+                  isOpen={filterLessonDropdownOpen}
                   onToggle={() => {
-                    setFilterWeekDropdownOpen(!filterWeekDropdownOpen);
+                    setFilterLessonDropdownOpen(!filterLessonDropdownOpen);
                   }}
-                  onClose={() => setFilterWeekDropdownOpen(false)}
-                  placeholder="Select Week"
+                  onClose={() => setFilterLessonDropdownOpen(false)}
+                  placeholder="Select Lesson"
                 />
               </div>
             </div>
@@ -794,7 +999,7 @@ export default function OnlineSessions() {
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
               {filteredSessions.map((session, index) => {
-                const sessionId = session._id?.toString() || `${session.name}-${session.week}-${index}`;
+                const sessionId = session._id?.toString() || `${session.name}-${session.lesson}-${index}`;
                 const isExpanded = expandedSessions.has(sessionId);
                 return (
                 <div
@@ -820,7 +1025,7 @@ export default function OnlineSessions() {
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
                     <div style={{ flex: 1 }} onClick={(e) => { e.stopPropagation(); toggleSession(sessionId); }}>
                       <div style={{ fontWeight: '600', fontSize: '1.1rem', color: '#333', marginBottom: '4px' }}>
-                        {[session.week !== undefined && session.week !== null ? `Week ${session.week}` : null, session.name].filter(Boolean).join(' • ')}
+                        {[session.lesson, session.name].filter(Boolean).join(' • ')}
                       </div>
                       {session.description && (
                         <div style={{ fontSize: '0.9rem', color: '#6c757d', marginTop: '4px' }}>
@@ -868,8 +1073,8 @@ export default function OnlineSessions() {
                           videoIndex++;
                         }
                         return videoIds.map((video, vidIndex) => {
-                          const storedVideoType = session[`video_type_${video.index}`];
-                          const videoType = storedVideoType || (isR2Key(video.id) ? 'r2' : 'youtube');
+                          // Get video type from session data, default to 'youtube' for backward compatibility
+                          const videoType = session[`video_type_${video.index}`] || 'youtube';
                           // Get video name, default to "Video {index}" if not set
                           const videoName = video.name || `Video ${video.index}`;
                           const isUnlocked = isVideoUnlocked(session);
@@ -969,7 +1174,7 @@ export default function OnlineSessions() {
                 textAlign: 'center',
                 letterSpacing: '-0.5px'
               }}>
-                Enter VVC Code
+                {pendingVideo ? 'Enter VVC Code' : 'Video Locked'}
               </h2>
               <p style={{ 
                 margin: '0 0 28px 0', 
@@ -978,8 +1183,11 @@ export default function OnlineSessions() {
                 textAlign: 'center',
                 lineHeight: '1.5'
               }}>
-                This video requires a VVC code. Please enter your 9-character code below.
+                {pendingVideo
+                  ? 'This video requires a VVC code. Please enter your 9-character code below.'
+                  : 'This video is locked.'}
               </p>
+              {pendingVideo && (
               <input
                 type="text"
                 value={vvc}
@@ -1022,21 +1230,8 @@ export default function OnlineSessions() {
                 }}
                 autoFocus
               />
-              {vvcError && (
-                <div style={{ 
-                  color: '#dc3545', 
-                  fontSize: '0.95rem', 
-                  marginBottom: '20px', 
-                  textAlign: 'center',
-                  fontWeight: '500',
-                  padding: '8px',
-                  backgroundColor: '#fff5f5',
-                  borderRadius: '8px',
-                  border: '1px solid #fecaca'
-                }}>
-                  {vvcError}
-                </div>
               )}
+              {vvcError && <CodePopupMessage message={vvcError} />}
               <div style={{ display: 'flex', gap: '12px', flexDirection: 'row-reverse' }}>
                 <button
                   onClick={closeVvcPopup}
@@ -1062,8 +1257,9 @@ export default function OnlineSessions() {
                     e.target.style.boxShadow = '0 4px 12px rgba(220, 53, 69, 0.3)';
                   }}
                 >
-                  Cancel
+                  {pendingVideo ? 'Cancel' : 'Close'}
                 </button>
+                {pendingVideo && (
                 <button
                   onClick={handleVVCSubmit}
                   disabled={isCheckingVvc || !vvc || vvc.length !== 9}
@@ -1099,6 +1295,7 @@ export default function OnlineSessions() {
                 >
                   {isCheckingVvc ? 'Verifying...' : 'Submit'}
                 </button>
+                )}
               </div>
             </div>
           </div>
@@ -1192,7 +1389,7 @@ export default function OnlineSessions() {
                 <h3 style={{ margin: 0, fontSize: '1.2rem' }}>{selectedVideo.name}</h3>
               </div>
 
-              {/* Video Player */}
+              {/* Video Player - YouTube iframe or R2 Video Player */}
               <div 
                 className="video-player-wrapper"
                 style={{ 
@@ -1214,31 +1411,41 @@ export default function OnlineSessions() {
                 onDragStart={(e) => e.preventDefault()}
                 onSelectStart={(e) => e.preventDefault()}
               >
-                {(selectedVideo.video_type === 'r2' || isR2Key(selectedVideo.video_ID)) ? (
+                {selectedVideo.video_type === 'r2' ? (
                   <R2VideoPlayer
                     r2Key={selectedVideo.video_ID}
                     videoId={selectedVideo._id}
+                    watermarkText={`${profile?.id || 'unknown'}`}
                     onComplete={handleR2VideoComplete}
+                    onMilestonePercent={handleWatchTenPercent}
+                  />
+                ) : selectedVideo.video_type === 'zoom' ? (
+                  <ZoomVideoPlayer
+                    meetingId={selectedVideo.video_ID || selectedVideo.video_ID_1 || ''}
+                    videoId={selectedVideo._id}
+                    watermarkText={`${profile?.id || 'unknown'}`}
+                    onComplete={handleR2VideoComplete}
+                    onMilestonePercent={handleWatchTenPercent}
+                  />
+                ) : selectedVideo.video_type === 'google_meet' ? (
+                  <GoogleMeetVideoPlayer
+                    secureId={selectedVideo.video_ID || selectedVideo.video_ID_1 || ''}
+                    videoId={selectedVideo._id}
+                    watermarkText={`${profile?.id || 'unknown'}`}
+                    onComplete={handleR2VideoComplete}
+                    onMilestonePercent={handleWatchTenPercent}
+                  />
+                ) : selectedVideo.code_settings === 'number_of_views' && selectedVideo.vvc_id ? (
+                  <YoutubeEmbedWithProgress
+                    youtubeVideoId={selectedVideo.video_ID || selectedVideo.video_ID_1 || ''}
+                    watermarkText={`${profile?.id || 'unknown'}`}
+                    onThresholdReached={handleWatchTenPercent}
                   />
                 ) : (
-                  <iframe
-                    src={buildEmbedUrl(selectedVideo.video_ID || selectedVideo.video_ID_1 || '')}
-                    frameBorder="0"
-                    allow="encrypted-media; autoplay; fullscreen; picture-in-picture"
-                    allowFullScreen={true}
-                    playsInline={true}
-                    style={{
-                      width: '100%',
-                      height: 'auto',
-                      maxHeight: '100vh',
-                      aspectRatio: '16 / 9',
-                      border: 'none',
-                      outline: 'none'
-                    }}
-                    onContextMenu={(e) => e.preventDefault()}
-                    onDragStart={(e) => e.preventDefault()}
-                    onSelectStart={(e) => e.preventDefault()}
-                    draggable={false}
+                  <YoutubeEmbedWithProgress
+                    youtubeVideoId={selectedVideo.video_ID || selectedVideo.video_ID_1 || ''}
+                    watermarkText={`${profile?.id || 'unknown'}`}
+                    onThresholdReached={handleWatchTenPercent}
                   />
                 )}
               </div>
@@ -1260,6 +1467,49 @@ export default function OnlineSessions() {
         )}
 
         <style jsx>{`
+          @keyframes codePopupMsgIn {
+            from { opacity: 0; transform: translateY(-8px); }
+            to { opacity: 1; transform: translateY(0); }
+          }
+
+          :global(.code-popup-msg) {
+            display: flex;
+            align-items: flex-start;
+            gap: 10px;
+            margin-bottom: 20px;
+            padding: 12px 14px;
+            border-radius: 12px;
+            background: linear-gradient(135deg, #fff5f5 0%, #ffe8e8 100%);
+            border: 1px solid #f5c2c7;
+            border-left: 4px solid #dc3545;
+            box-shadow: 0 4px 14px rgba(220, 53, 69, 0.12);
+            color: #842029;
+            font-size: 0.92rem;
+            font-weight: 600;
+            line-height: 1.45;
+            text-align: left;
+            animation: codePopupMsgIn 0.28s ease;
+          }
+
+          :global(.code-popup-msg-icon) {
+            flex-shrink: 0;
+            width: 22px;
+            height: 22px;
+            border-radius: 50%;
+            background: #dc3545;
+            color: #fff;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.75rem;
+            font-weight: 700;
+            margin-top: 1px;
+          }
+
+          :global(.code-popup-msg-text) {
+            flex: 1;
+          }
+
           .sessions-container {
             background: white;
             border-radius: 16px;

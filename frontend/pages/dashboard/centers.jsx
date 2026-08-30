@@ -4,9 +4,11 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import Image from 'next/image';
 import apiClient from '../../lib/axios';
 import Title from '../../components/Title';
-import GradeSelect from '../../components/GradeSelect';
+import CourseSelect from '../../components/CourseSelect';
+import CourseTypeSelect from '../../components/CourseTypeSelect';
 import PeriodSelect from '../../components/PeriodSelect';
 import DaySelect from '../../components/DaySelect';
+import { useNationalSystem, getCourseFieldLabels } from '../../lib/api/system';
 
 // API functions
 const centersAPI = {
@@ -32,12 +34,14 @@ const centersAPI = {
 };
 
 export default function Centers() {
+  const isNational = useNationalSystem();
+  const courseLabels = getCourseFieldLabels(isNational);
   const router = useRouter();
   const queryClient = useQueryClient();
   const [showAddForm, setShowAddForm] = useState(false);
   const [newCenterName, setNewCenterName] = useState('');
   const [newCenterLocation, setNewCenterLocation] = useState('');
-  const [newCenterGrades, setNewCenterGrades] = useState([{ grade: '', timings: [{ day: '', time: '', period: 'PM', dayOpen: false, periodOpen: false }], gradeOpen: false }]);
+  const [newCenterGrades, setNewCenterGrades] = useState([{ course: '', courseType: '', timings: [{ day: '', time: '', period: 'PM', dayOpen: false, periodOpen: false }], courseOpen: false, courseTypeOpen: false }]);
   const [editingCenter, setEditingCenter] = useState(null);
   const [editName, setEditName] = useState('');
   const [editLocation, setEditLocation] = useState('');
@@ -80,7 +84,7 @@ export default function Centers() {
         setShowAddForm(false);
         setNewCenterName('');
         setNewCenterLocation('');
-        setNewCenterGrades([{ grade: '', timings: [{ day: '', time: '', period: 'PM', dayOpen: false, periodOpen: false }], gradeOpen: false }]);
+        setNewCenterGrades([{ course: '', courseType: '', timings: [{ day: '', time: '', period: 'PM', dayOpen: false, periodOpen: false }], courseOpen: false, courseTypeOpen: false }]);
         setShowAddSuccess(false);
       }, 2000);
     },
@@ -157,9 +161,10 @@ export default function Centers() {
   // Helper function to process grades data
   const processGrades = (gradesData) => {
     return gradesData
-      .filter(g => g.grade && g.grade.trim() !== '') // Only include grades with selected grade
+      .filter(g => g.course && g.course.trim() !== '') // Only include grades with selected course
       .map(g => ({
-        grade: g.grade,
+        course: g.course,
+        courseType: g.courseType || null,
         timings: g.timings
           .filter(t => t.day && t.day.trim() !== '' && t.time !== '' && t.time != null && t.time.includes(':')) // Only include timings with valid day and time format
           .map(t => {
@@ -200,7 +205,8 @@ export default function Centers() {
     // Initialize edit grades from center data or empty array
     if (center.grades && center.grades.length > 0) {
       setEditGrades(center.grades.map(g => ({
-        grade: g.grade,
+        course: g.course || g.grade || '', // Support both course and grade for backward compatibility
+        courseType: g.courseType || '',
         timings: g.timings.map(t => ({ 
           day: t.day || '',
           time: typeof t.time === 'number' ? `${t.time}:00` : (t.time || ''), 
@@ -208,10 +214,11 @@ export default function Centers() {
           dayOpen: false,
           periodOpen: false
         })),
-        gradeOpen: false
+        courseOpen: false,
+        courseTypeOpen: false
       })));
     } else {
-      setEditGrades([{ grade: '', timings: [{ day: '', time: '', period: 'PM', dayOpen: false, periodOpen: false }], gradeOpen: false }]);
+      setEditGrades([{ course: '', courseType: '', timings: [{ day: '', time: '', period: 'PM', dayOpen: false, periodOpen: false }], courseOpen: false, courseTypeOpen: false }]);
     }
     setError('');
   };
@@ -273,18 +280,18 @@ export default function Centers() {
     setShowAddForm(false);
     setNewCenterName('');
     setNewCenterLocation('');
-    setNewCenterGrades([{ grade: '', timings: [{ day: '', time: '', period: 'PM', dayOpen: false, periodOpen: false }], gradeOpen: false }]);
+    setNewCenterGrades([{ course: '', courseType: '', timings: [{ day: '', time: '', period: 'PM', dayOpen: false, periodOpen: false }], courseOpen: false, courseTypeOpen: false }]);
     setError('');
   };
 
   // Add new grade to add form
   const addNewGrade = () => {
-    setNewCenterGrades([...newCenterGrades, { grade: '', timings: [{ day: '', time: '', period: 'PM', dayOpen: false, periodOpen: false }], gradeOpen: false }]);
+    setNewCenterGrades([...newCenterGrades, { course: '', courseType: '', timings: [{ day: '', time: '', period: 'PM', dayOpen: false, periodOpen: false }], courseOpen: false, courseTypeOpen: false }]);
   };
 
   // Add new grade to edit form
   const addEditGrade = () => {
-    setEditGrades([...editGrades, { grade: '', timings: [{ day: '', time: '', period: 'PM', dayOpen: false, periodOpen: false }], gradeOpen: false }]);
+    setEditGrades([...editGrades, { course: '', courseType: '', timings: [{ day: '', time: '', period: 'PM', dayOpen: false, periodOpen: false }], courseOpen: false, courseTypeOpen: false }]);
   };
 
   // Remove grade section from add form
@@ -293,7 +300,7 @@ export default function Centers() {
     updated.splice(gradeIndex, 1);
     // If no grades left, add one empty grade
     if (updated.length === 0) {
-      updated.push({ grade: '', timings: [{ day: '', time: '', period: 'PM', dayOpen: false, periodOpen: false }], gradeOpen: false });
+      updated.push({ course: '', courseType: '', timings: [{ day: '', time: '', period: 'PM', dayOpen: false, periodOpen: false }], courseOpen: false, courseTypeOpen: false });
     }
     setNewCenterGrades(updated);
   };
@@ -304,7 +311,7 @@ export default function Centers() {
     updated.splice(gradeIndex, 1);
     // If no grades left, add one empty grade
     if (updated.length === 0) {
-      updated.push({ grade: '', timings: [{ day: '', time: '', period: 'PM', dayOpen: false, periodOpen: false }], gradeOpen: false });
+      updated.push({ course: '', courseType: '', timings: [{ day: '', time: '', period: 'PM', dayOpen: false, periodOpen: false }], courseOpen: false, courseTypeOpen: false });
     }
     setEditGrades(updated);
   };
@@ -389,17 +396,31 @@ export default function Centers() {
     setEditGrades(updated);
   };
 
-  // Update grade selection in add form
-  const updateGradeInAdd = (gradeIndex, grade) => {
+  // Update course selection in add form
+  const updateCourseInAdd = (gradeIndex, course) => {
     const updated = [...newCenterGrades];
-    updated[gradeIndex].grade = grade;
+    updated[gradeIndex].course = course;
     setNewCenterGrades(updated);
   };
 
-  // Update grade selection in edit form
-  const updateGradeInEdit = (gradeIndex, grade) => {
+  // Update course selection in edit form
+  const updateCourseInEdit = (gradeIndex, course) => {
     const updated = [...editGrades];
-    updated[gradeIndex].grade = grade;
+    updated[gradeIndex].course = course;
+    setEditGrades(updated);
+  };
+
+  // Update courseType selection in add form
+  const updateCourseTypeInAdd = (gradeIndex, courseType) => {
+    const updated = [...newCenterGrades];
+    updated[gradeIndex].courseType = courseType;
+    setNewCenterGrades(updated);
+  };
+
+  // Update courseType selection in edit form
+  const updateCourseTypeInEdit = (gradeIndex, courseType) => {
+    const updated = [...editGrades];
+    updated[gradeIndex].courseType = courseType;
     setEditGrades(updated);
   };
 
@@ -417,24 +438,58 @@ export default function Centers() {
     setEditGrades(updated);
   };
 
-  // Toggle grade select dropdown in add form
-  const toggleGradeSelectAdd = (gradeIndex) => {
+  // Toggle course select dropdown in add form
+  const toggleCourseSelectAdd = (gradeIndex) => {
     const updated = [...newCenterGrades];
-    updated[gradeIndex].gradeOpen = !updated[gradeIndex].gradeOpen;
-    // Close other grade selects
+    updated[gradeIndex].courseOpen = !updated[gradeIndex].courseOpen;
+    // Close other selects
     updated.forEach((g, idx) => {
-      if (idx !== gradeIndex) g.gradeOpen = false;
+      if (idx !== gradeIndex) {
+        g.courseOpen = false;
+        g.courseTypeOpen = false;
+      }
     });
     setNewCenterGrades(updated);
   };
 
-  // Toggle grade select dropdown in edit form
-  const toggleGradeSelectEdit = (gradeIndex) => {
+  // Toggle course select dropdown in edit form
+  const toggleCourseSelectEdit = (gradeIndex) => {
     const updated = [...editGrades];
-    updated[gradeIndex].gradeOpen = !updated[gradeIndex].gradeOpen;
-    // Close other grade selects
+    updated[gradeIndex].courseOpen = !updated[gradeIndex].courseOpen;
+    // Close other selects
     updated.forEach((g, idx) => {
-      if (idx !== gradeIndex) g.gradeOpen = false;
+      if (idx !== gradeIndex) {
+        g.courseOpen = false;
+        g.courseTypeOpen = false;
+      }
+    });
+    setEditGrades(updated);
+  };
+
+  // Toggle courseType select dropdown in add form
+  const toggleCourseTypeSelectAdd = (gradeIndex) => {
+    const updated = [...newCenterGrades];
+    updated[gradeIndex].courseTypeOpen = !updated[gradeIndex].courseTypeOpen;
+    // Close other selects
+    updated.forEach((g, idx) => {
+      if (idx !== gradeIndex) {
+        g.courseOpen = false;
+        g.courseTypeOpen = false;
+      }
+    });
+    setNewCenterGrades(updated);
+  };
+
+  // Toggle courseType select dropdown in edit form
+  const toggleCourseTypeSelectEdit = (gradeIndex) => {
+    const updated = [...editGrades];
+    updated[gradeIndex].courseTypeOpen = !updated[gradeIndex].courseTypeOpen;
+    // Close other selects
+    updated.forEach((g, idx) => {
+      if (idx !== gradeIndex) {
+        g.courseOpen = false;
+        g.courseTypeOpen = false;
+      }
     });
     setEditGrades(updated);
   };
@@ -835,16 +890,6 @@ export default function Centers() {
               </button>
             </div>
             <div className="add-center-form">
-              {error && (
-                <div className="error-message-popup">
-                  {typeof error === 'string' ? error : JSON.stringify(error)}
-                </div>
-              )}
-              {showAddSuccess && (
-                <div className="success-message-popup">
-                  ✅ Center created successfully!
-                </div>
-              )}
               <div className="form-field">
                 <label>Center Name <span className="required-star">*</span></label>
               <input
@@ -880,21 +925,38 @@ export default function Centers() {
                     ✕
                   </button>
                   <div className="form-field">
-                    <label>Grade</label>
-                    <GradeSelect
-                      selectedGrade={gradeData.grade}
-                      onGradeChange={(grade) => updateGradeInAdd(gradeIndex, grade)}
-                      isOpen={gradeData.gradeOpen}
-                      onToggle={() => toggleGradeSelectAdd(gradeIndex)}
+                    <label>{courseLabels.course} <span className="required-star">*</span></label>
+                    <CourseSelect
+                      selectedGrade={gradeData.course}
+                      onGradeChange={(course) => updateCourseInAdd(gradeIndex, course)}
+                      isOpen={gradeData.courseOpen}
+                      onToggle={() => toggleCourseSelectAdd(gradeIndex)}
                       onClose={() => {
                         const updated = [...newCenterGrades];
-                        updated[gradeIndex].gradeOpen = false;
+                        updated[gradeIndex].courseOpen = false;
+                        setNewCenterGrades(updated);
+                      }}
+                      showAllOption={true}
+                    />
+                  </div>
+                  {courseLabels.showCourseType && (
+                  <div className="form-field">
+                    <label>Course Type</label>
+                    <CourseTypeSelect
+                      selectedCourseType={gradeData.courseType}
+                      onCourseTypeChange={(courseType) => updateCourseTypeInAdd(gradeIndex, courseType)}
+                      isOpen={gradeData.courseTypeOpen}
+                      onToggle={() => toggleCourseTypeSelectAdd(gradeIndex)}
+                      onClose={() => {
+                        const updated = [...newCenterGrades];
+                        updated[gradeIndex].courseTypeOpen = false;
                         setNewCenterGrades(updated);
                       }}
                     />
                   </div>
+                  )}
 
-                  {gradeData.grade && gradeData.grade.trim() !== '' && (
+                  {gradeData.course && gradeData.course.trim() !== '' && (
                     <>
                       {gradeData.timings.map((timing, timingIndex) => {
                         // Parse time string to hours and minutes
@@ -1001,7 +1063,7 @@ export default function Centers() {
                       style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
                     >
                       <Image src="/plus.svg" alt="Add" width={18} height={18} />
-                      Add another grade
+                      {courseLabels.addAnotherCourse}
                     </button>
                   )}
                 </div>
@@ -1023,6 +1085,18 @@ export default function Centers() {
                   Cancel
                 </button>
               </div>
+              
+              {/* Error and Success Messages - at bottom */}
+              {error && (
+                <div className="error-message-popup">
+                  {typeof error === 'string' ? error : JSON.stringify(error)}
+                </div>
+              )}
+              {showAddSuccess && (
+                <div className="success-message-popup">
+                  ✅ Center created successfully!
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -1054,16 +1128,6 @@ export default function Centers() {
               </button>
             </div>
             <div className="rename-center-form">
-              {error && (
-                <div className="error-message-popup">
-                  {typeof error === 'string' ? error : JSON.stringify(error)}
-                </div>
-              )}
-              {showEditSuccess && !error && (
-                <div className="success-message-popup">
-                  ✅ Center updated successfully!
-                </div>
-              )}
               <div className="form-field">
                 <label>Center Name <span className="required-star">*</span></label>
               <input
@@ -1099,21 +1163,38 @@ export default function Centers() {
                     ✕
                   </button>
                   <div className="form-field">
-                    <label>Grade</label>
-                    <GradeSelect
-                      selectedGrade={gradeData.grade}
-                      onGradeChange={(grade) => updateGradeInEdit(gradeIndex, grade)}
-                      isOpen={gradeData.gradeOpen}
-                      onToggle={() => toggleGradeSelectEdit(gradeIndex)}
+                    <label>{courseLabels.course} <span className="required-star">*</span></label>
+                    <CourseSelect
+                      selectedGrade={gradeData.course}
+                      onGradeChange={(course) => updateCourseInEdit(gradeIndex, course)}
+                      isOpen={gradeData.courseOpen}
+                      onToggle={() => toggleCourseSelectEdit(gradeIndex)}
                       onClose={() => {
                         const updated = [...editGrades];
-                        updated[gradeIndex].gradeOpen = false;
+                        updated[gradeIndex].courseOpen = false;
+                        setEditGrades(updated);
+                      }}
+                      showAllOption={true}
+                    />
+                  </div>
+                  {courseLabels.showCourseType && (
+                  <div className="form-field">
+                    <label>Course Type</label>
+                    <CourseTypeSelect
+                      selectedCourseType={gradeData.courseType}
+                      onCourseTypeChange={(courseType) => updateCourseTypeInEdit(gradeIndex, courseType)}
+                      isOpen={gradeData.courseTypeOpen}
+                      onToggle={() => toggleCourseTypeSelectEdit(gradeIndex)}
+                      onClose={() => {
+                        const updated = [...editGrades];
+                        updated[gradeIndex].courseTypeOpen = false;
                         setEditGrades(updated);
                       }}
                     />
                   </div>
+                  )}
 
-                  {gradeData.grade && gradeData.grade.trim() !== '' && (
+                  {gradeData.course && gradeData.course.trim() !== '' && (
                     <>
                       {gradeData.timings.map((timing, timingIndex) => {
                         // Parse time string to hours and minutes
@@ -1220,7 +1301,7 @@ export default function Centers() {
                       style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
                     >
                       <Image src="/plus.svg" alt="Add" width={18} height={18} />
-                      Add another grade
+                      {courseLabels.addAnotherCourse}
                     </button>
                   )}
                 </div>
@@ -1242,6 +1323,18 @@ export default function Centers() {
                   Cancel
                 </button>
               </div>
+              
+              {/* Error and Success Messages - at bottom */}
+              {error && (
+                <div className="error-message-popup">
+                  {typeof error === 'string' ? error : JSON.stringify(error)}
+                </div>
+              )}
+              {showEditSuccess && !error && (
+                <div className="success-message-popup">
+                  ✅ Center updated successfully!
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -1293,7 +1386,8 @@ export default function Centers() {
                   <table className="details-table">
                     <thead>
                       <tr>
-                        <th>Grade</th>
+                        <th>{courseLabels.course}</th>
+                        {courseLabels.showCourseType && <th>Course Type</th>}
                         <th>Day</th>
                         <th>Time</th>
                       </tr>
@@ -1304,7 +1398,12 @@ export default function Centers() {
                           return grade.timings.map((timing, timingIndex) => (
                             <tr key={`${gradeIndex}-${timingIndex}`}>
                               {timingIndex === 0 && (
-                                <td rowSpan={grade.timings.length}>{grade.grade}</td>
+                                <>
+                                  <td rowSpan={grade.timings.length}>{grade.course || grade.grade || 'N/A'}</td>
+                                  {courseLabels.showCourseType && (
+                                  <td rowSpan={grade.timings.length}>{grade.courseType || 'N/A'}</td>
+                                  )}
+                                </>
                               )}
                               <td>{timing.day}</td>
                               <td>{timing.time} {timing.period}</td>

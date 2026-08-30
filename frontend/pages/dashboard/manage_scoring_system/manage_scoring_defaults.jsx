@@ -16,6 +16,7 @@ export default function ManageDefaults() {
   const { data: systemConfig } = useSystemConfig();
   const isHomeworksEnabled = systemConfig?.homeworks === true || systemConfig?.homeworks === 'true';
   const isQuizzesEnabled = systemConfig?.quizzes === true || systemConfig?.quizzes === 'true';
+  const isMockExamsEnabled = systemConfig?.mock_exams === true || systemConfig?.mock_exams === 'true';
   const [accessDenied, setAccessDenied] = useState(false);
   const [editModalOpen, setEditModalOpen] = useState(false);
   const [deleteModalOpen, setDeleteModalOpen] = useState(false);
@@ -49,7 +50,11 @@ export default function ManageDefaults() {
     },
   });
 
-  const conditions = conditionsData?.conditions || [];
+  const allConditions = conditionsData?.conditions || [];
+  const conditions = allConditions.filter((condition) => {
+    if (condition.type === 'mock-exam' && !isMockExamsEnabled) return false;
+    return true;
+  });
 
   // Update mutation
   const updateMutation = useMutation({
@@ -111,17 +116,18 @@ export default function ManageDefaults() {
     if (selectedCondition) {
       // Validate bonus rules if they exist
       if (formData.bonusRules && formData.bonusRules.length > 0) {
+        const countLabel = formData.type === 'mock-exam' ? 'Number Of Exams' : 'Number Of Lessons';
         for (const bonus of formData.bonusRules) {
           if (!bonus.condition?.lastN || bonus.condition?.lastN === '' || bonus.condition?.lastN === null || bonus.condition?.lastN === undefined) {
-            alert('Please fill all required fields in bonus rules (Number Of Weeks, Required Percentage, Bonus Points)');
+            alert(`Please fill all required fields in bonus rules (${countLabel}, Required Percentage, Bonus Points)`);
             return;
           }
           if (!bonus.condition?.percentage || bonus.condition?.percentage === '' || bonus.condition?.percentage === null || bonus.condition?.percentage === undefined) {
-            alert('Please fill all required fields in bonus rules (Number Of Weeks, Required Percentage, Bonus Points)');
+            alert(`Please fill all required fields in bonus rules (${countLabel}, Required Percentage, Bonus Points)`);
             return;
           }
           if (!bonus.points || bonus.points === '' || bonus.points === null || bonus.points === undefined) {
-            alert('Please fill all required fields in bonus rules (Number Of Weeks, Required Percentage, Bonus Points)');
+            alert(`Please fill all required fields in bonus rules (${countLabel}, Required Percentage, Bonus Points)`);
             return;
           }
         }
@@ -201,7 +207,7 @@ export default function ManageDefaults() {
   const saveBonusRule = () => {
     // Validate required fields
     if (!bonusForm.condition?.lastN || bonusForm.condition?.lastN === '' || bonusForm.condition?.lastN === null || bonusForm.condition?.lastN === undefined) {
-      return; // Don't save if Number Of Weeks is missing
+      return; // Don't save if Number Of Lessons is missing
     }
     if (!bonusForm.condition?.percentage || bonusForm.condition?.percentage === '' || bonusForm.condition?.percentage === null || bonusForm.condition?.percentage === undefined) {
       return; // Don't save if Required Percentage is missing
@@ -250,6 +256,8 @@ export default function ManageDefaults() {
       return 'Homework (without degree)';
     } else if (condition.type === 'quiz') {
       return 'Quiz';
+    } else if (condition.type === 'mock-exam') {
+      return 'Mock Exam';
     }
     return condition.type;
   };
@@ -509,7 +517,7 @@ export default function ManageDefaults() {
                     {condition.type === 'attendance' && (
                       <span>Status: <strong style={{ color: '#1FA8DC' }}>{rule.key}</strong> → <strong>{rule.points >= 0 ? '+' : ''}{rule.points}</strong> points</span>
                     )}
-                    {(condition.type === 'homework' && condition.withDegree === true) || condition.type === 'quiz' ? (
+                    {(condition.type === 'homework' && condition.withDegree === true) || condition.type === 'quiz' || condition.type === 'mock-exam' ? (
                       <span>Range: <strong style={{ color: '#1FA8DC' }}>{rule.min}% - {rule.max}%</strong> → <strong>{rule.points >= 0 ? '+' : ''}{rule.points}</strong> points</span>
                     ) : condition.type === 'homework' && condition.withDegree === false ? (
                       <span>Homework : <strong style={{ color: '#1FA8DC' }}>
@@ -536,11 +544,13 @@ export default function ManageDefaults() {
                     }}>
                       <span>
                         {((condition.type === 'homework' && condition.withDegree === true) || condition.type === 'quiz') ? (
-                          <>{bonus.condition.lastN} constant weeks with degree <strong>{bonus.condition.percentage}%</strong> → <strong style={{ marginLeft: '4px' }}>+{bonus.points} points</strong></>
+                          <>{bonus.condition.lastN} constant lessons with degree <strong>{bonus.condition.percentage}%</strong> → <strong style={{ marginLeft: '4px' }}>+{bonus.points} points</strong></>
                         ) : condition.type === 'homework' && condition.withDegree === false ? (
                           <>{bonus.condition.lastN} consecutive <strong>
                             {bonus.condition.hwDone === true ? 'Done' : bonus.condition.hwDone === false ? 'Not Done' : bonus.condition.hwDone === 'Not Completed' ? 'Not Completed' : String(bonus.condition.hwDone)}
                           </strong> → <strong style={{ marginLeft: '4px' }}>+{bonus.points} points</strong></>
+                        ) : condition.type === 'mock-exam' ? (
+                          <>{bonus.condition.lastN} constant exams with degree <strong>{bonus.condition.percentage}%</strong> → <strong style={{ marginLeft: '4px' }}>+{bonus.points} points</strong></>
                         ) : (
                           <>{bonus.condition.lastN} consecutive {bonus.condition.percentage}% scores → <strong style={{ marginLeft: '4px' }}>+{bonus.points} points</strong></>
                         )}
@@ -694,7 +704,7 @@ export default function ManageDefaults() {
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                           <span style={{ fontSize: '0.95rem' }}>
                             {formData.type === 'attendance' && `${rule.key} → ${rule.points >= 0 ? '+' : ''}${rule.points} pts`}
-                            {(formData.type === 'homework' && formData.withDegree === true) || formData.type === 'quiz' ? 
+                            {(formData.type === 'homework' && formData.withDegree === true) || formData.type === 'quiz' || formData.type === 'mock-exam' ? 
                               `${rule.min}%-${rule.max}% → ${rule.points >= 0 ? '+' : ''}${rule.points} pts` :
                               formData.type === 'homework' && formData.withDegree === false ?
                               `hwDone: ${String(rule.hwDone)} → ${rule.points >= 0 ? '+' : ''}${rule.points} pts` : null}
@@ -729,7 +739,7 @@ export default function ManageDefaults() {
                         {editingBonusIndex === idx ? (
                           <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
                           <NumberInput
-                            label="Number Of Weeks"
+                            label={formData.type === 'mock-exam' ? "Number Of Exams" : "Number Of Lessons"}
                             value={bonusForm.condition?.lastN}
                             onChange={(value) => setBonusForm({
                               ...bonusForm,
@@ -783,7 +793,7 @@ export default function ManageDefaults() {
                           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                             <span style={{ fontSize: '0.95rem', fontWeight: '500' }}>
                               {((formData.type === 'homework' && formData.withDegree === true) || formData.type === 'quiz') ? (
-                                <>{bonus.condition.lastN} constant weeks with degree {bonus.condition.percentage || 100}% → +{bonus.points} pts</>
+                                <>{bonus.condition.lastN} constant lessons with degree {bonus.condition.percentage || 100}% → +{bonus.points} pts</>
                               ) : formData.type === 'homework' && formData.withDegree === false ? (
                                 <>{bonus.condition.lastN} consecutive {bonus.condition.hwDone === true ? 'Done' : bonus.condition.hwDone === false ? 'Not Done' : bonus.condition.hwDone === 'Not Completed' ? 'Not Completed' : String(bonus.condition.hwDone)} → +{bonus.points} pts</>
                               ) : (

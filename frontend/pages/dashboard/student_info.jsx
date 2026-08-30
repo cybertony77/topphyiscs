@@ -1,8 +1,8 @@
 import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/router";
+import { Playfair_Display, Cormorant_Garamond } from 'next/font/google';
 import Title from "../../components/Title";
 import { Table, ScrollArea, Modal } from '@mantine/core';
-import { weeks } from "../../constants/weeks";
 import styles from '../../styles/TableScrollArea.module.css';
 import { useStudents, useStudent, useStudentPublic } from '../../lib/api/students';
 import LoadingSkeleton from '../../components/LoadingSkeleton';
@@ -11,7 +11,21 @@ import apiClient from '../../lib/axios';
 import Image from 'next/image';
 import { verifySignature } from '../../lib/hmac';
 import ChartTabs from '../../components/ChartTabs';
-import { useSystemConfig } from '../../lib/api/system';
+import { useSystemConfig, useNationalSystem, getCourseFieldLabels } from '../../lib/api/system';
+import MarketingPageLoader from '../../components/MarketingPageLoader';
+
+const welcomeDisplayFont = Playfair_Display({
+  subsets: ['latin'],
+  weight: ['500', '600', '700'],
+  display: 'swap',
+});
+
+const welcomeAccentFont = Cormorant_Garamond({
+  subsets: ['latin'],
+  weight: ['500', '600'],
+  style: ['normal', 'italic'],
+  display: 'swap',
+});
 
 // Helper function to check if user has token by making API call
 const hasToken = async () => {
@@ -37,11 +51,26 @@ export default function StudentInfo() {
   const [isValidSignature, setIsValidSignature] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [hasAuthToken, setHasAuthToken] = useState(null);
+  const [minLoaderElapsed, setMinLoaderElapsed] = useState(false);
   const router = useRouter();
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [detailsType, setDetailsType] = useState('absent');
   const [detailsWeeks, setDetailsWeeks] = useState([]);
   const [detailsTitle, setDetailsTitle] = useState('');
+
+  // Fetch lessons from database (staff search UI only — skip on public HMAC links)
+  const { data: lessonsResponse } = useQuery({
+    queryKey: ['lessons'],
+    queryFn: async () => {
+      const response = await apiClient.get('/api/lessons');
+      return response.data.lessons || [];
+    },
+    enabled: !!hasAuthToken,
+    staleTime: 5 * 60 * 1000, // Cache for 5 minutes
+    refetchOnWindowFocus: false
+  });
+
+  const lessons = lessonsResponse?.map(lesson => lesson.name) || [];
 
   // Check authentication status and user role
   useEffect(() => {
@@ -69,6 +98,17 @@ export default function StudentInfo() {
     };
     checkAuth();
   }, [router]);
+
+  // Same welcome-page behavior: keep MarketingPageLoader visible ≥ 2s for public (no token) visits
+  useEffect(() => {
+    if (hasAuthToken === true) {
+      setMinLoaderElapsed(true);
+      return undefined;
+    }
+    setMinLoaderElapsed(false);
+    const timer = setTimeout(() => setMinLoaderElapsed(true), 2000);
+    return () => clearTimeout(timer);
+  }, [hasAuthToken, router.query.id, router.query.sig]);
 
   // Handle URL parameters and HMAC verification
   useEffect(() => {
@@ -140,8 +180,12 @@ export default function StudentInfo() {
 
   // Get system configuration
   const { data: systemConfig } = useSystemConfig();
+  const isNational = useNationalSystem();
+  const courseLabels = getCourseFieldLabels(isNational);
   const systemName = systemConfig?.name || '';
   const isScoringEnabled = systemConfig?.scoring_system === true || systemConfig?.scoring_system === 'true';
+  const isPaymentSystemEnabled = systemConfig?.payment_system === true || systemConfig?.payment_system === 'true';
+  const isMockExamsEnabled = systemConfig?.mock_exams === true || systemConfig?.mock_exams === 'true';
 
   // Get all students for name-based search (only if authenticated)
   const { data: allStudents } = useStudents({}, { 
@@ -182,6 +226,59 @@ export default function StudentInfo() {
   const currentStudent = hasAuthToken ? student : publicStudent;
   const currentStudentLoading = hasAuthToken ? studentLoading : publicStudentLoading;
   const currentStudentError = hasAuthToken ? studentError : publicStudentError;
+
+  // Fetch mock exam performance chart data from API (same logic as mock-exam-performance.js)
+  const mockExamStudentId = hasAuthToken ? searchId : studentId;
+  const { data: mockExamPerformanceData } = useQuery({
+    queryKey: ['mock-exam-performance', mockExamStudentId],
+    queryFn: async () => {
+      if (!mockExamStudentId) return { chartData: [] };
+      try {
+        const sigParam = !hasAuthToken && router.query.sig ? `?sig=${encodeURIComponent(router.query.sig)}` : '';
+        const response = await apiClient.get(`/api/students/${mockExamStudentId}/mock-exam-performance${sigParam}`);
+        return response.data || { chartData: [] };
+      } catch (error) {
+        console.error('Error fetching mock exam performance:', error);
+        return { chartData: [] };
+      }
+    },
+    enabled: !!(isMockExamsEnabled && mockExamStudentId && (hasAuthToken || isValidSignature)),
+    staleTime: 30 * 1000,
+  });
+
+  const { data: homeworkPerformanceData, isLoading: homeworkPerfLoading, isSuccess: homeworkPerfOk, isError: homeworkPerfErr } = useQuery({
+    queryKey: ['homework-performance', mockExamStudentId, hasAuthToken, router.query.sig],
+    queryFn: async () => {
+      if (!mockExamStudentId) return { chartData: [] };
+      try {
+        const sigParam = !hasAuthToken && router.query.sig ? `?sig=${encodeURIComponent(router.query.sig)}` : '';
+        const response = await apiClient.get(`/api/students/${mockExamStudentId}/homework-performance${sigParam}`);
+        return response.data || { chartData: [] };
+      } catch (error) {
+        console.error('Error fetching homework performance:', error);
+        return { chartData: [] };
+      }
+    },
+    enabled: !!(mockExamStudentId && (hasAuthToken || isValidSignature)),
+    staleTime: 30 * 1000,
+  });
+
+  const { data: quizPerformanceData, isLoading: quizPerfLoading, isSuccess: quizPerfOk, isError: quizPerfErr } = useQuery({
+    queryKey: ['quiz-performance', mockExamStudentId, hasAuthToken, router.query.sig],
+    queryFn: async () => {
+      if (!mockExamStudentId) return { chartData: [] };
+      try {
+        const sigParam = !hasAuthToken && router.query.sig ? `?sig=${encodeURIComponent(router.query.sig)}` : '';
+        const response = await apiClient.get(`/api/students/${mockExamStudentId}/quiz-performance${sigParam}`);
+        return response.data || { chartData: [] };
+      } catch (error) {
+        console.error('Error fetching quiz performance:', error);
+        return { chartData: [] };
+      }
+    },
+    enabled: !!(mockExamStudentId && (hasAuthToken || isValidSignature)),
+    staleTime: 30 * 1000,
+  });
 
   // Get student profile picture - use searchId if authenticated, studentId if public
   const profilePictureStudentId = hasAuthToken ? searchId : studentId;
@@ -456,103 +553,181 @@ export default function StudentInfo() {
     setError("");
   };
 
-  // Helper function to get attendance status for a week
-  const getWeekAttendance = (weekNumber) => {
-    if (!currentStudent || !currentStudent.weeks) return { attended: false, hwDone: false, hwDegree: null, quizDegree: null, message_state: false, lastAttendance: null, view_homework_video: false };
+  // Helper function to get attendance status for a lesson
+  const getLessonAttendance = (lessonName) => {
+    if (!currentStudent || !currentStudent.lessons) return { attended: false, hwDone: false, homework_degree: null, quizDegree: null, message_state: false, parent_message_state: false, lastAttendance: null };
     
-    const weekData = currentStudent.weeks.find(w => w.week === weekNumber);
-    if (!weekData) return { attended: false, hwDone: false, hwDegree: null, quizDegree: null, message_state: false, lastAttendance: null, view_homework_video: false };
+    // Handle both new object format and old array format for backward compatibility
+    let lessonData;
+    if (typeof currentStudent.lessons === 'object' && !Array.isArray(currentStudent.lessons)) {
+      // New object format
+      lessonData = currentStudent.lessons[lessonName];
+    } else if (Array.isArray(currentStudent.lessons)) {
+      // Old array format - find by lesson name
+      lessonData = currentStudent.lessons.find(l => l && l.lesson === lessonName);
+    } else if (currentStudent.weeks && Array.isArray(currentStudent.weeks)) {
+      // Very old weeks format - convert lesson name to week number
+      const weekIndex = lessons.indexOf(lessonName);
+      lessonData = weekIndex >= 0 ? currentStudent.weeks[weekIndex] : null;
+    }
+    
+    if (!lessonData) return { attended: false, hwDone: false, homework_degree: null, quizDegree: null, message_state: false, parent_message_state: false, lastAttendance: null };
     
     return {
-      attended: weekData.attended || false,
-      hwDone: weekData.hwDone || false,
-      hwDegree: weekData.hwDegree || null,
-      quizDegree: weekData.quizDegree || null,
-      comment: weekData.comment || null,
-      message_state: weekData.message_state || false,
-      lastAttendance: weekData.lastAttendance || null,
-      view_homework_video: weekData.view_homework_video || false
+      attended: lessonData.attended || false,
+      hwDone: lessonData.hwDone || false,
+      homework_degree: lessonData.homework_degree || null,
+      quizDegree: lessonData.quizDegree || null,
+      comment: lessonData.comment || null,
+      message_state: lessonData.message_state || false,
+      parent_message_state: lessonData.parent_message_state || false,
+      lastAttendance: lessonData.lastAttendance || null
     };
   };
 
-  // Helper function to get available weeks (all weeks that exist in the database)
-  const getAvailableWeeks = () => {
-    if (!currentStudent || !currentStudent.weeks || currentStudent.weeks.length === 0) return [];
+  // Helper function to get available lessons (all lessons that exist in the database)
+  const getAvailableLessons = () => {
+    if (!currentStudent) return [];
     
-    // Return all weeks that exist in the database, sorted by week number
-    return currentStudent.weeks.sort((a, b) => a.week - b.week);
+    // Handle new object format - get all lessons that exist in the student's database
+    if (currentStudent.lessons && typeof currentStudent.lessons === 'object' && !Array.isArray(currentStudent.lessons)) {
+      return Object.keys(currentStudent.lessons).map(lessonName => ({
+        lesson: lessonName,
+        ...currentStudent.lessons[lessonName]
+      })).filter(lesson => lesson.lesson); // Filter out any invalid lessons
+    }
+    
+    // Handle old array format
+    if (currentStudent.lessons && Array.isArray(currentStudent.lessons)) {
+      return currentStudent.lessons.filter(l => l && l.lesson);
+    }
+    
+    // Handle very old weeks format
+    if (currentStudent.weeks && Array.isArray(currentStudent.weeks)) {
+      return currentStudent.weeks.map((week, index) => ({
+        lesson: lessons[index] || `Lesson ${index + 1}`,
+        ...week
+      })).filter(week => week.attended !== undefined);
+    }
+    
+    return [];
   };
 
-  // Helper to compute totals for the student across all weeks
+  // Helper to compute totals for the student across all lessons
   const getTotals = () => {
-    const weeks = Array.isArray(currentStudent?.weeks) ? currentStudent.weeks : [];
-    const absent = weeks.filter(w => w && w.attended === false).length;
-    const missingHW = weeks.filter(w => w && (w.hwDone === false || w.hwDone === "Not Completed" || w.hwDone === "not completed" || w.hwDone === "NOT COMPLETED")).length;
-    const unattendQuiz = weeks.filter(w => w && (w.quizDegree === "Didn't Attend The Quiz" || w.quizDegree == null)).length;
+    const availableLessons = getAvailableLessons();
+    const totalLessons = availableLessons.length;
+    
+    // Count lessons where student attended (attended = true)
+    const attendedLessons = availableLessons.filter(lesson => lesson.attended === true).length;
+    
+    // Count lessons where student was absent (attended = false)
+    const absent = availableLessons.filter(lesson => lesson.attended === false).length;
+    
+    // Count missing homework (only for lessons that exist in student records)
+    const lessons = getAvailableLessons();
+    const missingHW = lessons.filter(l => l && (l.hwDone === false || l.hwDone === "Not Completed" || l.hwDone === "not completed" || l.hwDone === "NOT COMPLETED")).length;
+    
+    // Count unattended quizzes (only for lessons that exist in student records) - exclude "No Quiz" and null
+    const unattendQuiz = lessons.filter(l => l && l.quizDegree === "Didn't Attend The Quiz").length;
+    
     return { absent, missingHW, unattendQuiz };
   };
 
-  // Helpers to build detailed week lists
-  const getAbsentWeeks = (weeks) => {
-    if (!Array.isArray(weeks)) return [];
-    return weeks
-      .map((w, idx) => ({ idx, w }))
-      .filter(({ w }) => w && w.attended === false)
-      .map(({ idx, w }) => ({
-        week: (w.week ?? idx + 1),
-        quizDegree: w.quizDegree
+  // Helpers to build detailed lesson lists
+  const getAbsentLessons = (lessons) => {
+    const availableLessons = getAvailableLessons();
+    
+    return availableLessons
+      .filter(lesson => {
+        return lesson.attended === false; // Only include lessons where attended is explicitly false
+      })
+      .map(lesson => ({
+        lesson: lesson.lesson,
+        quizDegree: null // Absent lessons don't have quiz data
       }));
   };
 
-  const getMissingHWWeeks = (weeks) => {
-    if (!Array.isArray(weeks)) return [];
-    return weeks
-      .map((w, idx) => ({ idx, w }))
-      .filter(({ w }) => w && (w.hwDone === false || w.hwDone === "Not Completed" || w.hwDone === "not completed" || w.hwDone === "NOT COMPLETED"))
-      .map(({ idx, w }) => ({
-        week: (w.week ?? idx + 1),
-        hwDone: w.hwDone,
-        quizDegree: w.quizDegree
+  const getMissingHWLessons = (lessons) => {
+    if (!Array.isArray(lessons)) return [];
+    return lessons
+      .filter(l => l && (l.hwDone === false || l.hwDone === "Not Completed" || l.hwDone === "not completed" || l.hwDone === "NOT COMPLETED"))
+      .map(l => ({
+        lesson: l.lesson,
+        hwDone: l.hwDone,
+        quizDegree: l.quizDegree
       }));
   };
 
-  const getUnattendQuizWeeks = (weeks) => {
-    if (!Array.isArray(weeks)) return [];
-    return weeks
-      .map((w, idx) => ({ idx, w }))
-      .filter(({ w }) => w && (w.quizDegree === "Didn't Attend The Quiz" || w.quizDegree == null))
-      .map(({ idx, w }) => ({
-        week: (w.week ?? idx + 1),
-        quizDegree: w.quizDegree
+  const getUnattendQuizLessons = (lessons) => {
+    if (!Array.isArray(lessons)) return [];
+    return lessons
+      .filter(l => l && l.quizDegree === "Didn't Attend The Quiz")
+      .map(l => ({
+        lesson: l.lesson,
+        quizDegree: l.quizDegree
       }));
   };
 
   const openDetails = (type) => {
     if (!currentStudent) return;
     let title = '';
-    let weeksList = [];
+    let lessonsList = [];
+    const lessons = getAvailableLessons();
     if (type === 'absent') {
-      title = `Absent Sessions for ${currentStudent.name} • ID: ${currentStudent.id}`;
-      weeksList = getAbsentWeeks(currentStudent.weeks);
+      title = `Absent Lessons for ${currentStudent.name} • ID: ${currentStudent.id}`;
+      lessonsList = getAbsentLessons(); // No need to pass lessons parameter
     } else if (type === 'hw') {
       title = `Missing Homework for ${currentStudent.name} • ID: ${currentStudent.id}`;
-      weeksList = getMissingHWWeeks(currentStudent.weeks);
+      lessonsList = getMissingHWLessons(lessons);
     } else if (type === 'quiz') {
       title = `Unattended Quizzes for ${currentStudent.name} • ID: ${currentStudent.id}`;
-      weeksList = getUnattendQuizWeeks(currentStudent.weeks);
+      lessonsList = getUnattendQuizLessons(lessons);
     }
     setDetailsType(type);
-    setDetailsWeeks(weeksList);
+    setDetailsWeeks(lessonsList);
     setDetailsTitle(title);
     setDetailsOpen(true);
   };
 
+  const isPublicGuest = hasAuthToken === false;
+  const isAuthPending = hasAuthToken === null;
+  const studentFirstName = (currentStudent?.name || '')
+    .trim()
+    .split(/\s+/)
+    .find(Boolean) || '';
+  const publicContentReady =
+    isPublicGuest &&
+    router.isReady &&
+    isValidSignature &&
+    !publicStudentLoading &&
+    (!!publicStudent || !!publicStudentError || studentDeleted);
+  const showPublicWelcomeLoader =
+    isPublicGuest &&
+    (!minLoaderElapsed || (!!router.query.sig && !publicContentReady));
+
   return (
+    <div style={{ position: 'relative', minHeight: '100%' }}>
+      {isPublicGuest && (
+        <MarketingPageLoader
+          active={showPublicWelcomeLoader}
+          label="Welcome"
+          keyword="Parents"
+        />
+      )}
+      {!isAuthPending && (
     <div style={{ 
       padding: "20px 5px 20px 5px"
     }}>
-      <div ref={containerRef} style={{ maxWidth: 600, margin: "auto", padding: 24 }}>
+      <div ref={containerRef} className="page-shell">
         <style jsx>{`
+          .page-shell {
+            max-width: 600px;
+            margin: auto;
+            padding: 24px;
+            width: 100%;
+            box-sizing: border-box;
+          }
           .header {
             display: flex;
             justify-content: space-between;
@@ -563,6 +738,79 @@ export default function StudentInfo() {
             font-size: 2rem;
             font-weight: 700;
             color: #ffffff;
+          }
+          .public-welcome {
+            text-align: center;
+            margin: 8px 0 28px;
+            padding: 28px 20px 26px;
+            border-radius: 20px;
+            background:
+              linear-gradient(145deg, rgba(255, 255, 255, 0.18) 0%, rgba(255, 255, 255, 0.08) 100%);
+            border: 1px solid rgba(255, 255, 255, 0.28);
+            box-shadow:
+              0 18px 40px rgba(15, 23, 42, 0.12),
+              inset 0 1px 0 rgba(255, 255, 255, 0.35);
+            backdrop-filter: blur(10px);
+            -webkit-backdrop-filter: blur(10px);
+          }
+          .public-welcome-eyebrow {
+            margin: 0 0 10px;
+            font-size: 0.95rem;
+            font-weight: 600;
+            letter-spacing: 0.28em;
+            text-transform: uppercase;
+            color: rgba(255, 255, 255, 0.78);
+          }
+          .public-welcome-title {
+            margin: 0;
+            font-size: clamp(1.85rem, 5.5vw, 2.55rem);
+            font-weight: 600;
+            line-height: 1.2;
+            letter-spacing: 0.01em;
+            color: #ffffff;
+            text-shadow: 0 2px 18px rgba(15, 23, 42, 0.18);
+            overflow-wrap: anywhere;
+            word-break: break-word;
+            hyphens: auto;
+          }
+          .public-welcome-rule {
+            position: relative;
+            width: min(96px, 28vw);
+            height: 1px;
+            margin: 18px auto 0;
+            background: linear-gradient(
+              90deg,
+              transparent 0%,
+              rgba(255, 255, 255, 0.25) 18%,
+              rgba(255, 255, 255, 0.92) 50%,
+              rgba(255, 255, 255, 0.25) 82%,
+              transparent 100%
+            );
+          }
+          .public-welcome-rule::before {
+            content: '';
+            position: absolute;
+            left: 50%;
+            top: 50%;
+            width: 6px;
+            height: 6px;
+            transform: translate(-50%, -50%) rotate(45deg);
+            background: rgba(255, 255, 255, 0.95);
+            box-shadow:
+              0 0 0 1px rgba(254, 185, 84, 0.65),
+              0 0 10px rgba(255, 255, 255, 0.35);
+          }
+          .public-welcome-sub {
+            margin: 14px 0 0;
+            font-size: clamp(1rem, 3.6vw, 1.15rem);
+            font-weight: 500;
+            font-style: italic;
+            color: rgba(255, 255, 255, 0.88);
+            letter-spacing: 0.02em;
+            line-height: 1.45;
+            padding: 0 4px;
+            overflow-wrap: anywhere;
+            word-break: break-word;
           }
           .fetch-form {
             display: flex;
@@ -637,6 +885,48 @@ export default function StudentInfo() {
             border: 1px solid rgba(255,255,255,0.2);
             margin-top: 20px;
           }
+          .student-profile-heading-wrap {
+            margin: 0 0 8px;
+            text-align: center;
+            padding: 0 4px;
+          }
+          .student-profile-heading {
+            margin: 0;
+            text-align: center;
+            font-size: clamp(1.55rem, 5.2vw, 2.25rem);
+            font-weight: 500;
+            font-style: italic;
+            letter-spacing: 0.1em;
+            color: #2c3e50;
+            line-height: 1.25;
+            overflow-wrap: anywhere;
+            word-break: break-word;
+          }
+          .student-profile-ornament {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: clamp(8px, 2.5vw, 10px);
+            margin: 12px 0 28px;
+          }
+          .student-profile-ornament::before,
+          .student-profile-ornament::after {
+            content: '';
+            width: clamp(24px, 8vw, 36px);
+            height: 1px;
+            background: linear-gradient(90deg, transparent, rgba(201, 162, 89, 0.75));
+          }
+          .student-profile-ornament::after {
+            background: linear-gradient(90deg, rgba(201, 162, 89, 0.75), transparent);
+          }
+          .student-profile-ornament-diamond {
+            width: 6px;
+            height: 6px;
+            transform: rotate(45deg);
+            background: #c9a259;
+            box-shadow: 0 0 0 1px rgba(201, 162, 89, 0.25);
+            flex-shrink: 0;
+          }
           .student-details {
             display: grid;
             grid-template-columns: 1fr 1fr;
@@ -700,6 +990,9 @@ export default function StudentInfo() {
           }
           
           @media (max-width: 768px) {
+            .page-shell {
+              padding: 16px 12px;
+            }
             .fetch-form {
               flex-direction: column;
               gap: 12px;
@@ -718,9 +1011,40 @@ export default function StudentInfo() {
             .student-details {
               gap: 12px;
             }
+            .public-welcome {
+              margin: 4px 0 20px;
+              padding: 22px 16px 20px;
+              border-radius: 16px;
+            }
+            .public-welcome-eyebrow {
+              font-size: 0.78rem;
+              letter-spacing: 0.2em;
+              margin-bottom: 8px;
+            }
+            .public-welcome-title {
+              font-size: clamp(1.45rem, 6.2vw, 1.95rem);
+              line-height: 1.25;
+            }
+            .public-welcome-rule {
+              margin-top: 14px;
+            }
+            .public-welcome-sub {
+              margin-top: 12px;
+              font-size: clamp(0.95rem, 3.8vw, 1.05rem);
+              line-height: 1.5;
+            }
+            .student-profile-heading {
+              letter-spacing: 0.06em;
+            }
+            .student-profile-ornament {
+              margin: 10px 0 22px;
+            }
           }
           
           @media (max-width: 480px) {
+            .page-shell {
+              padding: 12px 8px;
+            }
             .form-container, .info-container {
               padding: 20px;
             }
@@ -735,6 +1059,41 @@ export default function StudentInfo() {
             }
             .weeks-title {
               font-size: 1.3rem;
+            }
+            .public-welcome {
+              margin: 0 0 16px;
+              padding: 18px 12px 16px;
+              border-radius: 14px;
+            }
+            .public-welcome-eyebrow {
+              font-size: 0.7rem;
+              letter-spacing: 0.16em;
+            }
+            .public-welcome-title {
+              font-size: clamp(1.28rem, 7vw, 1.65rem);
+            }
+            .public-welcome-rule {
+              width: min(72px, 32vw);
+            }
+            .public-welcome-rule::before {
+              width: 5px;
+              height: 5px;
+            }
+            .public-welcome-sub {
+              font-size: 0.92rem;
+              padding: 0 2px;
+            }
+            .student-profile-heading {
+              font-size: clamp(1.35rem, 6.5vw, 1.7rem);
+              letter-spacing: 0.04em;
+            }
+            .student-profile-ornament {
+              gap: 8px;
+              margin: 8px 0 18px;
+            }
+            .student-profile-ornament::before,
+            .student-profile-ornament::after {
+              width: 22px;
             }
           }
         `}</style>
@@ -814,7 +1173,7 @@ export default function StudentInfo() {
                       <span style={{ fontFamily: 'monospace' }}>{student.phone || 'N/A'}</span>
                     </div>
                     <div style={{ fontSize: "0.9rem", color: "#6c757d", marginTop: 2 }}>
-                    {student.grade} • {student.main_center}
+                    {[student.course, !isNational && student.courseType, student.main_center].filter(Boolean).join(' • ')}
                   </div>
                 </button>
               ))}
@@ -823,30 +1182,43 @@ export default function StudentInfo() {
         </div>
         )}
         
-        {/* Welcome title for public access (no token) */}
+        {/* Welcome title for public access (parents viewing their child's account) */}
         {currentStudent && !studentDeleted && !hasAuthToken && (
-          <div style={{
-            textAlign: "center",
-            marginBottom: "24px"
-          }}>
-            <h1 style={{
-              fontSize: "2.5rem",
-              fontWeight: "700",
-              color: "white",
-              margin: "0",
-              textShadow: "0 2px 4px rgba(0,0,0,0.1)"
-            }}            >
-              {systemName ? `Welcome to ${systemName}!` : 'Welcome!'}
+          <div className="public-welcome">
+            <p className={`public-welcome-eyebrow ${welcomeAccentFont.className}`}>
+              For Parents
+            </p>
+            <h1 className={`public-welcome-title ${welcomeDisplayFont.className}`}>
+              {studentFirstName
+                ? systemName
+                  ? `${studentFirstName}’s progress at ${systemName}`
+                  : `${studentFirstName}’s progress`
+                : systemName
+                  ? `Your child’s progress at ${systemName}`
+                  : 'Your child’s progress'}
             </h1>
+            <div className="public-welcome-rule" aria-hidden />
+            <p className={`public-welcome-sub ${welcomeAccentFont.className}`}>
+              Track progress, attendance, and performance—all in one place.
+            </p>
           </div>
         )}
 
         {currentStudent && !studentDeleted && (
           <div className="info-container">
+            {!hasAuthToken && (
+              <div className="student-profile-heading-wrap">
+                <h2 className={`student-profile-heading ${welcomeAccentFont.className}`}>
+                  Student profile
+                </h2>
+                <div className="student-profile-ornament" aria-hidden>
+                  <span className="student-profile-ornament-diamond" />
+                </div>
+              </div>
+            )}
             <div className="student-details">
-              {/* Profile Picture Preview - Read Only - Full Row - Only show if authenticated */}
-              {hasAuthToken && (
-                <div className="detail-item" style={{ 
+              {/* Profile Picture Preview - Read Only - Full Row (auth + public signed links) */}
+              <div className="detail-item" style={{ 
                   display: 'flex', 
                   flexDirection: 'column', 
                   alignItems: 'center', 
@@ -942,7 +1314,6 @@ export default function StudentInfo() {
                   </div>
                 )}
               </div>
-              )}
 
               {/* Only show Student ID if user doesn't have token */}
               {!hasAuthToken && (
@@ -955,11 +1326,19 @@ export default function StudentInfo() {
                 <div className="detail-label">Student Name</div>
                 <div className="detail-value">{currentStudent.name}</div>
               </div>
-              {currentStudent?.gender && (
                 <div className="detail-item">
                   <div className="detail-label">Gender</div>
-                  <div className="detail-value">{currentStudent.gender}</div>
-                </div>
+                <div className="detail-value">{currentStudent.gender || 'N/A'}</div>
+              </div>
+              <div className="detail-item">
+                <div className="detail-label">{courseLabels.course}</div>
+                <div className="detail-value">{currentStudent.course || currentStudent.grade || 'N/A'}</div>
+              </div>
+              {courseLabels.showCourseType && (
+              <div className="detail-item">
+                <div className="detail-label">Course Type</div>
+                <div className="detail-value">{currentStudent.courseType || 'N/A'}</div>
+              </div>
               )}
               {currentStudent?.age && (
                 <div className="detail-item">
@@ -983,39 +1362,19 @@ export default function StudentInfo() {
               )}
                 <div className="detail-item">
                 <div className="detail-label">School</div>
-                <div className="detail-value">{currentStudent.school || 'N/A'}</div>
+                <div className="detail-value">{currentStudent.school || 'No School'}</div>
                 </div>
-              {isScoringEnabled && (
-              <div className="detail-item">
-                <div className="detail-label">Score</div>
-                <div className="detail-value" style={{ fontWeight: '700', color: '#1FA8DC' }}>{currentStudent?.score !== null && currentStudent?.score !== undefined ? currentStudent.score : 0}</div>
-              </div>
-              )}
-              {currentStudent?.address && (
-              <div className="detail-item">
-                  <div className="detail-label">Address</div>
-                  <div className="detail-value">{currentStudent.address || 'N/A'}</div>
-              </div>
-              )}
-              <div className="detail-item">
-                <div className="detail-label">Main Center</div>
-                <div className="detail-value">{currentStudent.main_center}</div>
-              </div>
-              <div className="detail-item">
-                <div className="detail-label">Grade</div>
-                <div className="detail-value">{currentStudent.grade || currentStudent.course || 'N/A'}</div>
-              </div>
-              {currentStudent?.courseType && (
-              <div className="detail-item">
-                  <div className="detail-label">Course Type</div>
-                  <div className="detail-value">{currentStudent.courseType || 'N/A'}</div>
-              </div>
-              )}
-              {hasAuthToken && currentStudent?.payment?.numberOfSessions !== undefined && (
-              <div className="detail-item">
-                  <div className="detail-label">Available Number of Sessions</div>
+              {isPaymentSystemEnabled && (
+                <div className="detail-item">
+                  <div className="detail-label">Remaining Number of Sessions</div>
                   <div className="detail-value" style={{ 
-                    color: (currentStudent.payment?.numberOfSessions || 0) <= 2 ? '#dc3545' : '#212529',
+                    color: (() => {
+                      const sessions = currentStudent?.payment?.numberOfSessions || 0;
+                      if (sessions <= 2) return '#dc3545';
+                      if (sessions <= 5) return '#ffc107';
+                      if (sessions <= 8) return '#28a745';
+                      return '#1FA8DC';
+                    })(),
                     fontWeight: 'bold',
                     fontSize: '16px',
                     display: 'inline-flex',
@@ -1028,7 +1387,7 @@ export default function StudentInfo() {
                       fontWeight: '800',
                       lineHeight: '1.2'
                     }}>
-                      {(currentStudent.payment?.numberOfSessions || 0)}
+                      {(currentStudent?.payment?.numberOfSessions || 0)}
                     </span>
                     <span style={{ 
                       fontSize: '17px', 
@@ -1038,9 +1397,32 @@ export default function StudentInfo() {
                     }}>
                       sessions
                     </span>
-              </div>
+                  </div>
                 </div>
               )}
+              {isScoringEnabled && (
+              <div className="detail-item" style={{ borderLeft: '4px solid #f59e0b' }}>
+                <div className="detail-label">SCORE</div>
+                <div className="detail-value" style={{ 
+                  fontSize: '1.4rem', 
+                  fontWeight: '800',
+                  color: (currentStudent?.score !== undefined && currentStudent?.score !== null && currentStudent?.score >= 0) ? '#059669' : '#dc2626'
+                }}>
+                  {currentStudent?.score !== null && currentStudent?.score !== undefined ? currentStudent.score : 0}
+                  <span style={{ fontSize: '0.8rem', fontWeight: '500', color: '#6c757d', marginLeft: '6px' }}>pts</span>
+                </div>
+              </div>
+              )}
+              {currentStudent?.address && (
+              <div className="detail-item">
+                  <div className="detail-label">Address</div>
+                  <div className="detail-value">{currentStudent.address || 'N/A'}</div>
+              </div>
+              )}
+              <div className="detail-item">
+                <div className="detail-label">Main Center</div>
+                <div className="detail-value">{currentStudent.main_center}</div>
+              </div>
               {hasAuthToken && (
               <div className="detail-item">
                   <div className="detail-label">Hidden Comment</div>
@@ -1066,7 +1448,7 @@ export default function StudentInfo() {
                 return (
                   <>
                     <div className="detail-item" onClick={() => openDetails('absent')} style={{ cursor: 'pointer' }}>
-                      <div className="detail-label">Total Absent Sessions</div>
+                      <div className="detail-label">Total Absent Lessons</div>
                       <div className="detail-value" style={{ color: '#dc3545', fontWeight: 600 }}>{totals.absent}</div>
                     </div>
                     <div className="detail-item" onClick={() => openDetails('hw')} style={{ cursor: 'pointer' }}>
@@ -1082,8 +1464,8 @@ export default function StudentInfo() {
               })()}
             </div>
             
-            <div className="weeks-title">All Weeks Records - Available Weeks ({getAvailableWeeks().length} {getAvailableWeeks().length === 1 ? 'week' : 'weeks'})</div>
-            {getAvailableWeeks().length === 0 ? (
+            <div className="weeks-title">All Lessons Records - Available Lessons ({getAvailableLessons().length} lessons)</div>
+            {getAvailableLessons().length === 0 ? (
               <div style={{
                 textAlign: 'center',
                 padding: '40px 20px',
@@ -1094,70 +1476,73 @@ export default function StudentInfo() {
                 borderRadius: '8px',
                 border: '1px solid #dee2e6'
               }}>
-                📋 No weeks records found for this student
+                📋 No lessons records found for this student
               </div>
             ) : (
-              <ScrollArea h="calc(30rem * var(--mantine-scale))" type="hover" className={styles.scrolled}>
-                <Table striped highlightOnHover withTableBorder withColumnBorders style={{ minWidth: '1090px' }}>
+              <ScrollArea h={500} type="always" className={styles.scrolled} scrollbars="xy">
+                <Table striped highlightOnHover withTableBorder withColumnBorders style={{ minWidth: '950px' }}>
                   <Table.Thead style={{ position: 'sticky', top: 0, backgroundColor: '#f8f9fa', zIndex: 10 }}>
                     <Table.Tr>
-                      <Table.Th style={{ width: '120px', minWidth: '120px', textAlign: 'center' }}>Week</Table.Th>
+                      <Table.Th style={{ width: '120px', minWidth: '120px', textAlign: 'center' }}>Lesson</Table.Th>
                       <Table.Th style={{ width: '120px', minWidth: '120px', textAlign: 'center' }}>Attendance Info</Table.Th>
                       <Table.Th style={{ width: '120px', minWidth: '120px', textAlign: 'center' }}>Homework</Table.Th>
-                      <Table.Th style={{ width: '140px', minWidth: '140px', textAlign: 'center' }}>Homework Video</Table.Th>
+                      
                       <Table.Th style={{ width: '120px', minWidth: '120px', textAlign: 'center' }}>Quiz Degree</Table.Th>
                       <Table.Th style={{ width: '200px', minWidth: '200px', textAlign: 'center' }}>Comment</Table.Th>
-                      <Table.Th style={{ width: '130px', minWidth: '130px', textAlign: 'center' }}>Message Status</Table.Th>
+                      {hasAuthToken && (
+                        <Table.Th style={{ width: '140px', minWidth: '140px', textAlign: 'center' }}>Parent Message State</Table.Th>
+                      )}
                     </Table.Tr>
                   </Table.Thead>
                   <Table.Tbody>
-                    {getAvailableWeeks().map((week) => {
-                      const weekName = `week ${String(week.week).padStart(2, '0')}`;
-                      const weekData = getWeekAttendance(week.week);
+                    {getAvailableLessons().map((lesson) => {
+                      const lessonName = lesson.lesson;
+                      const lessonData = getLessonAttendance(lessonName);
                       
                       return (
-                        <Table.Tr key={weekName}>
+                        <Table.Tr key={lessonName}>
                           <Table.Td style={{ fontWeight: 'bold', color: '#1FA8DC', width: '120px', minWidth: '120px', textAlign: 'center', fontSize: '1rem' }}>
-                            {weekName}
+                            {lessonName}
                           </Table.Td>
                           <Table.Td style={{ width: '120px', minWidth: '120px', textAlign: 'center' }}>
                             <span style={{ 
-                              color: weekData.attended ? (weekData.lastAttendance ? '#212529' : '#28a745') : '#dc3545',
+                              color: lessonData.attended ? (lessonData.lastAttendance ? '#212529' : '#28a745') : '#dc3545',
                               fontWeight: 'bold',
                               fontSize: '1rem'
                             }}>
-                              {weekData.attended ? (weekData.lastAttendance || '✅ Yes') : '❌ Absent'}
+                              {lessonData.attended ? (lessonData.lastAttendance || '✅ Yes') : '❌ Absent / Didn\'t attend yet'}
                             </span>
                           </Table.Td>
                           <Table.Td style={{ width: '120px', minWidth: '120px', textAlign: 'center' }}>
                             {(() => {
-                              if (weekData.hwDone === "No Homework") {
+                              if (lessonData.hwDone === "No Homework") {
                                 return <span style={{ 
                                   color: '#dc3545',
                                   fontWeight: 'bold',
                                   fontSize: '1rem'
                                 }}>🚫 No Homework</span>;
-                              } else if (weekData.hwDone === "Not Completed" || weekData.hwDone === "not completed" || weekData.hwDone === "NOT COMPLETED") {
+                              } else if (lessonData.hwDone === "Not Completed" || lessonData.hwDone === "not completed" || lessonData.hwDone === "NOT COMPLETED") {
                                 return <span style={{ 
                                   color: '#ffc107',
                                   fontWeight: 'bold',
                                   fontSize: '1rem'
                                 }}>⚠️ Not Completed</span>;
-                              } else if (weekData.hwDone === true) {
-                                // Show homework degree if it exists
-                                const hwDegree = weekData.hwDegree;
-                                if (hwDegree && String(hwDegree).trim() !== '') {
+                              } else if (lessonData.hwDone === true) {
+                                // Check if there's a homework degree to display
+                                const homeworkDegree = lessonData.homework_degree;
+                                if (homeworkDegree && homeworkDegree !== null && homeworkDegree !== '') {
                                   return <span style={{ 
                                     color: '#28a745',
                                     fontWeight: 'bold',
                                     fontSize: '1rem'
-                                  }}>✅ Done ({hwDegree})</span>;
-                                }
+                                  }}>✅ Done ({homeworkDegree})</span>;
+                                } else {
                                 return <span style={{ 
                                   color: '#28a745',
                                   fontWeight: 'bold',
                                   fontSize: '1rem'
                                 }}>✅ Done</span>;
+                                }
                               } else {
                                 return <span style={{ 
                                   color: '#dc3545',
@@ -1167,24 +1552,10 @@ export default function StudentInfo() {
                               }
                             })()}
                           </Table.Td>
-                          <Table.Td style={{ width: '140px', minWidth: '140px', textAlign: 'center' }}>
-                            {weekData.view_homework_video === true ? (
-                              <span style={{ 
-                                color: '#28a745',
-                                fontWeight: 'bold',
-                                fontSize: '1rem'
-                              }}>✅ Viewed</span>
-                            ) : (
-                              <span style={{ 
-                                color: '#dc3545',
-                                fontWeight: 'bold',
-                                fontSize: '1rem'
-                              }}>❌ Not Viewed</span>
-                            )}
-                          </Table.Td>
+                          
                           <Table.Td style={{ width: '120px', minWidth: '120px', textAlign: 'center' }}>
                             {(() => {
-                              const value = weekData.quizDegree !== null && weekData.quizDegree !== undefined && weekData.quizDegree !== '' ? weekData.quizDegree : '0/0';
+                              const value = lessonData.quizDegree !== null && lessonData.quizDegree !== undefined && lessonData.quizDegree !== '' ? lessonData.quizDegree : 'No Quiz';
                               if (value === "Didn't Attend The Quiz") {
                                 return <span style={{ color: '#dc3545', fontWeight: 'bold', fontSize: '1rem' }}>❌ Didn't Attend The Quiz</span>;
                               } else if (value === "No Quiz") {
@@ -1203,20 +1574,22 @@ export default function StudentInfo() {
                           </Table.Td>
                           <Table.Td style={{ width: '200px', minWidth: '200px', textAlign: 'center' }}>
                             {(() => {
-                              const weekComment = weekData.comment;
+                              const weekComment = lessonData.comment;
                               const val = (weekComment && String(weekComment).trim() !== '') ? weekComment : 'No Comment';
                               return <span style={{ fontSize: '1rem' }}>{val}</span>;
                             })()}
                           </Table.Td>
-                          <Table.Td style={{ width: '130px', minWidth: '130px', textAlign: 'center' }}>
+                          {hasAuthToken && (
+                          <Table.Td style={{ width: '140px', minWidth: '140px', textAlign: 'center' }}>
                             <span style={{ 
-                              color: weekData.message_state ? '#28a745' : '#dc3545',
+                              color: lessonData.parent_message_state ? '#28a745' : '#dc3545',
                               fontWeight: 'bold',
                               fontSize: '1rem'
                             }}>
-                              {weekData.message_state ? '✅ Sent' : '❌ Not Sent'}
+                              {lessonData.parent_message_state ? '✅ Sent' : '❌ Not Sent'}
                             </span>
                           </Table.Td>
+                          )}
                         </Table.Tr>
                       );
                     })}
@@ -1224,15 +1597,92 @@ export default function StudentInfo() {
                 </Table>
               </ScrollArea>
             )}
+            
+            {/* Mock Exam Results Section */}
+            {isMockExamsEnabled && (
+            <div style={{ marginTop: '30px' }}>
+              <div style={{ fontSize: '1.5rem', fontWeight: '700', color: '#495057', marginBottom: '20px', textAlign: 'center', borderBottom: '2px solid #1FA8DC', paddingBottom: '10px' }}>
+                Mock Exam Results
+              </div>
+              {currentStudent.mockExams && Array.isArray(currentStudent.mockExams) && currentStudent.mockExams.some(exam => exam && (
+                (exam.mathDegree !== null && exam.mathDegree !== undefined) ||
+                (exam.englishDegree !== null && exam.englishDegree !== undefined) ||
+                (exam.examDegree !== null && exam.examDegree !== undefined) ||
+                (exam.percentage !== null && exam.percentage !== undefined)
+              )) ? (
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '12px' }}>
+                  {currentStudent.mockExams.map((exam, index) => {
+                    if (exam && (
+                      (exam.mathDegree !== null && exam.mathDegree !== undefined) ||
+                      (exam.englishDegree !== null && exam.englishDegree !== undefined) ||
+                      (exam.examDegree !== null && exam.examDegree !== undefined) ||
+                      (exam.percentage !== null && exam.percentage !== undefined)
+                    )) {
+                      return (
+                        <div key={index} className="detail-item" style={{ padding: '12px' }}>
+                          <div className="detail-label">Mock Exam {index + 1}</div>
+                          <div className="detail-value">
+                            {exam.mathDegree !== null && exam.mathDegree !== undefined &&
+                              exam.mathOutOf !== null && exam.mathOutOf !== undefined && (
+                              <div>Math Mock Exam: {exam.mathDegree} / {exam.mathOutOf} ({exam.mathPercentage}%)</div>
+                            )}
+                            {exam.englishDegree !== null && exam.englishDegree !== undefined &&
+                              exam.englishOutOf !== null && exam.englishOutOf !== undefined && (
+                              <div>English Mock Exam: {exam.englishDegree} / {exam.englishOutOf} ({exam.englishPercentage}%)</div>
+                            )}
+                            {(exam.mathDegree === null || exam.mathDegree === undefined) &&
+                              (exam.englishDegree === null || exam.englishDegree === undefined) &&
+                              exam.examDegree !== null && exam.examDegree !== undefined &&
+                              exam.outOf !== null && exam.outOf !== undefined && (
+                              <div>Degree: {exam.examDegree} / {exam.outOf}</div>
+                            )}
+                            {(exam.mathPercentage === null || exam.mathPercentage === undefined) &&
+                              (exam.englishPercentage === null || exam.englishPercentage === undefined) &&
+                              exam.percentage !== null && exam.percentage !== undefined && (
+                              <div style={{ color: '#28a745', fontWeight: 'bold', marginTop: '3px', marginBottom: '3px' }}>
+                                Percentage: {exam.percentage}%
+                              </div>
+                            )}
+                            {exam.date && (
+                              <div style={{ fontSize: '0.8rem', color: '#6c757d' }}>
+                                Date: {exam.date}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    }
+                    return null;
+                  })}
+                </div>
+              ) : (
+                <div style={{ 
+                  textAlign: 'center', 
+                  padding: '20px', 
+                  color: '#6c757d', 
+                  fontSize: '1rem',
+                  fontStyle: 'italic'
+                }}>
+                  There are no recent exams.
+                </div>
+              )}
+            </div>
+            )}
           </div>
         )}
         
-        {/* Charts Tabs Section - Separate Container */}
-        {currentStudent && !studentDeleted && (
-          <div className="info-container" style={{ marginTop: '24px' }}>
-            <ChartTabs 
-              studentId={currentStudent.id} 
-              hasAuthToken={hasAuthToken} 
+        {/* Charts Tabs Section - Outside lessons container */}
+        {currentStudent?.lessons && (
+          <div style={{ marginTop: 24 }}>
+            <ChartTabs
+              lessons={currentStudent.lessons}
+              mockExams={currentStudent.mockExams}
+              onlineMockExams={currentStudent.online_mock_exams}
+              mockExamChartData={mockExamPerformanceData?.chartData}
+              homeworkChartData={homeworkPerfErr ? [] : (homeworkPerfOk ? (homeworkPerformanceData?.chartData ?? []) : undefined)}
+              homeworkChartLoading={homeworkPerfLoading}
+              quizChartData={quizPerfErr ? [] : (quizPerfOk ? (quizPerformanceData?.chartData ?? []) : undefined)}
+              quizChartLoading={quizPerfLoading}
             />
           </div>
         )}
@@ -1388,7 +1838,7 @@ export default function StudentInfo() {
                   fontWeight: '500',
                   fontSize: '1rem'
                 }}>
-                  No {detailsType === 'absent' ? 'absent sessions' : 
+                  No {detailsType === 'absent' ? 'absent lessons' : 
                        detailsType === 'hw' ? 'missing homework' : 'unattended quizzes'} found.
                 </div>
               </div>
@@ -1447,7 +1897,7 @@ export default function StudentInfo() {
                       <Table.Tr>
                         <Table.Th style={{ width: '140px', textAlign: 'center' }}>
                           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}>
-                            📅 Week
+                            📚 Lesson
                           </div>
                         </Table.Th>
                         <Table.Th style={{ textAlign: 'center' }}>
@@ -1461,7 +1911,7 @@ export default function StudentInfo() {
                     </Table.Thead>
                     <Table.Tbody>
                       {detailsWeeks.map((info, index) => (
-                        <Table.Tr key={`student-${searchId}-${info.week}`} style={{
+                        <Table.Tr key={`student-${searchId || studentId}-${info.lesson}`} style={{
                           background: index % 2 === 0 ? '#ffffff' : '#f8f9fa',
                           transition: 'all 0.2s ease'
                         }}>
@@ -1481,7 +1931,7 @@ export default function StudentInfo() {
                               background: 'white',
                               boxShadow: '0 2px 4px rgba(0,0,0,0.1)'
                             }}>
-                              Week {String(info.week).padStart(2, '0')}
+                              {info.lesson}
                             </div>
                           </Table.Td>
                           <Table.Td style={{ textAlign: 'center' }}>
@@ -1568,7 +2018,7 @@ export default function StudentInfo() {
                                   info.quizDegree === "No Quiz" ?
                                   '0 2px 4px rgba(244, 67, 54, 0.2)' : '0 2px 4px rgba(66, 165, 245, 0.2)'
                               }}>
-                                {info.quizDegree == null ? '0/0' : 
+                                {info.quizDegree == null || info.quizDegree === '' ? '🚫 No Quiz' : 
                                  (info.quizDegree === "Didn't Attend The Quiz" ? "❌ Didn't Attend" : 
                                   info.quizDegree === "No Quiz" ? "🚫 No Quiz" : String(info.quizDegree))}
                               </div>
@@ -1607,7 +2057,7 @@ export default function StudentInfo() {
                       border: '1px solid #dee2e6',
                       boxShadow: '0 2px 4px rgba(0,0,0,0.1)'
                     }}>
-                      📊 Total: {detailsWeeks.length} {detailsType === 'absent' ? 'absent sessions' : 
+                      📊 Total: {detailsWeeks.length} {detailsType === 'absent' ? 'absent lessons' : 
                                  detailsType === 'hw' ? 'missing homework' : 'unattended quizzes'}
                     </div>
                   </div>
@@ -1623,6 +2073,8 @@ export default function StudentInfo() {
           </div>
         )}
       </div>
+    </div>
+      )}
     </div>
   );
 }

@@ -6,6 +6,7 @@ import { useProfile } from '../../lib/api/auth';
 import { useStudent } from '../../lib/api/students';
 import apiClient from '../../lib/axios';
 import NeedHelp from '../../components/NeedHelp';
+import { useNationalSystem, getCourseFieldLabels } from '../../lib/api/system';
 
 // API function to get centers
 const centersAPI = {
@@ -17,6 +18,8 @@ const centersAPI = {
 
 export default function CentersSchedule() {
   const router = useRouter();
+  const isNational = useNationalSystem();
+  const courseLabels = getCourseFieldLabels(isNational);
   
   // Get current logged-in user profile
   const { data: profile, isLoading: profileLoading } = useProfile();
@@ -24,7 +27,7 @@ export default function CentersSchedule() {
   // Get student ID from profile
   const studentId = profile?.id ? profile.id.toString() : null;
   
-  // Fetch student data to get grade
+  // Fetch student data to get course
   const { data: studentData, isLoading: studentLoading } = useStudent(studentId, { enabled: !!studentId });
   
   // Fetch centers
@@ -38,23 +41,26 @@ export default function CentersSchedule() {
     staleTime: 0,
   });
 
-  // Build schedule data filtered by student grade
+  // Build schedule data filtered by student course (and courseType when not national)
   const buildSchedule = () => {
-    if (!studentData?.grade || !centers || centers.length === 0) {
+    if (!studentData?.course || !centers || centers.length === 0) {
       console.log('🔍 Schedule Debug - Missing data:', {
-        hasStudentGrade: !!studentData?.grade,
-        studentGrade: studentData?.grade,
+        hasStudentCourse: !!studentData?.course,
+        studentCourse: studentData?.course,
         centersCount: centers?.length || 0
       });
       return [];
     }
 
-    // Normalize grade for comparison (trim whitespace)
-    const studentGrade = (studentData.grade || '').trim();
+    // Normalize course for comparison (trim whitespace)
+    const studentCourse = (studentData.course || '').trim();
+    const studentCourseType = (studentData.courseType || '').trim();
     const scheduleRows = [];
 
     console.log('🔍 Schedule Debug - Building schedule:', {
-      studentGrade,
+      studentCourse,
+      studentCourseType,
+      isNational,
       centersCount: centers.length
     });
 
@@ -65,52 +71,68 @@ export default function CentersSchedule() {
       }
 
       console.log('🔍 Checking center:', center.name, {
-        grades: center.grades.map(g => g.grade)
+        grades: center.grades.map(g => ({ course: g.course || g.grade, courseType: g.courseType }))
       });
 
-      // Check if this center has the student's grade (normalize comparison - case insensitive and trim)
-      const gradeData = center.grades.find(g => {
-        const centerGrade = (g.grade || '').trim();
-        const normalizedStudentGrade = studentGrade.trim();
-        // Case-insensitive comparison
-        const matches = centerGrade.toLowerCase() === normalizedStudentGrade.toLowerCase();
+      // Check if this center has matching course (or "All") and courseType
+      const matchingGrades = center.grades.filter(g => {
+        const centerCourse = (g.course || g.grade || '').trim(); // Support both course and grade for backward compatibility
+        const centerCourseType = (g.courseType || '').trim();
+        
+        // Check if course matches (either exact match or center has "All")
+        const courseMatch = centerCourse.toLowerCase() === 'all' || 
+                           centerCourse.toLowerCase() === studentCourse.toLowerCase();
+        
+        // National system: match by course/grade only (ignore course type)
+        const courseTypeMatch = isNational ||
+                               !centerCourseType || 
+                               centerCourseType === '' || 
+                               centerCourseType.toLowerCase() === studentCourseType.toLowerCase();
+        
+        const matches = courseMatch && courseTypeMatch;
+        
         if (!matches) {
-          console.log('🔍 Grade mismatch:', {
-            centerGrade,
-            studentGrade: normalizedStudentGrade,
-            centerGradeLower: centerGrade.toLowerCase(),
-            studentGradeLower: normalizedStudentGrade.toLowerCase(),
+          console.log('🔍 Course/CourseType mismatch:', {
+            centerCourse,
+            studentCourse,
+            centerCourseType,
+            studentCourseType,
             matches: false
           });
         } else {
-          console.log('✅ Grade match found:', {
-            centerGrade,
-            studentGrade: normalizedStudentGrade
+          console.log('✅ Course/CourseType match found:', {
+            centerCourse,
+            studentCourse,
+            centerCourseType,
+            studentCourseType
           });
         }
         return matches;
       });
       
-      if (gradeData) {
-        console.log('✅ Found matching grade for center:', center.name, {
-          grade: gradeData.grade,
-          timingsCount: gradeData.timings?.length || 0
+      if (matchingGrades.length > 0) {
+        console.log('✅ Found matching grades for center:', center.name, {
+          count: matchingGrades.length,
+          timingsCount: matchingGrades.reduce((sum, g) => sum + (g.timings?.length || 0), 0)
         });
       } else {
-        console.log('❌ No matching grade for center:', center.name);
+        console.log('❌ No matching grades for center:', center.name);
       }
       
-      if (gradeData && gradeData.timings && gradeData.timings.length > 0) {
-        // Add a row for each timing in this grade
-        gradeData.timings.forEach(timing => {
-          scheduleRows.push({
-            center: center.name,
-            day: timing.day,
-            time: `${timing.time} ${timing.period}`,
-            location: center.location || ''
+      // Add rows for all matching grades
+      matchingGrades.forEach(gradeData => {
+        if (gradeData.timings && gradeData.timings.length > 0) {
+          // Add a row for each timing in this grade
+          gradeData.timings.forEach(timing => {
+            scheduleRows.push({
+              center: center.name,
+              day: timing.day,
+              time: `${timing.time} ${timing.period}`,
+              location: center.location || null
+            });
           });
-        });
-      }
+        }
+      });
     });
 
     console.log('🔍 Schedule Debug - Final rows:', scheduleRows.length);
@@ -119,6 +141,14 @@ export default function CentersSchedule() {
 
   const scheduleData = buildSchedule();
   const isLoading = profileLoading || studentLoading || centersLoading;
+
+  const scheduleTitle = isNational
+    ? (studentData?.course || '')
+    : (
+        studentData?.courseType && studentData.courseType.toLowerCase() === 'basics'
+          ? 'Basics'
+          : studentData?.course
+      );
 
   return (
     <div style={{ 
@@ -166,31 +196,53 @@ export default function CentersSchedule() {
               Loading schedule...
             </div>
           </div>
-        ) : !studentData?.grade ? (
+        ) : !studentData?.course ? (
           <div style={{ textAlign: 'center', padding: '40px' }}>
-            <h3 style={{ color: '#666', margin: '0 0 16px 0' }}>No Grade Assigned</h3>
+            <h3 style={{ color: '#666', margin: '0 0 16px 0' }}>No {courseLabels.course} Assigned</h3>
             <p style={{ color: '#999', margin: 0 }}>
-              Please contact your administrator to assign a grade.
+              Please contact your administrator to assign a {courseLabels.courseLower}.
             </p>
           </div>
         ) : scheduleData.length === 0 ? (
           <div style={{ textAlign: 'center', padding: '40px' }}>
             <h3 style={{ color: '#666', margin: '0 0 16px 0' }}>No Schedule Found</h3>
             <p style={{ color: '#999', margin: '0 0 16px 0' }}>
-              No centers found with schedule for grade: <strong>{studentData.grade}</strong>
+              No centers found with schedule for {courseLabels.courseLower}:{' '}
+              <strong>{scheduleTitle}</strong>
+              {!isNational &&
+                studentData.courseType &&
+                studentData.courseType.toLowerCase() !== 'basics' && (
+                  <span> ({studentData.courseType})</span>
+                )}
             </p>
           </div>
         ) : (
           <>
-            {studentData?.grade && (
-              <div className="student-grade-header" style={{
+            {studentData?.course && (
+              <div
+                className="student-course-header"
+                style={{
                 textAlign: 'center',
                 marginBottom: '30px',
                 color: 'rgb(29, 165, 245)',
                 fontSize: '30px',
-                fontFamily: 'fantasy'
-              }}>
-                {studentData.grade}
+                  fontFamily: 'fantasy',
+                }}
+              >
+                {scheduleTitle}
+                {!isNational &&
+                  studentData.courseType &&
+                  studentData.courseType.toLowerCase() !== 'basics' && (
+                    <span
+                      style={{
+                        fontSize: '20px',
+                        marginLeft: '8px',
+                        textTransform: 'capitalize',
+                      }}
+                    >
+                      ({studentData.courseType})
+                    </span>
+                  )}
               </div>
             )}
             <div className="schedule-table-container" style={{
@@ -275,7 +327,9 @@ export default function CentersSchedule() {
                         fontSize: '0.9rem',
                         textAlign: 'center'
                       }}>
-                        {row.location ? (
+                        {row.center && String(row.center).trim().toLowerCase() === 'online' ? (
+                          <Image src="/online.svg" alt="Online" width={28} height={28} style={{ display: 'inline-block', verticalAlign: 'middle' }} />
+                        ) : row.location && row.location.trim() !== '' && row.location !== null ? (
                           <span
                             onClick={() => window.open(row.location, '_blank')}
                             style={{
@@ -307,7 +361,7 @@ export default function CentersSchedule() {
                             Location
                           </span>
                         ) : (
-                          <span style={{ color: '#999' }}>N/A</span>
+                          <span style={{ color: '#999' }}>No Location</span>
                         )}
                       </td>
                     </tr>
@@ -333,7 +387,7 @@ export default function CentersSchedule() {
         
         /* Mobile Responsive Styles */
         @media (max-width: 768px) {
-          .student-grade-header {
+          .student-course-header {
             font-size: 24px !important;
             margin-bottom: 20px !important;
           }
@@ -354,7 +408,7 @@ export default function CentersSchedule() {
         }
         
         @media (max-width: 480px) {
-          .student-grade-header {
+          .student-course-header {
             font-size: 20px !important;
             margin-bottom: 15px !important;
           }

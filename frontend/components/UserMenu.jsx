@@ -1,10 +1,14 @@
 import { useState, useRef, useEffect } from 'react';
 import { useRouter } from 'next/router';
+import { useQuery } from '@tanstack/react-query';
 import { useProfile, useProfilePicture } from '../lib/api/auth';
+import { useSubscription } from '../lib/api/subscription';
 import { useStudent } from '../lib/api/students';
-import { useSystemConfig } from '../lib/api/system';
+import { useSystemConfig, useNationalSystem, getCourseFieldLabels } from '../lib/api/system';
 import QRCodeModal from './QRCodeModal';
 import InstallApp from './InstallApp';
+import StudentLinksModal from './StudentLinksModal';
+import AppVideosModal from './AppVideosModal';
 import apiClient from '../lib/axios';
 import Image from 'next/image';
 
@@ -12,23 +16,158 @@ export default function UserMenu() {
   const [open, setOpen] = useState(false);
   const [showQRModal, setShowQRModal] = useState(false);
   const [showInstallApp, setShowInstallApp] = useState(false);
+  const [showLinksModal, setShowLinksModal] = useState(false);
+  const [showAppVideos, setShowAppVideos] = useState(false);
+  const [showOther, setShowOther] = useState(false);
+  const [isDesktop, setIsDesktop] = useState(false);
   const menuRef = useRef(null);
+  const otherRef = useRef(null);
+  const otherHoverTimer = useRef(null);
   const router = useRouter();
   
   // Use React Query to get user profile data
   const { data: user, isLoading, error } = useProfile();
+  const { data: subscription } = useSubscription();
   const { data: profilePictureUrl } = useProfilePicture();
   const { data: systemConfig } = useSystemConfig();
+  const isNational = useNationalSystem();
+  const courseLabels = getCourseFieldLabels(isNational);
   const isScoringEnabled = systemConfig?.scoring_system === true || systemConfig?.scoring_system === 'true';
   const isSubscriptionEnabled = systemConfig?.subscription === true || systemConfig?.subscription === 'true';
+  const isMarketingSystemEnabled =
+    systemConfig?.marketing_page === true || systemConfig?.marketing_page === 'true';
+
+  const { data: mpVisibility } = useQuery({
+    queryKey: ['marketing-page-visibility'],
+    queryFn: async () => (await apiClient.get('/api/marketing_page/visibility')).data,
+    enabled: Boolean(isMarketingSystemEnabled),
+    staleTime: 30_000,
+  });
+
+  const { data: publicTestimonialsData } = useQuery({
+    queryKey: ['public_testimonials'],
+    queryFn: async () => (await apiClient.get('/api/public_testimonials')).data,
+    enabled: Boolean(isMarketingSystemEnabled),
+    staleTime: 0,
+    refetchOnWindowFocus: true,
+    refetchInterval: 10_000,
+  });
+  const publicTestimonialsPending = publicTestimonialsData?.pendingCount || 0;
 
   // Fallback user object if data is not available yet
   const userData = user || { name: '', id: '', phone: '', role: '' };
+
+  const showMarketingPageMenu =
+    Boolean(isMarketingSystemEnabled) &&
+    (mpVisibility?.page_state !== false ||
+      userData.role === 'admin' ||
+      userData.role === 'developer');
   
   // If user is a student, fetch student data from students collection
   const studentId = userData.role === 'student' && userData.id ? userData.id.toString() : null;
   const { data: studentData } = useStudent(studentId, { enabled: !!studentId });
 
+  // Subscription countdown timer
+  const [timeRemaining, setTimeRemaining] = useState(null);
+  const hasLoggedOutRef = useRef(false); // Track if we've already called logout
+
+  useEffect(() => {
+    const isDeveloper = userData.role === 'developer';
+    const isStudent = userData.role === 'student';
+
+    // Don't run subscription timer if subscription system is disabled
+    if (!isSubscriptionEnabled) {
+      setTimeRemaining(null);
+      hasLoggedOutRef.current = false;
+      return;
+    }
+
+    // Don't show subscription timer for students
+    if (isStudent) {
+      setTimeRemaining(null);
+      hasLoggedOutRef.current = false;
+      return;
+    }
+
+    // Simple logic: if active = false AND date_of_expiration = null, show expired
+    // Otherwise, if date_of_expiration exists, calculate timer
+    if (!subscription || (subscription.active === false && !subscription.date_of_expiration)) {
+      setTimeRemaining(null);
+      hasLoggedOutRef.current = false;
+      return;
+    }
+
+    // If date_of_expiration exists, calculate timer
+    if (!subscription.date_of_expiration) {
+      setTimeRemaining(null);
+      hasLoggedOutRef.current = false;
+      return;
+    }
+
+    const updateTimer = () => {
+      const now = new Date();
+      const expiration = new Date(subscription.date_of_expiration);
+      const diff = expiration - now;
+
+      // Calculate time components (use Math.max to ensure non-negative)
+      let days = Math.max(0, Math.floor(diff / (1000 * 60 * 60 * 24)));
+      let hours = Math.max(0, Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60)));
+      let minutes = Math.max(0, Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60)));
+      let seconds = Math.max(0, Math.floor((diff % (1000 * 60)) / 1000));
+
+      // Redistribute time: if hours is 00 and days > 0, borrow 1 day to fill hours
+      if (hours === 0 && days > 0) {
+        days -= 1;
+        hours = 24;
+      }
+      // If minutes is 00 and hours > 0, borrow 1 hour to fill minutes
+      if (minutes === 0 && hours > 0) {
+        hours -= 1;
+        minutes = 60;
+      }
+      // If seconds is 00 and minutes > 0, borrow 1 minute to fill seconds
+      if (seconds === 0 && minutes > 0) {
+        minutes -= 1;
+        seconds = 60;
+      }
+
+      // Update timer with calculated values (always set, even if zero)
+      setTimeRemaining({ days, hours, minutes, seconds });
+
+      // Check if all time components are zero (00:00:00:00) or diff <= 0
+      // Only auto-logout for non-developers
+      if (!isDeveloper && (diff <= 0 || (days === 0 && hours === 0 && minutes === 0 && seconds === 0))) {
+        // If timer reaches 00:00:00:00, delete token and redirect to login
+        if (!hasLoggedOutRef.current) {
+          hasLoggedOutRef.current = true;
+          (async () => {
+            try {
+              await apiClient.post('/api/auth/logout', {}, {
+                validateStatus: (status) => status < 500 // Accept 200-499 as success
+              }).catch(() => {
+                // Ignore errors - continue with redirect even if logout fails
+              });
+            } catch (err) {
+              // Ignore errors - continue with redirect even if logout fails
+              if (err.response?.status !== 400 && err.response?.status !== 401) {
+                console.error('Error logging out (continuing anyway):', err);
+              }
+            }
+            router.push('/');
+          })();
+        }
+      }
+    };
+
+    // Calculate timer immediately
+    updateTimer();
+    const interval = setInterval(updateTimer, 1000);
+
+    return () => {
+      clearInterval(interval);
+      hasLoggedOutRef.current = false; // Reset logout flag when effect cleans up
+    };
+  }, [subscription, userData.role, router, isSubscriptionEnabled]);
 
   useEffect(() => {
     function handleClickOutside(e) {
@@ -39,6 +178,57 @@ export default function UserMenu() {
     if (open) document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [open]);
+
+  // Desktop vs mobile: Other submenu only at 580px+
+  useEffect(() => {
+    const mq = window.matchMedia('(min-width: 580px)');
+    const update = () => {
+      setIsDesktop(mq.matches);
+      if (!mq.matches) setShowOther(false);
+    };
+    update();
+    mq.addEventListener('change', update);
+    return () => mq.removeEventListener('change', update);
+  }, []);
+
+  // Close the "Other" submenu when the main menu closes
+  useEffect(() => {
+    if (!open) setShowOther(false);
+  }, [open]);
+
+  // Close the "Other" submenu when clicking outside of it
+  useEffect(() => {
+    function handleClickOutside(e) {
+      if (otherRef.current && !otherRef.current.contains(e.target)) {
+        setShowOther(false);
+      }
+    }
+    if (showOther) document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [showOther]);
+
+  useEffect(() => {
+    return () => {
+      if (otherHoverTimer.current) clearTimeout(otherHoverTimer.current);
+    };
+  }, []);
+
+  const isStaff =
+    userData.role === 'admin' ||
+    userData.role === 'developer' ||
+    userData.role === 'assistant';
+
+  const useOtherMenu = isStaff && isDesktop;
+
+  const openOther = () => {
+    if (otherHoverTimer.current) clearTimeout(otherHoverTimer.current);
+    setShowOther(true);
+  };
+
+  const closeOtherSoon = () => {
+    if (otherHoverTimer.current) clearTimeout(otherHoverTimer.current);
+    otherHoverTimer.current = setTimeout(() => setShowOther(false), 150);
+  };
 
   const handleLogout = async () => {
     try {
@@ -173,9 +363,19 @@ export default function UserMenu() {
                   <Image src="/user-circle3.svg" alt="User" width={18} height={18} />
                   ID: {studentData.id}
                 </div>
-                {studentData.grade && (
+                {(studentData.course || studentData.grade) && (
+                  <div style={{ color: '#495057', fontSize: 15, fontWeight: 600, marginBottom: 4 }}>
+                    {courseLabels.course}: {studentData.course || studentData.grade}
+                  </div>
+                )}
+                {courseLabels.showCourseType && studentData.courseType && (
+                  <div style={{ color: '#495057', fontSize: 15, fontWeight: 600, marginBottom: 4 }}>
+                    Course Type: {studentData.courseType}
+                  </div>
+                )}
+                {studentData.main_center && (
                   <div style={{ color: '#495057', fontSize: 15, fontWeight: 600 }}>
-                    Grade: {studentData.grade}
+                    Main Center: {studentData.main_center}
                   </div>
                 )}
               </>
@@ -189,12 +389,67 @@ export default function UserMenu() {
               </>
             )}
           </div>
+          {isSubscriptionEnabled && subscription && userData.role !== 'student' && (
+            <div style={{
+              padding: '12px 20px',
+              borderBottom: '1px solid #e9ecef',
+              marginBottom: 8
+            }}>
+              {/* Show "Subscription Expired" only if active = false AND date_of_expiration = null */}
+              {subscription.active === false && !subscription.date_of_expiration ? (
+                <div style={{
+                  fontSize: 15,
+                  fontWeight: 700,
+                  color: '#dc3545',
+                  lineHeight: 1.4
+                }}>
+                  <Image src="/alert-triangle2.svg" alt="alert" width={20} height={20} style={{ marginRight: '5px' , transform: "translateY(5px)" }} />
+                  Subscription Expired
+                </div>
+              ) : subscription.date_of_expiration && timeRemaining !== null ? (
+                <div style={{
+                  fontSize: 15,
+                  fontWeight: 600,
+                  color: '#495057',
+                  lineHeight: 1.4
+                }}>
+                  <div style={{ marginBottom: 4, color: '#313437', fontSize: 15 }}>
+                    <Image src="/clock.svg" alt="Clock" width={18} height={18} style={{ marginRight: '5px' , transform: "translateY(3px)" }} />
+                    Subscription time remaining:</div>
+                  <div style={{ 
+                    fontFamily: 'Courier New, monospace',
+                    letterSpacing: 0.5,
+                    fontSize: 15
+                  }}>
+                    <span style={{ color: '#1fa8dc', fontSize: 15 }}>{String(timeRemaining.days || 0).padStart(2, '0')}</span>
+                    <span style={{ color: '#ed2929', fontSize: 15 }}> days : </span>
+                    <span style={{ color: '#1fa8dc', fontSize: 15 }}>{String(timeRemaining.hours || 0).padStart(2, '0')}</span>
+                    <span style={{ color: '#ed2929', fontSize: 15 }}> hours : </span>
+                    <span style={{ color: '#1fa8dc', fontSize: 15 }}>{String(timeRemaining.minutes || 0).padStart(2, '0')}</span>
+                    <span style={{ color: '#ed2929', fontSize: 15 }}> min : </span>
+                    <span style={{ color: '#1fa8dc', fontSize: 15 }}>{String(timeRemaining.seconds || 0).padStart(2, '0')}</span>
+                    <span style={{ color: '#ed2929', fontSize: 15 }}> sec</span>
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          )}
           <button style={menuBtnStyle} onClick={handleLogout}>
             <Image src="/logout.svg" alt="Logout" width={20} height={20} style={{ marginRight: '8px', filter: 'brightness(0) saturate(100%) invert(27%) sepia(95%) saturate(6871%) hue-rotate(349deg) brightness(93%) contrast(86%)' }} />
             Logout
           </button>
           {userData.role === 'student' && (
             <>
+              <button
+                style={menuBtnStyle}
+                onClick={() => {
+                  setOpen(false);
+                  setShowLinksModal(true);
+                }}
+              >
+                <Image src="/link.svg" alt="Links" width={20} height={20} style={{ marginRight: '8px' }} />
+                Social Media Links
+              </button>
               <button style={menuBtnStyle} onClick={handleChangePassword}>
                 <Image src="/key2.svg" alt="Password" width={20} height={20} style={{ marginRight: '8px' }} />
                 Change My Password
@@ -233,6 +488,56 @@ export default function UserMenu() {
                     <Image src="/settings2.svg" alt="Settings" width={20} height={20} style={{ marginRight: '8px' }} />
                     Manage Online System
                   </button>
+                  {showMarketingPageMenu && (
+                    <button
+                      style={menuBtnStyle}
+                      onClick={() => {
+                        setOpen(false);
+                        router.push('/welcome');
+                      }}
+                    >
+                      <Image src="/marketing.svg" alt="Marketing" width={20} height={20} style={{ marginRight: '8px' }} />
+                      Manage Marketing Page
+                    </button>
+                  )}
+                  {isMarketingSystemEnabled && (
+                    <button
+                      style={{
+                        ...menuBtnStyle,
+                        position: 'relative',
+                        display: 'flex',
+                        alignItems: 'center',
+                      }}
+                      onClick={() => {
+                        setOpen(false);
+                        router.push('/dashboard/students_reviews');
+                      }}
+                    >
+                      <Image src="/testimonials2.svg" alt="Students Reviews" width={20} height={20} style={{ marginRight: '8px' }} />
+                      Students Reviews
+                      {publicTestimonialsPending > 0 ? (
+                        <span
+                          style={{
+                            marginLeft: '8px',
+                            minWidth: '20px',
+                            height: '20px',
+                            borderRadius: '999px',
+                            background: '#dc3545',
+                            color: '#fff',
+                            fontSize: '0.72rem',
+                            fontWeight: 700,
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            padding: '0 6px',
+                          }}
+                          aria-label={`${publicTestimonialsPending} pending reviews`}
+                        >
+                          {publicTestimonialsPending > 99 ? '99+' : publicTestimonialsPending}
+                        </span>
+                      ) : null}
+                    </button>
+                  )}
                   {isScoringEnabled && (
                     <button style={menuBtnStyle} onClick={() => {
                       setOpen(false);
@@ -244,20 +549,97 @@ export default function UserMenu() {
                   )}
                 </>
               )}
+              {isSubscriptionEnabled && userData.role === 'developer' && (
+                <button style={menuBtnStyle} onClick={handleSubscriptionDashboard}>
+                  <Image src="/dollar.svg" alt="Dollar" width={20} height={20} style={{ marginRight: '8px' }} />
+                  Subscription Dashboard
+                </button>
+              )}
             </>
           )}
-          <button style={menuBtnStyle} onClick={handleContactDeveloper}>
-            <Image src="/message2.svg" alt="Message" width={20} height={20} style={{ marginRight: '8px' }} />
-            Contact Developer
-          </button>
-          <button style={menuBtnStyle} onClick={handleInstallApp}>
-            <Image src="/download.svg" alt="Download" width={20} height={20} style={{ marginRight: '8px' }} />
-            Install App
-          </button>
+          {useOtherMenu ? (
+            <div
+              ref={otherRef}
+              style={{ position: 'relative' }}
+              onMouseEnter={openOther}
+              onMouseLeave={closeOtherSoon}
+            >
+              <button
+                style={menuBtnStyle}
+                onClick={() => setShowOther((v) => !v)}
+              >
+                <Image src="/other.svg" alt="Other" width={20} height={20} style={{ marginRight: '8px' }} />
+                Other
+              </button>
+              {showOther && (
+                <div style={subMenuStyle}>
+                  <button
+                    style={menuBtnStyle}
+                    onClick={() => {
+                      setShowOther(false);
+                      setOpen(false);
+                      handleContactDeveloper();
+                    }}
+                  >
+                    <Image src="/message2.svg" alt="Message" width={20} height={20} style={{ marginRight: '8px' }} />
+                    Contact Developer
+                  </button>
+                  <button
+                    style={menuBtnStyle}
+                    onClick={() => {
+                      setShowOther(false);
+                      setOpen(false);
+                      setShowAppVideos(true);
+                    }}
+                  >
+                    <Image src="/video.svg" alt="App Videos" width={20} height={20} style={{ marginRight: '8px' }} />
+                    App Videos
+                  </button>
+                  <button
+                    style={menuBtnStyle}
+                    onClick={() => {
+                      setShowOther(false);
+                      handleInstallApp();
+                    }}
+                  >
+                    <Image src="/download.svg" alt="Download" width={20} height={20} style={{ marginRight: '8px' }} />
+                    Install App
+                  </button>
+                </div>
+              )}
+            </div>
+          ) : (
+            <>
+              <button style={menuBtnStyle} onClick={handleContactDeveloper}>
+                <Image src="/message2.svg" alt="Message" width={20} height={20} style={{ marginRight: '8px' }} />
+                Contact Developer
+              </button>
+              <button
+                style={menuBtnStyle}
+                onClick={() => {
+                  setOpen(false);
+                  setShowAppVideos(true);
+                }}
+              >
+                <Image src="/video.svg" alt="App Videos" width={20} height={20} style={{ marginRight: '8px' }} />
+                App Videos
+              </button>
+              <button style={menuBtnStyle} onClick={handleInstallApp}>
+                <Image src="/download.svg" alt="Download" width={20} height={20} style={{ marginRight: '8px' }} />
+                Install App
+              </button>
+            </>
+          )}
         </div>
       )}
       <QRCodeModal isOpen={showQRModal} onClose={() => setShowQRModal(false)} />
       <InstallApp isOpen={showInstallApp} onClose={() => setShowInstallApp(false)} />
+      <StudentLinksModal isOpen={showLinksModal} onClose={() => setShowLinksModal(false)} />
+      <AppVideosModal
+        isOpen={showAppVideos}
+        onClose={() => setShowAppVideos(false)}
+        role={userData.role}
+      />
     </div>
   );
 }
@@ -278,4 +660,19 @@ const menuBtnStyle = {
   outline: 'none',
   display: 'flex',
   alignItems: 'center',
+};
+
+const subMenuStyle = {
+  position: 'absolute',
+  bottom: 0,
+  top: 'auto',
+  right: '100%',
+  marginRight: 10,
+  minWidth: 230,
+  background: '#fff',
+  borderRadius: 14,
+  boxShadow: '0 8px 32px rgba(31,168,220,0.18)',
+  border: '1.5px solid #e9ecef',
+  zIndex: 10001,
+  padding: '8px 0',
 }; 

@@ -1,190 +1,233 @@
-import { useState } from "react";
-import { useRouter } from "next/router";
-import { useQuery } from '@tanstack/react-query';
-import apiClient from '../lib/axios';
-import { useProfile } from '../lib/api/auth';
-import HomeworkPerformanceChart from "./HomeworkPerformanceChart";
-import QuizPerformanceChart from "./QuizPerformanceChart";
+import { useState, useMemo, useEffect } from "react";
+import HwChart from "./HwChart";
+import QuizChart from "./QuizChart";
+import MockExamChart from "./MockExamChart";
+import { useSystemConfig } from "../lib/api/system";
 
-export default function ChartTabs({ studentId, hasAuthToken = true }) {
-  const router = useRouter();
-  const [active, setActive] = useState('homeworks'); // Default to homeworks tab
+export default function ChartTabs({
+  lessons,
+  mockExams,
+  onlineMockExams,
+  mockExamChartData,
+  homeworkChartData,
+  homeworkChartLoading,
+  quizChartData,
+  quizChartLoading,
+}) {
+  const { data: systemConfig } = useSystemConfig();
+  const isMockExamsEnabled = systemConfig?.mock_exams === true || systemConfig?.mock_exams === 'true';
+  const [active, setActive] = useState('hw');
+
+  useEffect(() => {
+    if (!isMockExamsEnabled && active === 'mock') {
+      setActive('hw');
+    }
+  }, [isMockExamsEnabled, active]);
+
+  const normalizedLessons = useMemo(() => {
+    // Ensure lessons are in array of { lesson, homework_degree, quizDegree }
+    if (!lessons) return [];
+    return Object.keys(lessons).map((key) => ({
+      lesson: key,
+      ...(lessons[key] || {})
+    }));
+  }, [lessons]);
+
+  const normalizedMockExams = useMemo(() => {
+    // If API chart data is provided, use it directly (same logic as mock-exam-performance API)
+    if (mockExamChartData && Array.isArray(mockExamChartData) && mockExamChartData.length > 0) {
+      return mockExamChartData.map(item => ({
+        exam: item.lesson_name || item.lesson || 'Unknown',
+        percentage: item.mathPercentage != null || item.englishPercentage != null
+          ? null
+          : (item.percentage || 0),
+        mathPercentage: item.mathPercentage ?? item.math_percentage ?? null,
+        englishPercentage: item.englishPercentage ?? item.english_percentage ?? null,
+        mathDegree: item.mathDegree ?? item.math_degree ?? null,
+        mathOutOf: item.mathOutOf ?? item.math_out_of ?? null,
+        englishDegree: item.englishDegree ?? item.english_degree ?? null,
+        englishOutOf: item.englishOutOf ?? item.english_out_of ?? null,
+        examDegree: null,
+        outOf: null,
+        result: item.result || '0 / 0',
+        date: null
+      })).sort((a, b) => {
+        const numA = parseInt((a.exam.match(/\d+/) || [0])[0], 10) || 0;
+        const numB = parseInt((b.exam.match(/\d+/) || [0])[0], 10) || 0;
+        return numA - numB;
+      });
+    }
+
+    // Fallback: build from onlineMockExams + mockExams props
+    const examDataMap = {}; // keyed by exam label like "Exam 1"
+
+    // First, populate from online_mock_exams (higher priority)
+    if (onlineMockExams && Array.isArray(onlineMockExams) && onlineMockExams.length > 0) {
+      onlineMockExams.forEach(ome => {
+        const lesson = ome.lesson || '';
+        const examMatch = lesson.match(/Exam\s+(\d+)/i);
+        if (examMatch) {
+          const examLabel = `Exam ${examMatch[1]}`;
+          const percentageNum = parseInt((ome.percentage || '0').toString().replace('%', ''), 10) || 0;
+          // Parse result string "5 / 10"
+          const resultParts = (ome.result || '0 / 0').split('/').map(s => s.trim());
+          const correctCount = parseInt(resultParts[0], 10) || 0;
+          const totalQuestions = parseInt(resultParts[1], 10) || 0;
+          
+          // Only use the latest result for each exam (last one in array)
+          examDataMap[examLabel] = {
+            exam: examLabel,
+            percentage: percentageNum,
+            examDegree: correctCount,
+            outOf: totalQuestions,
+            date: ome.date_of_end || ome.date_of_start || null
+          };
+        }
+      });
+    }
+
+    // Then, fill in from mockExams array (lower priority - only for exams not already covered)
+    if (mockExams && Array.isArray(mockExams)) {
+      mockExams.forEach((exam, index) => {
+        const examLabel = `Exam ${index + 1}`;
+        if (!examDataMap[examLabel] && exam && (
+          exam.percentage != null ||
+          exam.examDegree != null ||
+          exam.mathPercentage != null ||
+          exam.englishPercentage != null
+        )) {
+          const hasSections = exam.mathPercentage != null || exam.englishPercentage != null;
+          examDataMap[examLabel] = {
+            exam: examLabel,
+            percentage: hasSections ? null : (exam.percentage || 0),
+            mathPercentage: exam.mathPercentage ?? null,
+            englishPercentage: exam.englishPercentage ?? null,
+            mathDegree: exam.mathDegree ?? null,
+            mathOutOf: exam.mathOutOf ?? null,
+            englishDegree: exam.englishDegree ?? null,
+            englishOutOf: exam.englishOutOf ?? null,
+            examDegree: exam.examDegree ?? null,
+            outOf: exam.outOf ?? null,
+            date: exam.date || null
+          };
+        }
+      });
+    }
+
+    // Convert to sorted array
+    return Object.values(examDataMap)
+      .sort((a, b) => {
+        const numA = parseInt(a.exam.replace('Exam ', ''), 10) || 0;
+        const numB = parseInt(b.exam.replace('Exam ', ''), 10) || 0;
+        return numA - numB;
+      });
+  }, [mockExams, onlineMockExams, mockExamChartData]);
 
   return (
-    <div className="chart-tabs-wrapper" style={{ marginTop: 24 }}>
+    <div style={{ marginTop: 24 }}>
       <div className="chart-tabs-buttons" style={{ display: 'flex', gap: 0, marginBottom: 12 }}>
         <button
-          onClick={() => setActive('homeworks')}
-          className="chart-tab-button"
+          onClick={() => setActive('hw')}
           style={{
             flex: 1,
             padding: '12px 16px',
             borderRadius: '8px 0 0 0',
-            border: active === 'homeworks' ? '2px solid #1FA8DC' : '1px solid #dee2e6',
-            background: active === 'homeworks' ? 'linear-gradient(135deg, #e3f2fd 0%, #bbdefb 100%)' : 'white',
-            color: active === 'homeworks' ? '#1FA8DC' : '#6c757d',
+            border: active === 'hw' ? '2px solid #1FA8DC' : '1px solid #dee2e6',
+            background: active === 'hw' ? 'linear-gradient(135deg, #e3f2fd 0%, #bbdefb 100%)' : 'white',
+            color: active === 'hw' ? '#1FA8DC' : '#6c757d',
             fontWeight: 700,
             cursor: 'pointer',
-            fontSize: '1rem',
-            transition: 'all 0.2s ease'
-          }}
-          onMouseEnter={(e) => {
-            if (active !== 'homeworks') {
-              e.target.style.background = '#f8f9fa';
-            }
-          }}
-          onMouseLeave={(e) => {
-            if (active !== 'homeworks') {
-              e.target.style.background = 'white';
-            }
+            fontSize: '1rem'
           }}
         >
-          Homeworks
+          Homework Chart
         </button>
         <button
-          onClick={() => setActive('quizzes')}
-          className="chart-tab-button"
+          onClick={() => setActive('quiz')}
           style={{
             flex: 1,
             padding: '12px 16px',
-            borderRadius: '0 8px 8px 0',
-            border: active === 'quizzes' ? '2px solid #1FA8DC' : '1px solid #dee2e6',
-            background: active === 'quizzes' ? 'linear-gradient(135deg, #e3f2fd 0%, #bbdefb 100%)' : 'white',
-            color: active === 'quizzes' ? '#1FA8DC' : '#6c757d',
+            borderRadius: isMockExamsEnabled ? '0' : '0 8px 8px 0',
+            border: active === 'quiz' ? '2px solid #1FA8DC' : '1px solid #dee2e6',
+            background: active === 'quiz' ? 'linear-gradient(135deg, #e3f2fd 0%, #bbdefb 100%)' : 'white',
+            color: active === 'quiz' ? '#1FA8DC' : '#6c757d',
             fontWeight: 700,
             cursor: 'pointer',
-            fontSize: '1rem',
-            transition: 'all 0.2s ease'
-          }}
-          onMouseEnter={(e) => {
-            if (active !== 'quizzes') {
-              e.target.style.background = '#f8f9fa';
-            }
-          }}
-          onMouseLeave={(e) => {
-            if (active !== 'quizzes') {
-              e.target.style.background = 'white';
-            }
+            fontSize: '1rem'
           }}
         >
-          Quizzes
+          Quizzes Chart
         </button>
+        {isMockExamsEnabled && (
+          <button
+            onClick={() => setActive('mock')}
+            style={{
+              flex: 1,
+              padding: '12px 16px',
+              borderRadius: '0 8px 8px 0',
+              border: active === 'mock' ? '2px solid #1FA8DC' : '1px solid #dee2e6',
+              background: active === 'mock' ? 'linear-gradient(135deg, #e3f2fd 0%, #bbdefb 100%)' : 'white',
+              color: active === 'mock' ? '#1FA8DC' : '#6c757d',
+              fontWeight: 700,
+              cursor: 'pointer',
+              fontSize: '1rem'
+            }}
+          >
+            Mock Exams Chart
+          </button>
+        )}
       </div>
 
-      <div className="chart-tabs-content" style={{ background: 'white', border: '1px solid #dee2e6', borderRadius: 12, padding: 20 }}>
-        {active === 'homeworks' ? (
-          <ChartContent type="homeworks" studentId={studentId} hasAuthToken={hasAuthToken} />
+      <div className="chart-tabs-body" style={{ background: 'white', border: '1px solid #dee2e6', borderRadius: 12, padding: 20 }}>
+        {active === 'hw' ? (
+          <HwChart
+            lessons={normalizedLessons}
+            chartData={homeworkChartData}
+            chartLoading={homeworkChartLoading}
+          />
+        ) : active === 'quiz' ? (
+          <QuizChart
+            lessons={normalizedLessons}
+            chartData={quizChartData}
+            chartLoading={quizChartLoading}
+          />
+        ) : isMockExamsEnabled ? (
+          <MockExamChart mockExams={normalizedMockExams} />
         ) : (
-          <ChartContent type="quizzes" studentId={studentId} hasAuthToken={hasAuthToken} />
+          <HwChart
+            lessons={normalizedLessons}
+            chartData={homeworkChartData}
+            chartLoading={homeworkChartLoading}
+          />
         )}
       </div>
       <style jsx>{`
-        @media (max-width: 768px) {
-          .chart-tabs-wrapper {
-            margin-top: 16px !important;
-          }
+        @media (max-width: 900px) {
           .chart-tabs-buttons {
+            display: flex !important;
+            flex-direction: row !important;
             gap: 0 !important;
           }
-          .chart-tab-button {
-            padding: 10px 12px !important;
-            font-size: 0.9rem !important;
+          .chart-tabs-buttons button {
+            width: auto !important;
+            flex: 1 !important;
+            border-radius: 0 !important;
+            font-size: 0.84rem !important;
+            padding: 10px 8px !important;
+            white-space: nowrap !important;
           }
-          .chart-tabs-content {
-            padding: 16px !important;
-            border-radius: 8px !important;
+          .chart-tabs-buttons button:first-child {
+            border-radius: 8px 0 0 0 !important;
           }
-        }
-        
-        @media (max-width: 480px) {
-          .chart-tabs-wrapper {
-            margin-top: 12px !important;
+          .chart-tabs-buttons button:last-child {
+            border-radius: 0 8px 8px 0 !important;
           }
-          .chart-tab-button {
-            padding: 8px 10px !important;
-            font-size: 0.85rem !important;
-          }
-          .chart-tabs-content {
+          .chart-tabs-body {
             padding: 12px !important;
-            border-radius: 8px !important;
-          }
-        }
-        
-        @media (max-width: 360px) {
-          .chart-tab-button {
-            padding: 8px 8px !important;
-            font-size: 0.8rem !important;
-          }
-          .chart-tabs-content {
-            padding: 10px !important;
           }
         }
       `}</style>
     </div>
   );
-}
-
-// Separate component to handle data fetching and chart rendering
-function ChartContent({ type, studentId, hasAuthToken }) {
-  const router = useRouter();
-  
-  // Get student ID - prefer passed studentId prop, fallback to profile ID if authenticated
-  const { data: profile } = hasAuthToken ? useProfile() : { data: null };
-  const targetStudentId = studentId || (hasAuthToken ? profile?.id : null);
-  
-  // Get signature from URL query params for public access
-  const signature = router.isReady ? (router.query?.sig || null) : null;
-
-  // Fetch performance chart data
-  const { data: performanceData, isLoading: isChartLoading } = useQuery({
-    queryKey: [`${type}-performance`, targetStudentId, signature],
-    queryFn: async () => {
-      if (!targetStudentId) return { chartData: [] };
-      try {
-        let endpoint = type === 'homeworks' 
-          ? `/api/students/${targetStudentId}/homework-performance`
-          : `/api/students/${targetStudentId}/quiz-performance`;
-        
-        // Add signature to query params if it's public access
-        if (!hasAuthToken && signature) {
-          endpoint += `?sig=${signature}`;
-        }
-        
-        const response = await apiClient.get(endpoint);
-        return response.data || { chartData: [] };
-      } catch (error) {
-        console.error(`Error fetching ${type} performance:`, error);
-        return { chartData: [] };
-      }
-    },
-    enabled: !!targetStudentId && router.isReady && (hasAuthToken || !!signature),
-    refetchInterval: 10 * 60 * 1000, // Auto-refresh every 10 minutes
-    refetchOnWindowFocus: true,
-    refetchOnMount: true,
-    refetchOnReconnect: true,
-    retry: 1,
-  });
-
-  const chartData = performanceData?.chartData || [];
-
-  if (isChartLoading) {
-    return (
-      <div style={{
-        textAlign: 'center',
-        padding: '60px 20px',
-        color: '#6c757d',
-        fontSize: '1.1rem',
-        fontWeight: '500'
-      }}>
-        Loading chart data...
-      </div>
-    );
-  }
-
-  if (type === 'homeworks') {
-    return <HomeworkPerformanceChart chartData={chartData} height={400} />;
-  } else {
-    return <QuizPerformanceChart chartData={chartData} height={400} />;
-  }
 }
 

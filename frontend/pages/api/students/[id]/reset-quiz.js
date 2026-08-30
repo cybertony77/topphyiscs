@@ -1,7 +1,9 @@
-import { MongoClient } from 'mongodb';
+import { MongoClient, ObjectId } from 'mongodb';
 import fs from 'fs';
 import path from 'path';
 import { authMiddleware } from '../../../../lib/authMiddleware';
+import { getStudentLesson, mergeStudentLesson } from '../../../../lib/studentLessons';
+import { reverseItemScoring, parsePercentage } from '../../../../lib/reverseItemScoring';
 
 function loadEnvConfig() {
   try {
@@ -62,18 +64,59 @@ export default async function handler(req, res) {
 
     const onlineQuizzes = student.online_quizzes || [];
     
-    // Find the quiz to get the week number
+    // Find the quiz to get the week / lesson context
     const quizToReset = onlineQuizzes.find(
-      qz => qz.quiz_id === quiz_id
+      qz => String(qz.quiz_id ?? '') === String(quiz_id)
     );
+
+    let lessonName =
+      (quizToReset && quizToReset.lesson) ||
+      null;
+
+    if (!lessonName) {
+      try {
+        const quizDoc = await db.collection('quizzes').findOne({
+          _id: new ObjectId(quiz_id),
+        });
+        if (quizDoc?.lesson) {
+          lessonName = quizDoc.lesson;
+        }
+      } catch (err) {
+        console.error('Error fetching quiz document for reset:', err);
+      }
+    }
+
+    const previousPercentage = parsePercentage(quizToReset?.percentage);
+    await reverseItemScoring(db, {
+      studentId: student_id,
+      type: 'quiz',
+      lesson: lessonName,
+      sourceKind: 'online_quiz',
+      sourceId: quiz_id,
+      sourceLabel: lessonName || quiz_id,
+      previousPercentage,
+      fallbackPoints: quizToReset?.points_added,
+    });
+    await reverseItemScoring(db, {
+      studentId: student_id,
+      type: 'quiz',
+      lesson: lessonName,
+      sourceKind: 'deadline_quiz',
+      sourceId: quiz_id,
+      sourceLabel: lessonName || quiz_id,
+      previousPercentage: 0,
+    });
+
+    const latestStudent = await db.collection('students').findOne({ id: student_id }) || student;
+    const onlineQuizzesLatest = latestStudent.online_quizzes || onlineQuizzes;
     
     // Remove the quiz from the array
-    const updatedQuizzes = onlineQuizzes.filter(
-      qz => qz.quiz_id !== quiz_id
+    const updatedQuizzes = onlineQuizzesLatest.filter(
+      qz => String(qz.quiz_id ?? '') !== String(quiz_id)
     );
 
     // Update weeks array if quiz was found and has a week number
-    const weeks = student.weeks || [];
+    const weeks = latestStudent.weeks || [];
     let updatedWeeks = weeks;
     
     if (quizToReset && quizToReset.week !== undefined && quizToReset.week !== null) {
@@ -88,13 +131,21 @@ export default async function handler(req, res) {
       });
     }
 
+    const updateFields = {
+      online_quizzes: updatedQuizzes,
+      weeks: updatedWeeks,
+    };
+
+    if (lessonName && getStudentLesson(latestStudent.lessons, lessonName)) {
+      updateFields.lessons = mergeStudentLesson(latestStudent.lessons, lessonName, {
+        quizDegree: null,
+      });
+    }
+
     // Update student document
     const updateResult = await db.collection('students').updateOne(
       { id: student_id },
-      { $set: { 
-        online_quizzes: updatedQuizzes,
-        weeks: updatedWeeks
-      } }
+      { $set: updateFields }
     );
 
     if (updateResult.matchedCount === 0) {
@@ -114,4 +165,3 @@ export default async function handler(req, res) {
     }
   }
 }
-

@@ -45,7 +45,7 @@ export default async function handler(req, res) {
       return res.status(403).json({ error: 'Forbidden: Access denied' });
     }
 
-    const { studentId, type, week } = req.body;
+    const { studentId, type, week, lesson } = req.body;
     
     // Students can only get their own history
     if (user.role === 'student') {
@@ -68,8 +68,11 @@ export default async function handler(req, res) {
       type: type
     };
     
-    // Add week filter if provided
-    if (week !== undefined && week !== null) {
+    // Add lesson filter if provided (preferred over week for lessons-based system)
+    if (lesson !== undefined && lesson !== null) {
+      query.process_lesson = lesson;
+    } else if (week !== undefined && week !== null) {
+      // Fallback to week for backward compatibility
       query.process_week = parseInt(week);
     }
 

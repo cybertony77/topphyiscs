@@ -60,9 +60,9 @@ export default async function handler(req, res) {
     const allStudents = await db.collection('students').find({}).toArray();
 
     // Calculate rankings for each student
-    // Group students by main center and grade for efficient ranking
+    // Group students by main center and course for efficient ranking
     const centerGroups = {};
-    const gradeGroups = {};
+    const courseGroups = {};
     
     allStudents.forEach(student => {
       if (student.score !== null && student.score !== undefined) {
@@ -73,12 +73,12 @@ export default async function handler(req, res) {
         }
         centerGroups[center].push(student);
         
-        // Group by grade
-        const grade = student.grade || 'Unknown';
-        if (!gradeGroups[grade]) {
-          gradeGroups[grade] = [];
+        // Group by course (use course field, fallback to grade)
+        const courseKey = student.course || student.grade || 'Unknown';
+        if (!courseGroups[courseKey]) {
+          courseGroups[courseKey] = [];
         }
-        gradeGroups[grade].push(student);
+        courseGroups[courseKey].push(student);
       }
     });
     
@@ -87,8 +87,8 @@ export default async function handler(req, res) {
       centerGroups[center].sort((a, b) => (b.score || 0) - (a.score || 0));
     });
     
-    Object.keys(gradeGroups).forEach(grade => {
-      gradeGroups[grade].sort((a, b) => (b.score || 0) - (a.score || 0));
+    Object.keys(courseGroups).forEach(course => {
+      courseGroups[course].sort((a, b) => (b.score || 0) - (a.score || 0));
     });
     
     // Find the requested student
@@ -98,26 +98,26 @@ export default async function handler(req, res) {
     }
 
     const center = student.main_center || 'Unknown';
-    const grade = student.grade || 'Unknown';
+    const courseKey = student.course || student.grade || 'Unknown';
     
     // Calculate rank within main center
     const sameCenterStudents = centerGroups[center] || [];
     const centerRank = sameCenterStudents.findIndex(s => s.id === parsedStudentId) + 1;
     const centerTotal = sameCenterStudents.length;
 
-    // Calculate rank within grade
-    const sameGradeStudents = gradeGroups[grade] || [];
-    const gradeRank = sameGradeStudents.findIndex(s => s.id === parsedStudentId) + 1;
-    const gradeTotal = sameGradeStudents.length;
+    // Calculate rank within course
+    const sameCourseStudents = courseGroups[courseKey] || [];
+    const courseRank = sameCourseStudents.findIndex(s => s.id === parsedStudentId) + 1;
+    const courseTotal = sameCourseStudents.length;
 
     return res.status(200).json({
       success: true,
       centerRank: centerRank > 0 ? centerRank : null,
       centerTotal: centerTotal > 0 ? centerTotal : null,
-      gradeRank: gradeRank > 0 ? gradeRank : null,
-      gradeTotal: gradeTotal > 0 ? gradeTotal : null,
+      courseRank: courseRank > 0 ? courseRank : null,
+      courseTotal: courseTotal > 0 ? courseTotal : null,
       mainCenter: student.main_center || 'Unknown',
-      grade: student.grade || 'Unknown'
+      course: student.course || student.grade || 'Unknown'
     });
   } catch (error) {
     console.error('Error fetching student rankings:', error);

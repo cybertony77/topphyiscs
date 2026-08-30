@@ -14,6 +14,7 @@ import apiClient from '../../../lib/axios';
 import AccountStateSelect from '../../../components/AccountStateSelect';
 import ViewedSelect from '../../../components/ViewedSelect';
 import PaymentStateSelect from '../../../components/PaymentStateSelect';
+import AttendanceLessonSelect from '../../../components/AttendancelessonSelect';
 
 function InputWithButton(props) {
   const theme = useMantineTheme();
@@ -60,11 +61,15 @@ export default function VerificationVideoCodes() {
   const [selectedVVC, setSelectedVVC] = useState(null);
   const [formData, setFormData] = useState({
     number_of_codes: '',
-    code_settings: 'number_of_views', // 'number_of_views' or 'deadline_date'
+    code_settings: 'number_of_views',
     number_of_views: '',
+    number_of_days: '',
     deadline_date: '',
+    code_lesson: 'All',
     code_state: 'Activated'
   });
+
+  const [lessonDropdownOpen, setLessonDropdownOpen] = useState(false);
   const [errors, setErrors] = useState({});
   const [successMessage, setSuccessMessage] = useState('');
   const [errorMessage, setErrorMessage] = useState('');
@@ -75,6 +80,8 @@ export default function VerificationVideoCodes() {
   const [filterViewed, setFilterViewed] = useState(null);
   const [filterCodeState, setFilterCodeState] = useState(null);
   const [filterPaymentState, setFilterPaymentState] = useState(null);
+  const [filterLesson, setFilterLesson] = useState(null);
+  const [filterLessonDropdownOpen, setFilterLessonDropdownOpen] = useState(false);
   const [copiedCodeId, setCopiedCodeId] = useState(null); // Track which code was copied
 
   // React Query hook for fetching paginated VVCs
@@ -87,6 +94,7 @@ export default function VerificationVideoCodes() {
     viewed: filterViewed !== null ? filterViewed : undefined,
     code_state: filterCodeState || undefined,
     payment_state: filterPaymentState || undefined,
+    code_lesson: filterLesson || undefined,
   }, {
     refetchInterval: 60 * 1000,
     refetchIntervalInBackground: false,
@@ -97,7 +105,7 @@ export default function VerificationVideoCodes() {
   // Reset pagination when filters change
   useEffect(() => {
     setCurrentPage(1);
-  }, [searchTerm, filterViewed, filterCodeState, filterPaymentState]);
+  }, [searchTerm, filterViewed, filterCodeState, filterPaymentState, filterLesson]);
 
   // Reset to page 1 when search term becomes empty
   useEffect(() => {
@@ -151,7 +159,7 @@ export default function VerificationVideoCodes() {
       queryClient.invalidateQueries(['vvc']);
       refetch();
       setShowAddPopup(false);
-      setFormData({ number_of_codes: '', code_settings: 'number_of_views', number_of_views: '', deadline_date: '', code_state: 'Activated' });
+      setFormData({ number_of_codes: '', code_settings: 'number_of_views', number_of_views: '', number_of_days: '', deadline_date: '', code_lesson: 'All', code_state: 'Activated' });
       setErrors({});
       const count = data?.data?.length || 1;
       setSuccessMessage(`${count} VVC code(s) created successfully!`);
@@ -176,7 +184,7 @@ export default function VerificationVideoCodes() {
       refetch();
       setShowEditPopup(false);
       setSelectedVVC(null);
-      setFormData({ number_of_views: '', code_state: 'Activated' });
+      setFormData({ code_settings: 'number_of_views', number_of_views: '', number_of_days: '', deadline_date: '', code_lesson: 'All', code_state: 'Activated' });
       setErrors({});
       setSuccessMessage('VVC updated successfully!');
       setErrorMessage('');
@@ -290,7 +298,7 @@ export default function VerificationVideoCodes() {
   // Handle add VVC
   const handleAddVVC = () => {
     setShowAddPopup(true);
-    setFormData({ number_of_codes: '', code_settings: 'number_of_views', number_of_views: '', deadline_date: '', code_state: 'Activated' });
+    setFormData({ number_of_codes: '', code_settings: 'number_of_views', number_of_views: '', number_of_days: '', deadline_date: '', code_lesson: 'All', code_state: 'Activated' });
     setErrors({});
     setSuccessMessage('');
     setErrorMessage('');
@@ -330,8 +338,10 @@ export default function VerificationVideoCodes() {
     setSelectedVVC(vvc);
     setFormData({
       code_settings: vvc.code_settings || 'number_of_views',
-      number_of_views: vvc.number_of_views ? vvc.number_of_views.toString() : '',
+      number_of_views: vvc.number_of_views !== undefined && vvc.number_of_views !== null ? vvc.number_of_views.toString() : '',
+      number_of_days: vvc.number_of_days !== undefined && vvc.number_of_days !== null ? vvc.number_of_days.toString() : '',
       deadline_date: formatDateForInput(vvc.deadline_date),
+      code_lesson: vvc.code_lesson || 'All',
       code_state: vvc.code_state || 'Activated'
     });
     setErrors({});
@@ -363,6 +373,10 @@ export default function VerificationVideoCodes() {
       if (!formData.number_of_views || parseInt(formData.number_of_views) < 1) {
         newErrors.number_of_views = '❌ Number of views must be at least 1';
       }
+    } else if (formData.code_settings === 'number_of_days') {
+      if (formData.number_of_days === '' || formData.number_of_days === null || Number.isNaN(Number(formData.number_of_days)) || Number(formData.number_of_days) < 0) {
+        newErrors.number_of_days = '❌ Enter a number (minimum 0)';
+      }
     } else if (formData.code_settings === 'deadline_date') {
       if (!formData.deadline_date) {
         newErrors.deadline_date = '❌ Deadline date is required';
@@ -392,11 +406,14 @@ export default function VerificationVideoCodes() {
     const mutationData = {
       number_of_codes: parseInt(formData.number_of_codes),
       code_settings: formData.code_settings,
+      code_lesson: formData.code_lesson || 'All',
       code_state: formData.code_state
     };
     
     if (formData.code_settings === 'number_of_views') {
       mutationData.number_of_views = parseInt(formData.number_of_views);
+    } else if (formData.code_settings === 'number_of_days') {
+      mutationData.number_of_days = parseInt(formData.number_of_days, 10);
     } else if (formData.code_settings === 'deadline_date') {
       mutationData.deadline_date = formData.deadline_date;
     }
@@ -412,6 +429,10 @@ export default function VerificationVideoCodes() {
     if (formData.code_settings === 'number_of_views') {
       if (!formData.number_of_views || parseInt(formData.number_of_views) < 1) {
         newErrors.number_of_views = '❌ Number of views must be at least 1';
+      }
+    } else if (formData.code_settings === 'number_of_days') {
+      if (formData.number_of_days === '' || formData.number_of_days === null || Number.isNaN(Number(formData.number_of_days)) || Number(formData.number_of_days) < 0) {
+        newErrors.number_of_days = '❌ Enter a number (minimum 0)';
       }
     } else if (formData.code_settings === 'deadline_date') {
       if (!formData.deadline_date) {
@@ -441,11 +462,14 @@ export default function VerificationVideoCodes() {
 
     const updateData = {
       code_settings: formData.code_settings,
+      code_lesson: formData.code_lesson || 'All',
       code_state: formData.code_state
     };
     
     if (formData.code_settings === 'number_of_views') {
       updateData.number_of_views = parseInt(formData.number_of_views);
+    } else if (formData.code_settings === 'number_of_days') {
+      updateData.number_of_days = parseInt(formData.number_of_days, 10);
     } else if (formData.code_settings === 'deadline_date') {
       updateData.deadline_date = formData.deadline_date;
     }
@@ -480,7 +504,7 @@ export default function VerificationVideoCodes() {
         minHeight: "100vh", 
         padding: "20px 5px 20px 5px"
       }}>
-        <div style={{ maxWidth: 800, margin: "40px auto", padding: "20px 5px 20px 5px" }}>
+        <div style={{ maxWidth: 800, margin: "40px auto", padding: "12px" }}>
           <Title href="/dashboard/manage_online_system" backText="Back">
             <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
               <Image src="/lock-cog.svg" alt="VVC" width={32} height={32} />
@@ -561,6 +585,27 @@ export default function VerificationVideoCodes() {
                 onChange={(value) => setFilterPaymentState(value)}
                 placeholder="Select Payment State"
                 style={{ marginBottom: 0, hideLabel: true }}
+              />
+            </div>
+            <div className="filter-group" style={{ flex: 1, minWidth: 180 }}>
+              <label className="filter-label" style={{ display: 'block', marginBottom: '8px', fontWeight: 600, color: '#495057', fontSize: '0.95rem' }}>
+                Filter by Code Lesson
+              </label>
+              <AttendanceLessonSelect
+                selectedLesson={filterLesson || null}
+                onLessonChange={(lesson) => {
+                  // Empty value -> no filter, "All" -> filter codes with code_lesson === "All"
+                  if (lesson === '') {
+                    setFilterLesson(null);
+                  } else {
+                    setFilterLesson(lesson);
+                  }
+                }}
+                isOpen={filterLessonDropdownOpen}
+                onToggle={() => setFilterLessonDropdownOpen(!filterLessonDropdownOpen)}
+                onClose={() => setFilterLessonDropdownOpen(false)}
+                placeholder="Select Lesson"
+                includeAllOption={true}
               />
             </div>
           </div>
@@ -665,6 +710,7 @@ export default function VerificationVideoCodes() {
                     <Table.Th style={{ width: '15%', textAlign: 'center' }}>Code Settings</Table.Th>
                     <Table.Th style={{ width: '8%', textAlign: 'center' }}>Viewed</Table.Th>
                     <Table.Th style={{ width: '12%', textAlign: 'center' }}>Viewed By Who (ID)</Table.Th>
+                    <Table.Th style={{ width: '10%', textAlign: 'center' }}>Code Lesson</Table.Th>
                     <Table.Th style={{ width: '12%', textAlign: 'center' }}>Code State</Table.Th>
                     <Table.Th style={{ width: '12%', textAlign: 'center' }}>Payment State</Table.Th>
                     <Table.Th style={{ width: '12%', textAlign: 'center' }}>Made By Who</Table.Th>
@@ -676,6 +722,7 @@ export default function VerificationVideoCodes() {
                 <Table.Tbody>
                   {vvcs.map((vvc, index) => {
                     const codeSettings = vvc.code_settings || 'number_of_views';
+                    const isPaid = String(vvc.payment_state || '').toLowerCase() === 'paid';
                     // Helper to format date string (YYYY-MM-DD) to MM/DD/YYYY
                     const formatDateString = (dateStr) => {
                       if (!dateStr) return 'N/A';
@@ -708,50 +755,56 @@ export default function VerificationVideoCodes() {
                     
                     const settingsDisplay = codeSettings === 'number_of_views' 
                       ? `Number Of Views : ${vvc.number_of_views || 0}`
+                      : codeSettings === 'number_of_days'
+                      ? `Number Of Days : ${vvc.number_of_days ?? 0}`
                       : `Deadline Date : ${formatDateString(vvc.deadline_date)}`;
                     
                     return (
                     <Table.Tr key={`${vvc._id}-${index}`}>
                       <Table.Td style={{ textAlign: 'center' }}>
-                        <button
-                          onClick={() => handleCopyCode(vvc.VVC, vvc._id.toString())}
-                          style={{
-                            padding: '6px',
-                            backgroundColor: copiedCodeId === vvc._id.toString() ? '#28a745' : '#d71d1d',
-                            border: copiedCodeId === vvc._id.toString() ? '1px solid #28a745' : '1px solid #d71d1d',
-                            borderRadius: '6px',
-                            cursor: 'pointer',
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                            transition: 'all 0.2s ease',
-                            minWidth: '36px',
-                            minHeight: '36px'
-                          }}
-                          onMouseEnter={(e) => {
-                            if (copiedCodeId !== vvc._id.toString()) {
-                              e.target.style.backgroundColor = '#b91c1c';
-                              e.target.style.borderColor = '#b91c1c';
-                            }
-                          }}
-                          onMouseLeave={(e) => {
-                            if (copiedCodeId !== vvc._id.toString()) {
-                              e.target.style.backgroundColor = '#d71d1d';
-                              e.target.style.borderColor = '#d71d1d';
-                            }
-                          }}
-                          title={copiedCodeId === vvc._id.toString() ? 'Copied!' : 'Copy code'}
-                        >
-                          <Image 
-                            src="/copy2.svg" 
-                            alt="Copy" 
-                            width={18} 
-                            height={18} 
-                            style={{ display: 'inline-block' }} 
-                          />
-                        </button>
+                        {isPaid ? (
+                          <span style={{ color: '#6c757d', fontWeight: '600' }}>—</span>
+                        ) : (
+                          <button
+                            onClick={() => handleCopyCode(vvc.VVC, vvc._id.toString())}
+                            style={{
+                              padding: '6px',
+                              backgroundColor: copiedCodeId === vvc._id.toString() ? '#28a745' : '#d71d1d',
+                              border: copiedCodeId === vvc._id.toString() ? '1px solid #28a745' : '1px solid #d71d1d',
+                              borderRadius: '6px',
+                              cursor: 'pointer',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              transition: 'all 0.2s ease',
+                              minWidth: '36px',
+                              minHeight: '36px'
+                            }}
+                            onMouseEnter={(e) => {
+                              if (copiedCodeId !== vvc._id.toString()) {
+                                e.target.style.backgroundColor = '#b91c1c';
+                                e.target.style.borderColor = '#b91c1c';
+                              }
+                            }}
+                            onMouseLeave={(e) => {
+                              if (copiedCodeId !== vvc._id.toString()) {
+                                e.target.style.backgroundColor = '#d71d1d';
+                                e.target.style.borderColor = '#d71d1d';
+                              }
+                            }}
+                            title={copiedCodeId === vvc._id.toString() ? 'Copied!' : 'Copy code'}
+                          >
+                            <Image
+                              src="/copy2.svg"
+                              alt="Copy"
+                              width={18}
+                              height={18}
+                              style={{ display: 'inline-block' }}
+                            />
+                          </button>
+                        )}
                       </Table.Td>
-                      <Table.Td style={{ fontFamily: 'monospace', fontSize: '0.9rem', textAlign: 'center', fontWeight: 'bold' }}>{vvc.VVC}</Table.Td>
+                      <Table.Td style={{ fontFamily: 'monospace', fontSize: '0.9rem', textAlign: 'center', fontWeight: 'bold', textDecoration: isPaid ? 'line-through' : 'none' }}>{vvc.VVC}</Table.Td>
                       <Table.Td style={{ textAlign: 'center', fontSize: '0.9rem', whiteSpace: 'nowrap' }}>{settingsDisplay}</Table.Td>
                       <Table.Td style={{ textAlign: 'center' }}>
                         {vvc.viewed ? (
@@ -763,6 +816,7 @@ export default function VerificationVideoCodes() {
                       <Table.Td style={{ textAlign: 'center' }}>
                         {vvc.viewed_by_who || <span style={{ color: '#dc3545', fontWeight: 'bold' }}>❌ Not viewed yet</span>}
                       </Table.Td>
+                      <Table.Td style={{ textAlign: 'center', fontSize: '0.9rem', fontWeight: '600' }}>{vvc.code_lesson || 'All'}</Table.Td>
                       <Table.Td style={{ textAlign: 'center' }}>
                         {vvc.code_state === 'Activated' ? (
                           <span style={{ color: '#28a745', fontWeight: 'bold' }}>✅ Activated</span>
@@ -967,14 +1021,14 @@ export default function VerificationVideoCodes() {
                   <label style={{ display: 'block', marginBottom: '8px', fontWeight: '600', textAlign: 'left' }}>
                     Codes Settings <span style={{ color: 'red' }}>*</span>
                   </label>
-                  <div style={{ display: 'flex', gap: '20px', marginBottom: '12px' }}>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '16px 20px', marginBottom: '12px' }}>
                     <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer', fontSize: '0.95rem' }}>
                       <input
                         type="radio"
                         name="code_settings"
                         value="number_of_views"
                         checked={formData.code_settings === 'number_of_views'}
-                        onChange={(e) => setFormData({ ...formData, code_settings: e.target.value, deadline_date: '' })}
+                        onChange={(e) => setFormData({ ...formData, code_settings: e.target.value, deadline_date: '', number_of_days: '' })}
                         style={{ marginRight: '8px', width: '18px', height: '18px', cursor: 'pointer' }}
                       />
                       Number of Views
@@ -983,9 +1037,20 @@ export default function VerificationVideoCodes() {
                       <input
                         type="radio"
                         name="code_settings"
+                        value="number_of_days"
+                        checked={formData.code_settings === 'number_of_days'}
+                        onChange={(e) => setFormData({ ...formData, code_settings: e.target.value, deadline_date: '', number_of_views: '' })}
+                        style={{ marginRight: '8px', width: '18px', height: '18px', cursor: 'pointer' }}
+                      />
+                      Number of Days
+                    </label>
+                    <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer', fontSize: '0.95rem' }}>
+                      <input
+                        type="radio"
+                        name="code_settings"
                         value="deadline_date"
                         checked={formData.code_settings === 'deadline_date'}
-                        onChange={(e) => setFormData({ ...formData, code_settings: e.target.value, number_of_views: '' })}
+                        onChange={(e) => setFormData({ ...formData, code_settings: e.target.value, number_of_views: '', number_of_days: '' })}
                         style={{ marginRight: '8px', width: '18px', height: '18px', cursor: 'pointer' }}
                       />
                       Deadline Date
@@ -1016,6 +1081,36 @@ export default function VerificationVideoCodes() {
                     {errors.number_of_views && (
                       <div style={{ color: '#dc3545', fontSize: '0.875rem', marginTop: '4px' }}>
                         {errors.number_of_views}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {formData.code_settings === 'number_of_days' && (
+                  <div style={{ marginBottom: '16px' }}>
+                    <label style={{ display: 'block', marginBottom: '8px', fontWeight: '600', textAlign: 'left' }}>
+                      Number of Days <span style={{ color: 'red' }}>*</span>
+                    </label>
+                    <input
+                      type="number"
+                      min="0"
+                      step="1"
+                      inputMode="numeric"
+                      value={formData.number_of_days}
+                      onChange={(e) => setFormData({ ...formData, number_of_days: e.target.value })}
+                      placeholder="Enter number of days"
+                      style={{
+                        width: '100%',
+                        padding: '12px 16px',
+                        border: errors.number_of_days ? '2px solid #dc3545' : '2px solid #e9ecef',
+                        borderRadius: '10px',
+                        fontSize: '1rem',
+                        transition: 'border-color 0.3s ease'
+                      }}
+                    />
+                    {errors.number_of_days && (
+                      <div style={{ color: '#dc3545', fontSize: '0.875rem', marginTop: '4px' }}>
+                        {errors.number_of_days}
                       </div>
                     )}
                   </div>
@@ -1061,6 +1156,21 @@ export default function VerificationVideoCodes() {
                     )}
                   </div>
                 )}
+
+                <div style={{ marginBottom: '16px' }}>
+                  <label style={{ display: 'block', marginBottom: '8px', fontWeight: '600', textAlign: 'left' }}>
+                    Code Lesson <span style={{ color: 'red' }}>*</span>
+                  </label>
+                  <AttendanceLessonSelect
+                    selectedLesson={formData.code_lesson}
+                    onLessonChange={(lesson) => setFormData({ ...formData, code_lesson: lesson || 'All' })}
+                    isOpen={lessonDropdownOpen}
+                    onToggle={() => setLessonDropdownOpen(!lessonDropdownOpen)}
+                    onClose={() => setLessonDropdownOpen(false)}
+                    placeholder="Select Code Lesson"
+                    includeAllOption={true}
+                  />
+                </div>
 
                 <div style={{ marginBottom: '16px' }}>
                   <AccountStateSelect
@@ -1113,7 +1223,7 @@ export default function VerificationVideoCodes() {
                     type="button"
                     onClick={() => {
                       setShowAddPopup(false);
-                      setFormData({ number_of_codes: '', code_settings: 'number_of_views', number_of_views: '', deadline_date: '', code_state: 'Activated' });
+                      setFormData({ number_of_codes: '', code_settings: 'number_of_views', number_of_views: '', number_of_days: '', deadline_date: '', code_lesson: 'All', code_state: 'Activated' });
                       setErrors({});
                     }}
                     disabled={createVVCMutation.isLoading}
@@ -1137,14 +1247,14 @@ export default function VerificationVideoCodes() {
                   <label style={{ display: 'block', marginBottom: '8px', fontWeight: '600', textAlign: 'left' }}>
                     Codes Settings <span style={{ color: 'red' }}>*</span>
                   </label>
-                  <div style={{ display: 'flex', gap: '20px', marginBottom: '12px' }}>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '16px 20px', marginBottom: '12px' }}>
                     <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer', fontSize: '0.95rem' }}>
                       <input
                         type="radio"
                         name="code_settings_edit"
                         value="number_of_views"
                         checked={formData.code_settings === 'number_of_views'}
-                        onChange={(e) => setFormData({ ...formData, code_settings: e.target.value, deadline_date: '' })}
+                        onChange={(e) => setFormData({ ...formData, code_settings: e.target.value, deadline_date: '', number_of_days: '' })}
                         style={{ marginRight: '8px', width: '18px', height: '18px', cursor: 'pointer' }}
                       />
                       Number of Views
@@ -1153,9 +1263,20 @@ export default function VerificationVideoCodes() {
                       <input
                         type="radio"
                         name="code_settings_edit"
+                        value="number_of_days"
+                        checked={formData.code_settings === 'number_of_days'}
+                        onChange={(e) => setFormData({ ...formData, code_settings: e.target.value, deadline_date: '', number_of_views: '' })}
+                        style={{ marginRight: '8px', width: '18px', height: '18px', cursor: 'pointer' }}
+                      />
+                      Number of Days
+                    </label>
+                    <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer', fontSize: '0.95rem' }}>
+                      <input
+                        type="radio"
+                        name="code_settings_edit"
                         value="deadline_date"
                         checked={formData.code_settings === 'deadline_date'}
-                        onChange={(e) => setFormData({ ...formData, code_settings: e.target.value, number_of_views: '' })}
+                        onChange={(e) => setFormData({ ...formData, code_settings: e.target.value, number_of_views: '', number_of_days: '' })}
                         style={{ marginRight: '8px', width: '18px', height: '18px', cursor: 'pointer' }}
                       />
                       Deadline Date
@@ -1186,6 +1307,36 @@ export default function VerificationVideoCodes() {
                     {errors.number_of_views && (
                       <div style={{ color: '#dc3545', fontSize: '0.875rem', marginTop: '4px' }}>
                         {errors.number_of_views}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {formData.code_settings === 'number_of_days' && (
+                  <div style={{ marginBottom: '16px' }}>
+                    <label style={{ display: 'block', marginBottom: '8px', fontWeight: '600', textAlign: 'left' }}>
+                      Number of Days <span style={{ color: 'red' }}>*</span>
+                    </label>
+                    <input
+                      type="number"
+                      min="0"
+                      step="1"
+                      inputMode="numeric"
+                      value={formData.number_of_days}
+                      onChange={(e) => setFormData({ ...formData, number_of_days: e.target.value })}
+                      placeholder="Enter number of days"
+                      style={{
+                        width: '100%',
+                        padding: '12px 16px',
+                        border: errors.number_of_days ? '2px solid #dc3545' : '2px solid #e9ecef',
+                        borderRadius: '10px',
+                        fontSize: '1rem',
+                        transition: 'border-color 0.3s ease'
+                      }}
+                    />
+                    {errors.number_of_days && (
+                      <div style={{ color: '#dc3545', fontSize: '0.875rem', marginTop: '4px' }}>
+                        {errors.number_of_days}
                       </div>
                     )}
                   </div>
@@ -1230,6 +1381,21 @@ export default function VerificationVideoCodes() {
                     )}
                   </div>
                 )}
+
+                <div style={{ marginBottom: '16px' }}>
+                  <label style={{ display: 'block', marginBottom: '8px', fontWeight: '600', textAlign: 'left' }}>
+                    Code Lesson <span style={{ color: 'red' }}>*</span>
+                  </label>
+                  <AttendanceLessonSelect
+                    selectedLesson={formData.code_lesson}
+                    onLessonChange={(lesson) => setFormData({ ...formData, code_lesson: lesson || 'All' })}
+                    isOpen={lessonDropdownOpen}
+                    onToggle={() => setLessonDropdownOpen(!lessonDropdownOpen)}
+                    onClose={() => setLessonDropdownOpen(false)}
+                    placeholder="Select Code Lesson"
+                    includeAllOption={true}
+                  />
+                </div>
 
                 <div style={{ marginBottom: '16px' }}>
                   <AccountStateSelect
@@ -1283,7 +1449,7 @@ export default function VerificationVideoCodes() {
                     onClick={() => {
                       setShowEditPopup(false);
                       setSelectedVVC(null);
-                      setFormData({ code_settings: 'number_of_views', number_of_views: '', deadline_date: '', code_state: 'Activated' });
+                      setFormData({ code_settings: 'number_of_views', number_of_views: '', number_of_days: '', deadline_date: '', code_lesson: 'All', code_state: 'Activated' });
                       setErrors({});
                     }}
                     disabled={updateVVCMutation.isLoading}
@@ -1688,6 +1854,9 @@ export default function VerificationVideoCodes() {
             justify-content: center;
             z-index: 1000;
             backdrop-filter: blur(4px);
+            overflow-y: auto;
+            padding: 24px 12px;
+            box-sizing: border-box;
           }
 
           .confirm-content {
@@ -1698,6 +1867,9 @@ export default function VerificationVideoCodes() {
             max-width: 450px;
             width: 90%;
             text-align: center;
+            overflow: visible;
+            margin: auto;
+            position: relative;
           }
 
           .confirm-content h3 {

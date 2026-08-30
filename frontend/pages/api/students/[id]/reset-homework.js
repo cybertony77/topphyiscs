@@ -1,7 +1,9 @@
-import { MongoClient } from 'mongodb';
+import { MongoClient, ObjectId } from 'mongodb';
 import fs from 'fs';
 import path from 'path';
 import { authMiddleware } from '../../../../lib/authMiddleware';
+import { getStudentLesson, mergeStudentLesson } from '../../../../lib/studentLessons';
+import { reverseItemScoring, parsePercentage } from '../../../../lib/reverseItemScoring';
 
 function loadEnvConfig() {
   try {
@@ -62,18 +64,61 @@ export default async function handler(req, res) {
 
     const onlineHomeworks = student.online_homeworks || [];
     
-    // Find the homework to get the week number
+    // Find the homework to get the week / lesson context
     const homeworkToReset = onlineHomeworks.find(
-      hw => hw.homework_id === homework_id
+      hw => String(hw.homework_id ?? '') === String(homework_id)
     );
     
+    // Reverse the actual awarded score for this homework before deleting the result
+    let lessonName =
+      (homeworkToReset && homeworkToReset.lesson) ||
+      null;
+
+    if (!lessonName) {
+      try {
+        const homeworkDoc = await db.collection('homeworks').findOne({
+          _id: new ObjectId(homework_id),
+        });
+        if (homeworkDoc?.lesson) {
+          lessonName = homeworkDoc.lesson;
+        }
+      } catch (err) {
+        console.error('Error fetching homework document for reset:', err);
+      }
+    }
+
+    const previousPercentage = parsePercentage(homeworkToReset?.percentage);
+    await reverseItemScoring(db, {
+      studentId: student_id,
+      type: 'homework',
+      lesson: lessonName,
+      sourceKind: 'online_homework',
+      sourceId: homework_id,
+      sourceLabel: lessonName || homework_id,
+      previousPercentage,
+      fallbackPoints: homeworkToReset?.points_added,
+    });
+    await reverseItemScoring(db, {
+      studentId: student_id,
+      type: 'homework',
+      lesson: lessonName,
+      sourceKind: 'deadline_homework',
+      sourceId: homework_id,
+      sourceLabel: lessonName || homework_id,
+      previousHwDone: false,
+    });
+
+    // Re-read after scoring update so later $set does not overwrite score
+    const latestStudent = await db.collection('students').findOne({ id: student_id }) || student;
+    const onlineHomeworksLatest = latestStudent.online_homeworks || onlineHomeworks;
+    
     // Remove the homework from the array
-    const updatedHomeworks = onlineHomeworks.filter(
-      hw => hw.homework_id !== homework_id
+    const updatedHomeworks = onlineHomeworksLatest.filter(
+      hw => String(hw.homework_id ?? '') !== String(homework_id)
     );
 
     // Update weeks array if homework was found and has a week number
-    const weeks = student.weeks || [];
+    const weeks = latestStudent.weeks || [];
     let updatedWeeks = weeks;
     
     if (homeworkToReset && homeworkToReset.week !== undefined && homeworkToReset.week !== null) {
@@ -89,13 +134,22 @@ export default async function handler(req, res) {
       });
     }
 
+    const updateFields = {
+      online_homeworks: updatedHomeworks,
+      weeks: updatedWeeks,
+    };
+
+    if (lessonName && getStudentLesson(latestStudent.lessons, lessonName)) {
+      updateFields.lessons = mergeStudentLesson(latestStudent.lessons, lessonName, {
+        hwDone: false,
+        homework_degree: null,
+      });
+    }
+
     // Update student document
     const updateResult = await db.collection('students').updateOne(
       { id: student_id },
-      { $set: { 
-        online_homeworks: updatedHomeworks,
-        weeks: updatedWeeks
-      } }
+      { $set: updateFields }
     );
 
     if (updateResult.matchedCount === 0) {
@@ -115,4 +169,3 @@ export default async function handler(req, res) {
     }
   }
 }
-

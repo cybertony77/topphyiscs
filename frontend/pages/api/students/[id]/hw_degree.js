@@ -2,6 +2,11 @@ import { MongoClient } from 'mongodb';
 import fs from 'fs';
 import path from 'path';
 import { authMiddleware } from '../../../../lib/authMiddleware';
+import {
+  createDefaultStudentLesson,
+  getStudentLesson,
+  mergeStudentLesson,
+} from '../../../../lib/studentLessons';
 
 // Load environment variables from env.config
 function loadEnvConfig() {
@@ -44,7 +49,7 @@ export default async function handler(req, res) {
   
   const { id } = req.query;
   const student_id = parseInt(id);
-  const { hwDegree, week } = req.body;
+  const { homework_degree, lesson } = req.body;
   
   let client;
   try {
@@ -58,40 +63,57 @@ export default async function handler(req, res) {
     const student = await db.collection('students').findOne({ id: student_id });
     if (!student) return res.status(404).json({ error: 'Student not found' });
     
-    // Determine which week to update
-    const weekNumber = week || 1;
+    // Load lessons from database
+    const lessonsFromDB = await db.collection('lessons').find({}).sort({ id: 1 }).toArray();
+    const lessonNames = lessonsFromDB.map(l => l.name);
     
-    // Find the week in the weeks array
-    const weeks = student.weeks || [];
-    const weekIndex = weeks.findIndex(w => w && w.week === weekNumber);
+    // Determine which lesson to update
+    const lessonName = lesson || (lessonNames.length > 0 ? lessonNames[0] : 'Lesson 1');
     
-    if (weekIndex !== -1) {
-      // Update existing week
-      await db.collection('students').updateOne(
-        { id: student_id, 'weeks.week': weekNumber },
-        { $set: { 'weeks.$.hwDegree': hwDegree } }
-      );
-    } else {
-      // Week doesn't exist, create it
-      const newWeek = {
-        week: weekNumber,
-        attended: false,
-        lastAttendance: null,
-        lastAttendanceCenter: null,
-        hwDone: false,
-        hwDegree: hwDegree,
-        quizDegree: null,
-        comment: null,
-        message_state: false
-      };
+    // Ensure the target lesson exists; if not, create it with default schema
+    const ensureLessonExists = async () => {
+      console.log(`🔍 Current student lessons structure:`, typeof student.lessons, student.lessons);
       
-      await db.collection('students').updateOne(
-        { id: student_id },
-        { $push: { weeks: newWeek } }
-      );
-    }
+      // Handle case where lessons might be an array (old format) or undefined
+      if (!student.lessons || Array.isArray(student.lessons)) {
+        console.log(`🔄 Converting lessons from array to object format for student ${student_id}`);
+        student.lessons = {};
+        // Update the database to use object format
+        await db.collection('students').updateOne(
+          { id: student_id },
+          { $set: { lessons: {} } }
+        );
+      }
+      
+      if (!getStudentLesson(student.lessons, lessonName)) {
+        console.log(`🧩 Creating missing lesson "${lessonName}" for student ${student_id}`);
+        const nextLessons = mergeStudentLesson(
+          student.lessons,
+          lessonName,
+          createDefaultStudentLesson(lessonName)
+        );
+        await db.collection('students').updateOne(
+          { id: student_id },
+          { $set: { lessons: nextLessons } }
+        );
+        student.lessons = nextLessons;
+      }
+    };
+      
+    await ensureLessonExists();
     
-    console.log('✅ Homework degree updated for student', student_id, 'week', weekNumber, 'to', hwDegree);
+    // Update the specific lesson in the lessons object
+    const nextLessons = mergeStudentLesson(student.lessons, lessonName, {
+      homework_degree,
+    });
+    const result = await db.collection('students').updateOne(
+      { id: student_id },
+      { $set: { lessons: nextLessons } }
+    );
+    
+    if (result.matchedCount === 0) return res.status(404).json({ error: 'Student not found' });
+    
+    console.log('✅ Homework degree updated for student', student_id, 'lesson', lessonName, 'to', homework_degree);
     res.json({ success: true });
   } catch (error) {
     if (error.message.includes('Unauthorized') || error.message.includes('Invalid token')) {

@@ -1,13 +1,15 @@
 import { useEffect, useState, useRef, useMemo } from "react";
 import { useRouter } from "next/router";
 import Image from 'next/image';
+import { useQuery } from '@tanstack/react-query';
+import apiClient from "../../lib/axios";
 import Title from "../../components/Title";
-import AttendanceWeekSelect from "../../components/AttendanceWeekSelect";
+import AttendanceLessonSelect from "../../components/AttendancelessonSelect";
 import CenterSelect from "../../components/CenterSelect";
 import QRScanner from "../../components/QRScanner";
 import { useStudents, useStudent, useToggleAttendance, useUpdateHomework, useUpdateHomeworkDegree, useUpdateQuizGrade, useUpdateWeekComment } from "../../lib/api/students";
-import { useSystemConfig } from "../../lib/api/system";
-import apiClient from "../../lib/axios";
+import { useSystemConfig, useNationalSystem, getCourseFieldLabels } from "../../lib/api/system";
+import { getStudentLesson } from "../../lib/studentLessons";
 
 // Helper to extract student ID from QR text (URL or plain number)
 function extractStudentId(qrText) {
@@ -28,7 +30,10 @@ function extractStudentId(qrText) {
 
 export default function QR() {
   const { data: systemConfig } = useSystemConfig();
+  const isNational = useNationalSystem();
+  const courseLabels = getCourseFieldLabels(isNational);
   const isScoringEnabled = systemConfig?.scoring_system === true || systemConfig?.scoring_system === 'true';
+  const isPaymentSystemEnabled = systemConfig?.payment_system === true || systemConfig?.payment_system === 'true';
   
   const containerRef = useRef(null);
   const [studentId, setStudentId] = useState("");
@@ -39,10 +44,10 @@ export default function QR() {
   const [hwSuccess, setHwSuccess] = useState("");
   const [attendanceSuccess, setAttendanceSuccess] = useState("");
   const [attendanceCenter, setAttendanceCenter] = useState("");
-  const [selectedWeek, setSelectedWeek] = useState("");
+  const [selectedLesson, setSelectedLesson] = useState("");
   const [quizDegreeInput, setQuizDegreeInput] = useState("");
   const [quizDegreeOutOf, setQuizDegreeOutOf] = useState("");
-  const [weekComment, setWeekComment] = useState("");
+  const [lessonComment, setLessonComment] = useState("");
   const [commentSuccess, setCommentSuccess] = useState("");
   const [quizSuccess, setQuizSuccess] = useState("");
   const [notQuized, setNotQuized] = useState(false);
@@ -52,7 +57,7 @@ export default function QR() {
   const [homeworkDegree, setHomeworkDegree] = useState("");
   const [homeworkDegreeOutOf, setHomeworkDegreeOutOf] = useState("");
   const [homeworkDegreeSuccess, setHomeworkDegreeSuccess] = useState("");
-  const [openDropdown, setOpenDropdown] = useState(null); // 'week', 'center', or null
+  const [openDropdown, setOpenDropdown] = useState(null); // 'lesson', 'center', or null
   // Simple optimistic state for immediate UI feedback
   const [optimisticHwDone, setOptimisticHwDone] = useState(null);
   
@@ -100,19 +105,19 @@ export default function QR() {
   // Load remembered values from sessionStorage
   useEffect(() => {
     const rememberedCenter = sessionStorage.getItem('lastAttendanceCenter');
-    const rememberedWeek = sessionStorage.getItem('lastSelectedWeek');
+    const rememberedLesson = sessionStorage.getItem('lastSelectedLesson');
     const rememberedQuizOutOf = sessionStorage.getItem('lastQuizOutOf');
     const rememberedHomeworkOutOf = sessionStorage.getItem('lastHomeworkOutOf');
     
-    console.log('Loading from session storage:', { rememberedCenter, rememberedWeek, rememberedQuizOutOf, rememberedHomeworkOutOf });
+    console.log('Loading from session storage:', { rememberedCenter, rememberedLesson, rememberedQuizOutOf, rememberedHomeworkOutOf });
     
     if (rememberedCenter) {
       setAttendanceCenter(rememberedCenter);
       console.log('Center loaded from session storage:', rememberedCenter);
     }
-    if (rememberedWeek) {
-      setSelectedWeek(rememberedWeek);
-      console.log('Week loaded from session storage:', rememberedWeek);
+    if (rememberedLesson) {
+      setSelectedLesson(rememberedLesson);
+      console.log('Lesson loaded from session storage:', rememberedLesson);
     }
     if (rememberedQuizOutOf) {
       setQuizDegreeOutOf(rememberedQuizOutOf);
@@ -148,37 +153,26 @@ export default function QR() {
     };
   }, []);
 
-  // Helper function to convert week string to numeric index
-  const getWeekNumber = (weekString) => {
-    if (!weekString) return null;
-    const match = weekString.match(/week (\d+)/);
-    const result = match ? parseInt(match[1]) : null;
-    console.log('🔧 Converting week string:', { weekString, result });
-    return result;
+  // Helper function to get current lesson data
+  const getCurrentLessonData = (student, lessonName) => {
+    if (!student?.lessons || !lessonName) return null;
+    if (typeof student.lessons !== 'object' || Array.isArray(student.lessons)) return null;
+    return getStudentLesson(student.lessons, lessonName);
   };
 
-  // Helper function to get current week data
-  const getCurrentWeekData = (student, weekString) => {
-    if (!student.weeks || !weekString) return null;
-    const weekNumber = getWeekNumber(weekString);
-    if (!weekNumber) return null;
-    // Find week by week number, not by array index
-    return student.weeks.find(w => w && w.week === weekNumber) || null;
-  };
-
-  // Helper function to update student state with current week data
-  const updateStudentWithWeekData = (student, weekString) => {
-    const weekData = getCurrentWeekData(student, weekString);
+  // Helper function to update student state with current lesson data
+  const updateStudentWithLessonData = (student, lessonName) => {
+    const lessonData = getCurrentLessonData(student, lessonName);
     
-    // If week data doesn't exist, return student with default week values (not attended)
-    if (!weekData) {
+    // If lesson data doesn't exist, return student with default lesson values (not attended)
+    if (!lessonData) {
       return {
         ...student,
         attended_the_session: false,
         lastAttendance: null,
         lastAttendanceCenter: null,
         hwDone: false,
-        hwDegree: null,
+        homework_degree: null,
         quizDegree: null,
         comment: null,
         message_state: false
@@ -189,67 +183,69 @@ export default function QR() {
     // Preserve the exact value from database, including boolean true
     const updatedStudent = {
       ...student,
-      attended_the_session: weekData.attended !== undefined ? weekData.attended : false,
-      lastAttendance: weekData.lastAttendance || null,
-      lastAttendanceCenter: weekData.lastAttendanceCenter || null,
+      attended_the_session: lessonData.attended !== undefined ? lessonData.attended : false,
+      lastAttendance: lessonData.lastAttendance || null,
+      lastAttendanceCenter: lessonData.lastAttendanceCenter || null,
       // Preserve boolean true, false, or string values exactly as they are in DB
-      hwDone: weekData.hwDone !== undefined ? weekData.hwDone : false,
-      // Preserve hwDegree even if it's an empty string (use nullish coalescing)
-      hwDegree: weekData.hwDegree !== undefined && weekData.hwDegree !== null ? weekData.hwDegree : null,
-      quizDegree: weekData.quizDegree !== undefined && weekData.quizDegree !== null ? weekData.quizDegree : null,
-      comment: weekData.comment || null,
-      message_state: weekData.message_state !== undefined ? weekData.message_state : false
+      hwDone: lessonData.hwDone !== undefined ? lessonData.hwDone : false,
+      // Preserve homework_degree even if it's an empty string (use nullish coalescing)
+      homework_degree: lessonData.homework_degree !== undefined && lessonData.homework_degree !== null ? lessonData.homework_degree : null,
+      quizDegree: lessonData.quizDegree !== undefined && lessonData.quizDegree !== null ? lessonData.quizDegree : null,
+      comment: lessonData.comment || null,
+      message_state: lessonData.message_state !== undefined ? lessonData.message_state : false
     };
     
     // Debug log to verify data loading - always log when there's interesting data
-    console.log('📊 Loaded week data from DB:', {
-      week: weekString,
-      weekNumber: weekData.week,
-      attended: weekData.attended,
-      hwDone: weekData.hwDone,
-      hwDoneType: typeof weekData.hwDone,
-      hwDegree: weekData.hwDegree,
-      quizDegree: weekData.quizDegree,
+    console.log('📊 Loaded lesson data from DB:', {
+      lesson: lessonName,
+      attended: lessonData.attended,
+      hwDone: lessonData.hwDone,
+      hwDoneType: typeof lessonData.hwDone,
+      homework_degree: lessonData.homework_degree,
+      quizDegree: lessonData.quizDegree,
       updatedStudentHwDone: updatedStudent.hwDone,
-      updatedStudentHwDegree: updatedStudent.hwDegree
+      updatedStudentHomeworkDegree: updatedStudent.homework_degree
     });
     
     return updatedStudent;
   };
 
-  // Update student data with current week information using useMemo
+  // Update student data with current lesson information using useMemo
   const student = useMemo(() => {
-    if (rawStudent && selectedWeek) {
-      const updated = updateStudentWithWeekData(rawStudent, selectedWeek);
+    if (rawStudent && selectedLesson) {
+      const updated = updateStudentWithLessonData(rawStudent, selectedLesson);
       console.log('🔄 Student object updated:', {
         hasRawStudent: !!rawStudent,
-        selectedWeek,
+        selectedLesson,
         updatedHwDone: updated?.hwDone,
-        updatedHwDegree: updated?.hwDegree,
+        updatedHomeworkDegree: updated?.homework_degree,
         updatedQuizDegree: updated?.quizDegree
       });
       return updated;
     }
-    // If no selectedWeek, try to use week 1 as default if available
-    if (rawStudent && rawStudent.weeks && rawStudent.weeks.length > 0) {
-      const defaultWeek = rawStudent.weeks.find(w => w && w.week === 1) || rawStudent.weeks[0];
-      if (defaultWeek) {
-        console.log('⚠️ No selectedWeek, using default week data');
-        return {
-          ...rawStudent,
-          attended_the_session: defaultWeek.attended || false,
-          lastAttendance: defaultWeek.lastAttendance || null,
-          lastAttendanceCenter: defaultWeek.lastAttendanceCenter || null,
-          hwDone: defaultWeek.hwDone !== undefined ? defaultWeek.hwDone : false,
-          hwDegree: defaultWeek.hwDegree !== undefined && defaultWeek.hwDegree !== null ? defaultWeek.hwDegree : null,
-          quizDegree: defaultWeek.quizDegree !== undefined && defaultWeek.quizDegree !== null ? defaultWeek.quizDegree : null,
-          comment: defaultWeek.comment || null,
-          message_state: defaultWeek.message_state !== undefined ? defaultWeek.message_state : false
-        };
+    // If no selectedLesson, try to use first lesson as default if available
+    if (rawStudent && rawStudent.lessons && typeof rawStudent.lessons === 'object' && !Array.isArray(rawStudent.lessons)) {
+      const lessonKeys = Object.keys(rawStudent.lessons);
+      if (lessonKeys.length > 0) {
+        const defaultLesson = rawStudent.lessons[lessonKeys[0]];
+        if (defaultLesson) {
+          console.log('⚠️ No selectedLesson, using default lesson data');
+          return {
+            ...rawStudent,
+            attended_the_session: defaultLesson.attended || false,
+            lastAttendance: defaultLesson.lastAttendance || null,
+            lastAttendanceCenter: defaultLesson.lastAttendanceCenter || null,
+            hwDone: defaultLesson.hwDone !== undefined ? defaultLesson.hwDone : false,
+            homework_degree: defaultLesson.homework_degree !== undefined && defaultLesson.homework_degree !== null ? defaultLesson.homework_degree : null,
+            quizDegree: defaultLesson.quizDegree !== undefined && defaultLesson.quizDegree !== null ? defaultLesson.quizDegree : null,
+            comment: defaultLesson.comment || null,
+            message_state: defaultLesson.message_state !== undefined ? defaultLesson.message_state : false
+          };
+        }
       }
     }
     return rawStudent;
-  }, [rawStudent, selectedWeek]);
+  }, [rawStudent, selectedLesson]);
 
   const handleManualSubmit = async (e) => {
     e.preventDefault();
@@ -340,15 +336,9 @@ export default function QR() {
     
   }, [studentId, student]);
 
-  // Auto-attend student function (reuse main toggle logic so scoring & payment match manual clicks)
-  const autoAttendStudent = async () => {
-    try {
-      console.log('🤖 Auto-attending student via QR scan:', student?.name, 'for week:', selectedWeek, 'center:', attendanceCenter);
-      await toggleAttendance();
-    } catch (error) {
-      console.error('Error in auto-attend:', error);
-    }
-  };
+  // NOTE: We no longer have a separate autoAttendStudent implementation.
+  // For QR scans we reuse the same toggleAttendance() logic so that
+  // payment & scoring behavior is 100% consistent with manual clicks.
 
   // Handle QR code scanned from the QRScanner component
   const handleQRCodeScanned = (scannedStudentId) => {
@@ -358,9 +348,9 @@ export default function QR() {
     setStudentId(scannedStudentId);
     setSearchId(scannedStudentId);
     
-    // Only mark as QR scanned if center and week are already selected
-    // This prevents auto-attendance if student is scanned before selecting center/week
-    if (attendanceCenter && selectedWeek) {
+    // Only mark as QR scanned if center and lesson are already selected
+    // This prevents auto-attendance if student is scanned before selecting center/lesson
+    if (attendanceCenter && selectedLesson) {
       setIsQRScanned(true); // Mark that this student was found via QR scan with conditions met
     } else {
       setIsQRScanned(false); // Don't auto-attend if conditions not met at scan time
@@ -453,7 +443,7 @@ export default function QR() {
     console.log('🔍 Student data loaded:', {
       studentName: rawStudent.name,
       accountState: rawStudent.account_state,
-      selectedWeek,
+      selectedLesson,
       attendanceCenter
     });
 
@@ -465,10 +455,25 @@ export default function QR() {
       return;
     }
 
-    // For activated students, clear any errors
+    // Check for session availability (only if payment system is enabled)
+    if (isPaymentSystemEnabled) {
+      const availableSessions = rawStudent.payment?.numberOfSessions || 0;
+      
+      // Check if student has any paid lessons for the selected lesson
+      const hasPaidLesson = selectedLesson && getStudentLesson(rawStudent.lessons, selectedLesson)?.paid === true;
+      
+      if (availableSessions <= 0 && !hasPaidLesson) {
+        console.log('❌ No sessions available and no paid lesson - showing error message');
+        setError("Sorry, this account has used all his available sessions. Please pay again to continue.");
+        console.log('🔧 Error state set to:', "Sorry, this account has used all his available sessions. Please pay again to continue.");
+        return;
+      }
+    }
+
+    // For activated students with available sessions, clear any errors
     console.log('✅ Activated student - clearing errors');
     setError("");
-  }, [rawStudent, selectedWeek, attendanceCenter]);
+  }, [rawStudent, selectedLesson, attendanceCenter]);
 
   // Check for deactivated account immediately when student data is available
   useEffect(() => {
@@ -488,7 +493,7 @@ export default function QR() {
     setNoHomework(false);
     setNoQuiz(false);
     setNotCompleted(false);
-    setWeekComment(""); // Clear week comment when context changes
+    setLessonComment(""); // Clear lesson comment when context changes
     setHomeworkDegree(""); // Clear homework degree inputs when context changes
     // Only clear homeworkDegreeOutOf if there's no remembered value from session storage
     const rememberedHomeworkOutOf = sessionStorage.getItem('lastHomeworkOutOf');
@@ -498,32 +503,29 @@ export default function QR() {
     
     // Load current week's comment from student when available
     try {
-      // Always read directly from rawStudent.weeks as source of truth (like quiz badge does)
+      // Always read directly from rawStudent.lessons as source of truth (like quiz badge does)
       let dbQuizDegree = null;
       let dbHwDone = null;
-      let dbHwDegree = null;
+      let dbHomeworkDegree = null;
       
-      if (rawStudent?.weeks && selectedWeek) {
-        const weekNumber = getWeekNumber(selectedWeek);
-        if (weekNumber) {
-          const weekData = rawStudent.weeks.find(w => w && w.week === weekNumber);
-          if (weekData) {
-            dbQuizDegree = weekData.quizDegree;
-            dbHwDone = weekData.hwDone;
-            dbHwDegree = weekData.hwDegree;
-          }
+      if (rawStudent?.lessons && selectedLesson && typeof rawStudent.lessons === 'object' && !Array.isArray(rawStudent.lessons)) {
+        const lessonData = getStudentLesson(rawStudent.lessons, selectedLesson);
+        if (lessonData) {
+          dbQuizDegree = lessonData.quizDegree;
+          dbHwDone = lessonData.hwDone;
+          dbHomeworkDegree = lessonData.homework_degree;
         }
       }
       
-      // Fallback to student object if rawStudent.weeks doesn't have it
+      // Fallback to student object if rawStudent.lessons doesn't have it
       if (dbQuizDegree === null || dbQuizDegree === undefined) {
         dbQuizDegree = student?.quizDegree;
       }
       if (dbHwDone === null || dbHwDone === undefined) {
         dbHwDone = student?.hwDone;
       }
-      if (dbHwDegree === null || dbHwDegree === undefined) {
-        dbHwDegree = student?.hwDegree;
+      if (dbHomeworkDegree === null || dbHomeworkDegree === undefined) {
+        dbHomeworkDegree = student?.homework_degree;
       }
       
       // Sync quiz degree inputs from database
@@ -554,8 +556,8 @@ export default function QR() {
       setNoHomework(dbHwDone === "No Homework");
       setNotCompleted(dbHwDone === "Not Completed");
 
-      // Sync homework degree inputs when value like "8 / 10" - read from rawStudent.weeks
-      const homeworkDegreeRaw = (dbHwDegree ?? '').toString().trim();
+      // Sync homework degree inputs when value like "8 / 10" - read from rawStudent.lessons
+      const homeworkDegreeRaw = (dbHomeworkDegree ?? '').toString().trim();
       const homeworkMatch = homeworkDegreeRaw.match(/^(\d+(?:\.\d+)?)\s*\/\s*(\d+(?:\.\d+)?)$/i);
       if (homeworkMatch) {
         setHomeworkDegree(homeworkMatch[1]);
@@ -571,19 +573,19 @@ export default function QR() {
     } catch {
       console.error('Error syncing student data');
     }    
-  }, [rawStudent, student?.id, selectedWeek, attendanceCenter]);
+  }, [rawStudent, student?.id, selectedLesson, attendanceCenter]);
 
-  // Load week comment from student data when week changes
+  // Load lesson comment from student data when lesson changes
   useEffect(() => {
-    if (student && selectedWeek) {
-      const weekData = getCurrentWeekData(student, selectedWeek);
-      if (weekData && weekData.comment) {
-        setWeekComment(weekData.comment);
+    if (student && selectedLesson) {
+      const lessonData = getCurrentLessonData(student, selectedLesson);
+      if (lessonData && lessonData.comment) {
+        setLessonComment(lessonData.comment);
       } else {
-        setWeekComment("");
+        setLessonComment("");
       }
     }
-  }, [student, selectedWeek]);
+  }, [student, selectedLesson]);
 
   // Ensure quiz degree "out of" value is loaded from session storage when component mounts
   useEffect(() => {
@@ -611,23 +613,25 @@ export default function QR() {
     }
   }, [homeworkDegreeSuccess]);
 
-  // Auto-attend student when conditions are met (ONLY for QR scans with pre-selected center/week)
+  // Auto-attend student when conditions are met (ONLY for QR scans with pre-selected center/lesson)
   useEffect(() => {
     // Only auto-attend if:
     // 1. Student data is loaded
-    // 2. Center and week are selected
+    // 2. Center and lesson are selected
     // 3. Student is not already attended
     // 4. We haven't already set optimistic attendance
-    // 5. Student was found via QR scan AND center/week were already selected at scan time
-    if (student && attendanceCenter && selectedWeek && !student.attended_the_session && optimisticAttended === null && isQRScanned) {
+    // 5. Student was found via QR scan AND center/lesson were already selected at scan time
+    if (student && attendanceCenter && selectedLesson && !student.attended_the_session && optimisticAttended === null && isQRScanned) {
       // Add a small delay to ensure UI is ready
       const timer = setTimeout(() => {
-        autoAttendStudent();
+        // Reuse the same logic as manual attendance toggle so that
+        // payment & scoring rules are identical for QR scans
+        toggleAttendance();
       }, 800); // 800ms delay for better UX
       
       return () => clearTimeout(timer);
     }
-  }, [student, attendanceCenter, selectedWeek, optimisticAttended, isQRScanned]);
+  }, [student, attendanceCenter, selectedLesson, optimisticAttended, isQRScanned]);
 
   // Reset HW optimistic states when attendance becomes false
   useEffect(() => {
@@ -651,8 +655,19 @@ export default function QR() {
 
 
   const toggleAttendance = async () => {
-    if (!student || !selectedWeek || !attendanceCenter) return;
+    if (!student || !selectedLesson || !attendanceCenter) return;
     if (student.account_deactivated) return; // Don't allow attendance for deactivated accounts
+    
+    // Check if student has available sessions or paid lesson (only if payment system is enabled)
+    if (isPaymentSystemEnabled) {
+      const availableSessions = student.payment?.numberOfSessions || 0;
+      const hasPaidLesson = getStudentLesson(student.lessons, selectedLesson)?.paid === true;
+      
+      if (availableSessions <= 0 && !hasPaidLesson) {
+        setError("Sorry, this account has used all his available sessions. Please pay again to continue.");
+        return;
+      }
+    }
     
     // Use current displayed state (optimistic if available, otherwise DB state)
     const currentAttended = optimisticAttended !== null ? optimisticAttended : student.attended_the_session;
@@ -660,17 +675,16 @@ export default function QR() {
     setOptimisticAttended(newAttended);
     // If marking as absent, clear local comment and uncheck all checkboxes immediately to reflect reset
     if (!newAttended) {
-      setWeekComment("");
+      setLessonComment("");
       setNoHomework(false);
       setNotQuized(false);
       setNoQuiz(false);
       setNotCompleted(false);
     }
     
-    const weekNumber = getWeekNumber(selectedWeek);
-    if (!weekNumber) {
-      console.error('❌ weekNumber is missing — skipping attendance update');
-      setError('Please select a valid week before marking attendance.');
+    if (!selectedLesson) {
+      console.error('❌ selectedLesson is missing — skipping attendance update');
+      setError('Please select a valid lesson before marking attendance.');
       return;
     }
     
@@ -687,7 +701,7 @@ export default function QR() {
         attended: true,
         lastAttendance, 
         lastAttendanceCenter: attendanceCenter, 
-        attendanceWeek: weekNumber 
+        attendanceLesson: selectedLesson 
       };
     } else {
       // Mark as not attended - clear attendance info
@@ -695,7 +709,7 @@ export default function QR() {
         attended: false,
         lastAttendance: null, 
         lastAttendanceCenter: null, 
-        attendanceWeek: weekNumber 
+        attendanceLesson: selectedLesson 
       };
     }
     
@@ -703,7 +717,7 @@ export default function QR() {
       studentId: student.id,
       studentName: student.name,
       newAttendedState: newAttended,
-      weekNumber
+      selectedLesson
     });
 
     toggleAttendanceMutation.mutate({
@@ -716,6 +730,15 @@ export default function QR() {
         setOptimisticAttended(null);
         // Disable QR auto-attend after a successful toggle so manual reversals work correctly
         setIsQRScanned(false);
+
+        // Always refresh student so payment.numberOfSessions (±1) shows immediately
+        if (refetchStudent) {
+          try {
+            await refetchStudent();
+          } catch (err) {
+            console.error('Failed to refetch student after attendance:', err);
+          }
+        }
         
         // Calculate score for attendance (only if scoring system is enabled)
         // If reversing to absent, get the last attendance history entry and reverse it
@@ -732,12 +755,16 @@ export default function QR() {
                 
                 if (historyResponse.data.found && historyResponse.data.history) {
                   const lastHistory = historyResponse.data.history;
-              const weekNumber = getWeekNumber(selectedWeek);
-                  // Reverse the last attendance points and auto-reverse homework/quiz for this week
+                  // Reverse the last attendance points and auto-reverse homework/quiz for this lesson
               await apiClient.post('/api/scoring/calculate', {
                 studentId: student.id,
                 type: 'attendance',
-                    week: weekNumber,
+                lesson: selectedLesson,
+                source: {
+                  kind: 'attendance',
+                  id: selectedLesson,
+                  label: selectedLesson,
+                },
                 data: { 
                   status: 'absent',
                       previousStatus: lastHistory.data?.status || 'attend',
@@ -748,11 +775,19 @@ export default function QR() {
               });
             } else {
                   // No previous attendance history, just apply absent
-                  const weekNumber = getWeekNumber(selectedWeek);
+                  if (!selectedLesson) {
+                    setError('Please select a valid lesson.');
+                    return;
+                  }
                   await apiClient.post('/api/scoring/calculate', {
                     studentId: student.id,
                     type: 'attendance',
-                    week: weekNumber,
+                    lesson: selectedLesson,
+                    source: {
+                      kind: 'attendance',
+                      id: selectedLesson,
+                      label: selectedLesson,
+                    },
                     data: { status: 'absent' }
                   });
                 }
@@ -762,20 +797,29 @@ export default function QR() {
               await apiClient.post('/api/scoring/calculate', {
                 studentId: student.id,
                 type: 'attendance',
+                source: {
+                  kind: 'attendance',
+                  id: selectedLesson || 'global',
+                  label: selectedLesson || 'Attendance',
+                },
                 data: { status: 'absent' }
               });
             }
           } else {
             // Marking as attended - just apply the points
-              const weekNumber = getWeekNumber(selectedWeek);
             await apiClient.post('/api/scoring/calculate', {
               studentId: student.id,
               type: 'attendance',
-                week: weekNumber,
+              lesson: selectedLesson,
+              source: {
+                kind: 'attendance',
+                id: selectedLesson,
+                label: selectedLesson,
+              },
               data: { status: 'attend' }
             });
           }
-          // Refetch student data to update score
+          // Refetch again after scoring updates
           if (refetchStudent) {
             refetchStudent();
           }
@@ -789,17 +833,16 @@ export default function QR() {
         // The API automatically sets hwDone to false, hwDegree to null, and quizDegree to null
         if (!newAttended && isScoringEnabled) {
           try {
-            const weekNumber = getWeekNumber(selectedWeek);
-            
             // Check if there was previous data to reverse
-            if (rawStudent?.weeks && selectedWeek) {
-              const weekData = rawStudent.weeks.find(w => w && w.week === weekNumber);
+            if (rawStudent?.lessons && selectedLesson && typeof rawStudent.lessons === 'object' && !Array.isArray(rawStudent.lessons)) {
+              const lessonData = getStudentLesson(rawStudent.lessons, selectedLesson);
               
               // Reverse homework done points using history
               try {
                 const hwHistoryResponse = await apiClient.post('/api/scoring/get-last-history', {
                   studentId: student.id,
-                  type: 'homework'
+                  type: 'homework',
+                  lesson: selectedLesson
                 });
                 
                 if (hwHistoryResponse.data.found && hwHistoryResponse.data.history) {
@@ -810,7 +853,12 @@ export default function QR() {
                     await apiClient.post('/api/scoring/calculate', {
                       studentId: student.id,
                       type: 'homework',
-                      week: weekNumber,
+                      lesson: selectedLesson,
+                      source: {
+                        kind: 'classroom_homework_status',
+                        id: selectedLesson,
+                        label: selectedLesson,
+                      },
                       data: { 
                         hwDone: lastHwHistory.data.hwDone,
                         previousHwDone: lastHwHistory.data.hwDone,
@@ -822,7 +870,12 @@ export default function QR() {
                     await apiClient.post('/api/scoring/calculate', {
                       studentId: student.id,
                       type: 'homework',
-                      week: weekNumber,
+                      lesson: selectedLesson,
+                      source: {
+                        kind: 'classroom_homework_degree',
+                        id: selectedLesson,
+                        label: selectedLesson,
+                      },
                       data: { 
                         percentage: lastHwHistory.data.percentage,
                         previousPercentage: lastHwHistory.data.percentage,
@@ -839,7 +892,8 @@ export default function QR() {
               try {
                 const quizHistoryResponse = await apiClient.post('/api/scoring/get-last-history', {
                   studentId: student.id,
-                  type: 'quiz'
+                  type: 'quiz',
+                  lesson: selectedLesson
                 });
                 
                 if (quizHistoryResponse.data.found && quizHistoryResponse.data.history) {
@@ -849,7 +903,12 @@ export default function QR() {
                     await apiClient.post('/api/scoring/calculate', {
                       studentId: student.id,
                       type: 'quiz',
-                      week: weekNumber,
+                      lesson: selectedLesson,
+                      source: {
+                        kind: 'classroom_quiz_degree',
+                        id: selectedLesson,
+                        label: selectedLesson,
+                      },
                       data: { 
                         percentage: lastQuizHistory.data.percentage,
                         previousPercentage: lastQuizHistory.data.percentage,
@@ -875,7 +934,7 @@ export default function QR() {
   };
 
   const toggleHwDone = async () => {
-    if (!student || !selectedWeek || !attendanceCenter) return;
+    if (!student || !selectedLesson || !attendanceCenter) return;
     if (student.account_deactivated) return; // Don't allow homework updates for deactivated accounts
     
     // Check if student is attended - can't do homework if not attended
@@ -902,17 +961,20 @@ export default function QR() {
     
     setOptimisticHwDone(newHwDone);
     
-    const weekNumber = getWeekNumber(selectedWeek);
+    if (!selectedLesson) {
+      setError('Please select a valid lesson before updating homework.');
+      return;
+    }
     
     // Capture previousHwDone BEFORE database update (to get the actual previous state)
     let previousHwDone = null;
-    if (rawStudent?.weeks && selectedWeek) {
-      const weekData = rawStudent.weeks.find(w => w && w.week === weekNumber);
-      if (weekData && weekData.hwDone !== undefined && weekData.hwDone !== null) {
-        previousHwDone = weekData.hwDone;
+    if (rawStudent?.lessons && selectedLesson && typeof rawStudent.lessons === 'object' && !Array.isArray(rawStudent.lessons)) {
+      const lessonData = getStudentLesson(rawStudent.lessons, selectedLesson);
+      if (lessonData && lessonData.hwDone !== undefined && lessonData.hwDone !== null) {
+        previousHwDone = lessonData.hwDone;
       }
     }
-    // If no previous state found in weeks array, use currentHwDone only if it's explicitly set
+    // If no previous state found in lessons object, use currentHwDone only if it's explicitly set
     if (previousHwDone === null && currentHwDone !== undefined && currentHwDone !== null && currentHwDone !== false) {
       previousHwDone = currentHwDone;
     }
@@ -927,13 +989,13 @@ export default function QR() {
       // Clear homework degree in database
       updateHomeworkDegreeMutation.mutate({
         id: student.id,
-        homeworkDegreeData: { hwDegree: null, week: weekNumber }
+        homeworkDegreeData: { homework_degree: null, lesson: selectedLesson }
       });
     }
     
     updateHomeworkMutation.mutate({
       id: student.id,
-      homeworkData: { hwDone: newHwDone, week: weekNumber }
+      homeworkData: { hwDone: newHwDone, lesson: selectedLesson }
     }, {
       onSuccess: async () => {
         setHwSuccess(newHwDone ? '✅ Homework Marked as Done' : '✅ Homework Marked as Not Done');
@@ -944,7 +1006,7 @@ export default function QR() {
         // Only use "homework without degree" scoring when clicking hw done button
         if (isScoringEnabled) {
         try {
-            // Get last homework history to get the correct previous state (for this week)
+            // Get last homework history to get the correct previous state (for this lesson)
           let actualPreviousHwDone = previousHwDone;
           let useReverseOnly = false;
           
@@ -952,7 +1014,7 @@ export default function QR() {
             const historyResponse = await apiClient.post('/api/scoring/get-last-history', {
               studentId: student.id,
               type: 'homework',
-              week: weekNumber
+              lesson: selectedLesson
             });
             
             if (historyResponse.data.found && historyResponse.data.history) {
@@ -983,12 +1045,17 @@ export default function QR() {
           await apiClient.post('/api/scoring/calculate', {
             studentId: student.id,
             type: 'homework',
-              week: weekNumber,
-              data: { 
-                hwDone: newHwDone, 
-                previousHwDone: actualPreviousHwDone,
-                reverseOnly: useReverseOnly
-              }
+            lesson: selectedLesson,
+            source: {
+              kind: 'classroom_homework_status',
+              id: selectedLesson,
+              label: selectedLesson,
+            },
+            data: { 
+              hwDone: newHwDone, 
+              previousHwDone: actualPreviousHwDone,
+              reverseOnly: useReverseOnly
+            }
           });
           // Refetch student data to update score
           if (refetchStudent) {
@@ -1011,7 +1078,7 @@ export default function QR() {
   };
 
   const handleHomeworkDegreeSubmit = async () => {
-    if (!student || !selectedWeek || !attendanceCenter) return;
+    if (!student || !selectedLesson || !attendanceCenter) return;
     if (student.account_deactivated) return; // Don't allow homework degree updates for deactivated accounts
     
     // Check if student is attended - can't enter homework degree if not attended
@@ -1021,13 +1088,17 @@ export default function QR() {
       return;
     }
     
+    if (!selectedLesson) {
+      setError('Please select a valid lesson before updating homework degree.');
+      return;
+    }
+    
     // If both inputs are empty, save null
     if (homeworkDegree === "" && homeworkDegreeOutOf === "") {
-      const weekNumber = getWeekNumber(selectedWeek);
       updateHomeworkDegreeMutation.mutate(
         {
           id: student.id,
-          homeworkDegreeData: { hwDegree: null, week: weekNumber }
+          homeworkDegreeData: { homework_degree: null, lesson: selectedLesson }
         },
         {
           onSuccess: () => {
@@ -1045,12 +1116,11 @@ export default function QR() {
     }
     
     const homeworkDegreeValue = `${homeworkDegree} / ${homeworkDegreeOutOf}`;
-    const weekNumber = getWeekNumber(selectedWeek);
     
     updateHomeworkDegreeMutation.mutate(
       {
         id: student.id,
-        homeworkDegreeData: { hwDegree: homeworkDegreeValue, week: weekNumber }
+        homeworkDegreeData: { homework_degree: homeworkDegreeValue, lesson: selectedLesson }
       },
       {
         onSuccess: async () => {
@@ -1100,7 +1170,12 @@ export default function QR() {
               await apiClient.post('/api/scoring/calculate', {
                 studentId: student.id,
                 type: 'homework',
-                week: weekNumber,
+                lesson: selectedLesson,
+                source: {
+                  kind: 'classroom_homework_degree',
+                  id: selectedLesson,
+                  label: selectedLesson,
+                },
                 data: { percentage, previousPercentage }
               });
               // Refetch student data to update score
@@ -1125,7 +1200,7 @@ export default function QR() {
   };
 
   const handleQuizDegreeSubmit = async () => {
-    if (!student || !selectedWeek || !attendanceCenter) return;
+    if (!student || !selectedLesson || !attendanceCenter) return;
     if (student.account_deactivated) return; // Don't allow quiz updates for deactivated accounts
     if (quizDegreeInput === "" || quizDegreeOutOf === "") return;
     
@@ -1136,13 +1211,17 @@ export default function QR() {
       return;
     }
     
+    if (!selectedLesson) {
+      setError('Please select a valid lesson before updating quiz degree.');
+      return;
+    }
+    
     const quizDegreeValue = `${quizDegreeInput} / ${quizDegreeOutOf}`;
-    const weekNumber = getWeekNumber(selectedWeek);
     
     updateQuizGradeMutation.mutate(
       {
         id: student.id,
-        quizData: { quizDegree: quizDegreeValue, week: weekNumber }
+        quizData: { quizDegree: quizDegreeValue, lesson: selectedLesson }
       },
       {
         onSuccess: async () => {
@@ -1161,13 +1240,13 @@ export default function QR() {
               const total = parseFloat(match[2]);
               const percentage = total > 0 ? Math.round((obtained / total) * 100) : 0;
               
-              // Get previous quiz degree percentage from history (for this week)
+              // Get previous quiz degree percentage from history (for this lesson)
               let previousPercentage = null;
               try {
                 const historyResponse = await apiClient.post('/api/scoring/get-last-history', {
                   studentId: student.id,
                   type: 'quiz',
-                  week: weekNumber
+                  lesson: selectedLesson
                 });
                 
                 if (historyResponse.data.found && historyResponse.data.history) {
@@ -1205,7 +1284,12 @@ export default function QR() {
               await apiClient.post('/api/scoring/calculate', {
                 studentId: student.id,
                 type: 'quiz',
-                week: weekNumber,
+                lesson: selectedLesson,
+                source: {
+                  kind: 'classroom_quiz_degree',
+                  id: selectedLesson,
+                  label: selectedLesson,
+                },
                 data: { 
                   percentage, 
                   previousPercentage,
@@ -1238,7 +1322,7 @@ export default function QR() {
       minHeight: "100vh",
       padding: "20px 5px 20px 5px",
     }}>
-      <div ref={containerRef} style={{ maxWidth: 600, margin: "40px auto", padding: 24 }}>
+      <div ref={containerRef} style={{ maxWidth: 600, width: "100%", margin: "40px auto", padding: "clamp(8px, 4vw, 24px)", boxSizing: "border-box" }}>
       <style jsx>{`
         .header {
           display: flex;
@@ -1693,7 +1777,7 @@ export default function QR() {
                   {student.name} (ID: {student.id})
                 </div>
                 <div style={{ fontSize: "0.9rem", color: "#6c757d" }}>
-                  {student.grade} • {student.main_center}
+                  {[student.course, !isNational && student.courseType, student.main_center].filter(Boolean).join(' • ')}
                 </div>
               </button>
             ))}
@@ -1701,7 +1785,7 @@ export default function QR() {
         )}
       </div>
 
-      {/* Week and Center Selection - Always visible */}
+      {/* Lesson and Center Selection - Always visible */}
       <div style={{ 
         background: 'white', 
         borderRadius: 16, 
@@ -1737,7 +1821,7 @@ export default function QR() {
             />
           </div>
           
-          {/* Attendance Week */}
+          {/* Attendance Lesson */}
           <div>
             <div style={{ 
               fontWeight: 600, 
@@ -1747,21 +1831,21 @@ export default function QR() {
               textTransform: 'uppercase',
               letterSpacing: '1px'
             }}>
-              Attendance Week
+              Attendance Lesson
             </div>
-            <AttendanceWeekSelect
-              selectedWeek={selectedWeek}
-              onWeekChange={(week) => {
-                console.log('Week selected:', week);
-                setSelectedWeek(week);
+            <AttendanceLessonSelect
+              selectedLesson={selectedLesson}
+              onLessonChange={(lesson) => {
+                console.log('Lesson selected:', lesson);
+                setSelectedLesson(lesson);
                 // Save to session storage
-                if (week) {
-                  sessionStorage.setItem('lastSelectedWeek', week);
-                  console.log('Week saved to session storage:', week);
+                if (lesson) {
+                  sessionStorage.setItem('lastSelectedLesson', lesson);
+                  console.log('Lesson saved to session storage:', lesson);
                 } else {
                   // Clear selection - remove from sessionStorage
-                  sessionStorage.removeItem('lastSelectedWeek');
-                  console.log('Week removed from session storage');
+                  sessionStorage.removeItem('lastSelectedLesson');
+                  console.log('Lesson removed from session storage');
                 }
               }}
               required={true}
@@ -1775,13 +1859,13 @@ export default function QR() {
         onError={handleQRScannerError}
       />
 
-      {/* Warning box when week or center is not selected - for both activated and deactivated accounts */}
-      {student && (!selectedWeek || !attendanceCenter) && (
+      {/* Warning box when lesson or center is not selected - for both activated and deactivated accounts */}
+      {student && (!selectedLesson || !attendanceCenter) && (
         <>
           {console.log('⚠️ Warning box showing:', {
             studentName: student.name,
             accountState: rawStudent?.account_state,
-            selectedWeek,
+            selectedLesson,
             attendanceCenter,
             showWarning: true
           })}
@@ -1842,7 +1926,7 @@ export default function QR() {
             lineHeight: '1.4',
             padding: '0 clamp(8px, 2vw, 16px)'
           }}>
-            Please select both <strong>Week</strong> and <strong>Center</strong> to track students correctly
+            Please select both <strong>Lesson</strong> and <strong>Center</strong> to track students correctly
           </div>
           
           {/* Help text */}
@@ -1864,12 +1948,14 @@ export default function QR() {
       )}
 
 
-      {student && selectedWeek && attendanceCenter && rawStudent?.account_state !== 'Deactivated' && (
+      {student && selectedLesson && attendanceCenter && rawStudent?.account_state !== 'Deactivated' && 
+       (!isPaymentSystemEnabled || (rawStudent?.payment?.numberOfSessions || 0) > 0 || 
+        (getStudentLesson(rawStudent?.lessons, selectedLesson)?.paid === true)) && (
         <div className="student-card">
           {console.log('📋 Student card rendering:', {
             studentName: student.name,
             accountState: rawStudent?.account_state,
-            selectedWeek,
+            selectedLesson,
             attendanceCenter,
             showCard: true
           })}
@@ -1877,16 +1963,16 @@ export default function QR() {
           
                   
           <div className="student-info">
-              {isScoringEnabled && (
+              {student.course && (
               <div className="info-item">
-                <span className="info-label">Score</span>
-                <span className="info-value">{rawStudent?.score !== null && rawStudent?.score !== undefined ? rawStudent.score : 0}</span>
+                <span className="info-label">{courseLabels.course}</span>
+                <span className="info-value">{student.course}</span>
               </div>
               )}
-              {student.grade && (
+              {courseLabels.showCourseType && student.courseType && (
               <div className="info-item">
-                <span className="info-label">Grade</span>
-                <span className="info-value">{student.grade}</span>
+                <span className="info-label">Course Type</span>
+                <span className="info-value">{student.courseType}</span>
               </div>
               )}
             {student.main_center && (
@@ -1895,58 +1981,69 @@ export default function QR() {
               <span className="info-value">{student.main_center}</span>
             </div>
             )}
-            {student.school && (
             <div className="info-item">
               <span className="info-label">School</span>
-              <span className="info-value">{student.school}</span>
+              <span className="info-value">{student.school || 'No School'}</span>
+            </div>
+            {isPaymentSystemEnabled && (
+            <div className="info-item">
+              <span className="info-label">Available Sessions</span>
+              <span className="info-value" style={{ 
+                color: (() => {
+                  const sessions = rawStudent?.payment?.numberOfSessions || 0;
+                  if (sessions <= 2) return '#dc3545'; // red
+                  if (sessions <= 5) return '#ffc107'; // yellow
+                  if (sessions <= 8) return '#28a745'; // green
+                  return '#1FA8DC'; // blue (>= 9)
+                })()
+              }}>
+                {(rawStudent?.payment?.numberOfSessions || 0)} sessions
+              </span>
+            </div>
+            )}
+            {isScoringEnabled && (
+            <div className="info-item" style={{ borderLeft: '4px solid #f59e0b' }}>
+              <span className="info-label">SCORE</span>
+              <span className="info-value" style={{ 
+                fontSize: '1.4rem', 
+                fontWeight: '800',
+                color: (rawStudent?.score !== undefined && rawStudent?.score !== null && rawStudent?.score >= 0) ? '#059669' : '#dc2626'
+              }}>
+                {rawStudent?.score !== null && rawStudent?.score !== undefined ? rawStudent.score : 0}
+                <span style={{ fontSize: '0.8rem', fontWeight: '500', color: '#6c757d', marginLeft: '6px' }}>pts</span>
+              </span>
             </div>
             )}
             {student.main_comment && (
             <div className="info-item">
-              <span className="info-label">Main Comment</span>
+              <span className="info-label">Hidden Comment</span>
               <span className="info-value">{student.main_comment}</span>
             </div>
             )}
           </div>
 
           <div className="status-row">
-            <span className={`status-badge ${(!attendanceCenter || !selectedWeek) 
+            <span className={`status-badge ${(!attendanceCenter || !selectedLesson) 
               ? 'status-not-attended' 
               : (optimisticAttended !== null ? optimisticAttended : student.attended_the_session) 
                 ? 'status-attended' 
                 : 'status-not-attended'}`}>
-              {(!attendanceCenter || !selectedWeek) 
+              {(!attendanceCenter || !selectedLesson) 
                 ? '❌ Absent' 
                 : (optimisticAttended !== null ? optimisticAttended : student.attended_the_session) 
                   ? '✅ Attended' 
                   : '❌ Absent'}
             </span>
+            {/* Homework status badge */}
             <span className={`status-badge ${(() => {
-              // Always read from database - try rawStudent.weeks first, then fallback to student object
+              // Always read from database - try rawStudent.lessons first, then fallback to student object
               let dbHwDone = null;
               
-              // Determine which week to use
-              let weekNumber = null;
-              if (selectedWeek) {
-                weekNumber = getWeekNumber(selectedWeek);
-              } else if (rawStudent?.weeks && rawStudent.weeks.length > 0) {
-                // If no selectedWeek, try to use week 1 or first available week
-                const week1Data = rawStudent.weeks.find(w => w && w.week === 1);
-                if (week1Data) {
-                  weekNumber = 1;
-                } else {
-                  // Use first week in array
-                  const firstWeek = rawStudent.weeks[0];
-                  if (firstWeek && firstWeek.week) {
-                    weekNumber = firstWeek.week;
-                  }
-                }
-              }
-              
-              if (rawStudent?.weeks && weekNumber) {
-                const weekData = rawStudent.weeks.find(w => w && w.week === weekNumber);
-                if (weekData) {
-                  dbHwDone = weekData.hwDone;
+              // Read from lessons object
+              if (rawStudent?.lessons && selectedLesson && typeof rawStudent.lessons === 'object' && !Array.isArray(rawStudent.lessons)) {
+                const lessonData = getStudentLesson(rawStudent.lessons, selectedLesson);
+                if (lessonData) {
+                  dbHwDone = lessonData.hwDone;
                 }
               }
               
@@ -1964,47 +2061,27 @@ export default function QR() {
                 return 'status-attended'; // Green background for done
               }
               return 'status-not-attended'; // Red background for not done
-            })()}`}>
+              })()}`}>
               {(() => {
-                // Always read from database - try rawStudent.weeks first, then fallback to student object
+                // Always read from database - try rawStudent.lessons first, then fallback to student object
                 let dbHwDone = null;
                 let dbHwDegree = null;
                 
-                // Determine which week to use
-                let weekToUse = selectedWeek;
-                let weekNumber = null;
-                
-                if (weekToUse) {
-                  weekNumber = getWeekNumber(weekToUse);
-                } else if (rawStudent?.weeks && rawStudent.weeks.length > 0) {
-                  // If no selectedWeek, try to use week 1 or first available week
-                  const week1Data = rawStudent.weeks.find(w => w && w.week === 1);
-                  if (week1Data) {
-                    weekNumber = 1;
-                  } else {
-                    // Use first week in array
-                    const firstWeek = rawStudent.weeks[0];
-                    if (firstWeek && firstWeek.week) {
-                      weekNumber = firstWeek.week;
-                    }
+                // First, try to read directly from rawStudent.lessons (source of truth)
+                if (rawStudent?.lessons && selectedLesson && typeof rawStudent.lessons === 'object' && !Array.isArray(rawStudent.lessons)) {
+                  const lessonData = getStudentLesson(rawStudent.lessons, selectedLesson);
+                  if (lessonData) {
+                    dbHwDone = lessonData.hwDone;
+                    dbHwDegree = lessonData.homework_degree;
                   }
                 }
                 
-                // First, try to read directly from rawStudent.weeks (source of truth)
-                if (rawStudent?.weeks && weekNumber) {
-                  const weekData = rawStudent.weeks.find(w => w && w.week === weekNumber);
-                  if (weekData) {
-                    dbHwDone = weekData.hwDone;
-                    dbHwDegree = weekData.hwDegree;
-                  }
-                }
-                
-                // Fallback to student object (which should be populated by updateStudentWithWeekData)
+                // Fallback to student object
                 if (dbHwDone === null || dbHwDone === undefined) {
                   dbHwDone = student?.hwDone;
                 }
                 if (dbHwDegree === null || dbHwDegree === undefined) {
-                  dbHwDegree = student?.hwDegree;
+                  dbHwDegree = student?.homework_degree;
                 }
                 
                 // Use optimistic update if available, otherwise use database value
@@ -2014,24 +2091,23 @@ export default function QR() {
                 // Debug log to see what values we're working with
                 console.log('🏷️ Homework badge rendering:', {
                   hasRawStudent: !!rawStudent,
-                  hasWeeks: !!rawStudent?.weeks,
-                  selectedWeek,
-                  weekNumber,
-                  weekData: rawStudent?.weeks?.find(w => w && w.week === weekNumber),
+                  hasLessons: !!rawStudent?.lessons,
+                  selectedLesson,
+                  lessonData: rawStudent?.lessons?.[selectedLesson],
                   dbHwDone,
                   dbHwDoneType: typeof dbHwDone,
                   dbHwDegree,
                   studentHwDone: student?.hwDone,
-                  studentHwDegree: student?.hwDegree,
+                  studentHwDegree: student?.homework_degree,
                   optimisticHwDone,
                   currentHwDone,
                   currentHwDoneType: typeof currentHwDone,
                   currentHwDegree,
-                  rawStudentWeeks: rawStudent?.weeks
+                  rawStudentLessons: rawStudent?.lessons
                 });
                 
-                // If no attendance center or week selected, still show database value if available
-                if (!attendanceCenter || !selectedWeek) {
+                // If no attendance center or lesson selected, still show database value if available
+                if (!attendanceCenter || !selectedLesson) {
                   // Still try to show database value even if week/center not selected
                   if (currentHwDone === true) {
                     if (currentHwDegree && String(currentHwDegree).trim() !== '') {
@@ -2067,7 +2143,7 @@ export default function QR() {
               })()}
             </span>
             
-            <span className={`status-badge ${(!attendanceCenter || !selectedWeek) 
+            <span className={`status-badge ${(!attendanceCenter || !selectedLesson) 
               ? 'status-not-attended' 
               : (student?.quizDegree ?? '') === "Didn't Attend The Quiz"
                 ? 'status-didnt-attend'
@@ -2076,7 +2152,7 @@ export default function QR() {
                   : student?.quizDegree 
                     ? 'status-attended' 
                     : 'status-not-attended'}`}>
-              {(!attendanceCenter || !selectedWeek) 
+              {(!attendanceCenter || !selectedLesson) 
                 ? '❌ Quiz: ...' 
                 : (student?.quizDegree ?? '') === "Didn't Attend The Quiz"
                   ? '❌ Quiz: Didn\'t Attend'
@@ -2088,8 +2164,8 @@ export default function QR() {
             </span>
           </div>
 
-          {/* Show current attendance info if student is attended AND center/week are selected */}
-          {(optimisticAttended !== null ? optimisticAttended : student.attended_the_session) && student.lastAttendance && attendanceCenter && selectedWeek && (
+          {/* Show current attendance info if student is attended AND center/lesson are selected */}
+          {(optimisticAttended !== null ? optimisticAttended : student.attended_the_session) && student.lastAttendance && attendanceCenter && selectedLesson && (
             <div className="info-item">
               <div className="info-label">Attendance info:</div>
               <div className="info-value" style={{ wordBreak: 'break-word', overflowWrap: 'break-word' }}>
@@ -2099,8 +2175,8 @@ export default function QR() {
           )}
           
 
-          {/* Warning message when week/center not selected */}
-          {(!selectedWeek || !attendanceCenter) && (
+          {/* Warning message when lesson/center not selected */}
+          {(!selectedLesson || !attendanceCenter) && (
             <div style={{
               background: 'linear-gradient(135deg, #ffc107 0%, #ffb74d 100%)',
               color: 'white',
@@ -2112,7 +2188,7 @@ export default function QR() {
               boxShadow: '0 2px 8px rgba(255, 193, 7, 0.3)',
               fontSize: '0.9rem'
             }}>
-              ⚠️ Please select both a attendance week and attendance center to enable tracking attendance
+              ⚠️ Please select both a attendance lesson and attendance center to enable tracking attendance
             </div>
           )}
 
@@ -2123,10 +2199,10 @@ export default function QR() {
             <button
               className="toggle-btn"
               onClick={toggleAttendance}
-              disabled={!attendanceCenter || !selectedWeek || rawStudent?.account_state === 'Deactivated'}
+              disabled={!attendanceCenter || !selectedLesson || rawStudent?.account_state === 'Deactivated'}
               style={{
                 width: '100%',
-                background: (!attendanceCenter || !selectedWeek) 
+                background: (!attendanceCenter || !selectedLesson) 
                   ? 'linear-gradient(135deg, #28a745 0%, #20c997 100%)' // Default "Not Attended" state
                   : (optimisticAttended !== null ? optimisticAttended : student.attended_the_session) 
                     ? 'linear-gradient(135deg, #dc3545 0%, #e74c3c 100%)' 
@@ -2137,12 +2213,12 @@ export default function QR() {
                 fontWeight: 600,
                 fontSize: '1.1rem',
                 padding: '14px 0',
-                cursor: (!attendanceCenter || !selectedWeek) ? 'not-allowed' : 'pointer',
-                opacity: (!attendanceCenter || !selectedWeek) ? 0.5 : 1,
+                cursor: (!attendanceCenter || !selectedLesson) ? 'not-allowed' : 'pointer',
+                opacity: (!attendanceCenter || !selectedLesson) ? 0.5 : 1,
                 transition: 'all 0.3s ease'
               }}
             >
-              {(!attendanceCenter || !selectedWeek) 
+              {(!attendanceCenter || !selectedLesson) 
                 ? '✅ Mark as Attended' 
                 : (optimisticAttended !== null ? optimisticAttended : student.attended_the_session) 
                   ? '❌ Mark as Absent' 
@@ -2157,13 +2233,13 @@ export default function QR() {
               <input
                 type="checkbox"
                 checked={notCompleted}
-                disabled={!attendanceCenter || !selectedWeek || !(optimisticAttended !== null ? optimisticAttended : student.attended_the_session) || rawStudent?.account_state === 'Deactivated'}
+                disabled={!attendanceCenter || !selectedLesson || !(optimisticAttended !== null ? optimisticAttended : student.attended_the_session) || rawStudent?.account_state === 'Deactivated'}
                 onChange={async (e) => {
                   const checked = e.target.checked;
                   setNotCompleted(checked);
 
-                  if (!student || !selectedWeek || !attendanceCenter) {
-                    setError('Please select student, week and center first.');
+                  if (!student || !selectedLesson || !attendanceCenter) {
+                    setError('Please select student, lesson and center first.');
                     setNotCompleted(!checked);
                     return;
                   }
@@ -2185,7 +2261,10 @@ export default function QR() {
                     return;
                   }
 
-                  const weekNumber = getWeekNumber(selectedWeek);
+                  if (!selectedLesson) {
+                    setError('Please select a valid lesson.');
+                    return;
+                  }
 
                   if (checked) {
                     // Uncheck "No Homework" if it's checked (mutually exclusive)
@@ -2198,12 +2277,12 @@ export default function QR() {
                     // Clear homework degree in database
                     updateHomeworkDegreeMutation.mutate({
                       id: student.id,
-                      homeworkDegreeData: { hwDegree: null, week: weekNumber }
+                      homeworkDegreeData: { homework_degree: null, lesson: selectedLesson }
                     });
                     // ✅ Save "Not Completed" to DB
                     updateHomeworkMutation.mutate({
                       id: student.id,
-                      homeworkData: { hwDone: "Not Completed", week: weekNumber },
+                      homeworkData: { hwDone: "Not Completed", lesson: selectedLesson },
                     }, {
                       onSuccess: async () => {
                         setHwSuccess('✅ Not Completed status set');
@@ -2211,20 +2290,24 @@ export default function QR() {
                         // Calculate score for homework (without degree, with previous state to reverse points)
                         if (isScoringEnabled) {
                         try {
-                          // Get previous homework state from rawStudent.weeks
+                          // Get previous homework state from rawStudent.lessons
                           let previousHwDone = null;
-                          if (rawStudent?.weeks && selectedWeek) {
-                            const weekNumber = getWeekNumber(selectedWeek);
-                            const weekData = rawStudent.weeks.find(w => w && w.week === weekNumber);
-                            if (weekData && weekData.hwDone !== undefined && weekData.hwDone !== null) {
-                              previousHwDone = weekData.hwDone;
+                          if (rawStudent?.lessons && selectedLesson && typeof rawStudent.lessons === 'object' && !Array.isArray(rawStudent.lessons)) {
+                            const lessonData = getStudentLesson(rawStudent.lessons, selectedLesson);
+                            if (lessonData && lessonData.hwDone !== undefined && lessonData.hwDone !== null) {
+                              previousHwDone = lessonData.hwDone;
                             }
                           }
                           
                           await apiClient.post('/api/scoring/calculate', {
                             studentId: student.id,
                             type: 'homework',
-                              week: weekNumber,
+                            lesson: selectedLesson,
+                            source: {
+                              kind: 'classroom_homework_status',
+                              id: selectedLesson,
+                              label: selectedLesson,
+                            },
                             data: { hwDone: "Not Completed", previousHwDone }
                           });
                           // Refetch student data to update score
@@ -2246,7 +2329,7 @@ export default function QR() {
                       const historyResponse = await apiClient.post('/api/scoring/get-last-history', {
                         studentId: student.id,
                         type: 'homework',
-                        week: weekNumber
+                        lesson: selectedLesson
                       });
                       
                       if (historyResponse.data.found && historyResponse.data.history) {
@@ -2265,12 +2348,12 @@ export default function QR() {
                     // Clear homework degree in database
                     updateHomeworkDegreeMutation.mutate({
                       id: student.id,
-                      homeworkDegreeData: { hwDegree: null, week: weekNumber }
+                      homeworkDegreeData: { homework_degree: null, lesson: selectedLesson }
                     });
                     // ✅ Reset to false when unchecked
                     updateHomeworkMutation.mutate({
                       id: student.id,
-                      homeworkData: { hwDone: false, week: weekNumber },
+                      homeworkData: { hwDone: false, lesson: selectedLesson },
                     }, {
                       onSuccess: async () => {
                         setHwSuccess('✅ Homework status reset');
@@ -2282,7 +2365,12 @@ export default function QR() {
                             await apiClient.post('/api/scoring/calculate', {
                               studentId: student.id,
                               type: 'homework',
-                              week: weekNumber,
+                              lesson: selectedLesson,
+                              source: {
+                                kind: 'classroom_homework_status',
+                                id: selectedLesson,
+                                label: selectedLesson,
+                              },
                               data: { 
                                 hwDone: false,
                                 previousHwDone: previousHwDone,
@@ -2310,13 +2398,13 @@ export default function QR() {
               <input
                 type="checkbox"
                 checked={noHomework}
-                disabled={!attendanceCenter || !selectedWeek || !(optimisticAttended !== null ? optimisticAttended : student.attended_the_session) || rawStudent?.account_state === 'Deactivated'}
+                disabled={!attendanceCenter || !selectedLesson || !(optimisticAttended !== null ? optimisticAttended : student.attended_the_session) || rawStudent?.account_state === 'Deactivated'}
                 onChange={async (e) => {
                   const checked = e.target.checked;
                   setNoHomework(checked);
 
-                  if (!student || !selectedWeek || !attendanceCenter) {
-                    setError('Please select student, week and center first.');
+                  if (!student || !selectedLesson || !attendanceCenter) {
+                    setError('Please select student, lesson and center first.');
                     setNoHomework(!checked);
                     return;
                   }
@@ -2338,7 +2426,10 @@ export default function QR() {
                     return;
                   }
 
-                  const weekNumber = getWeekNumber(selectedWeek);
+                  if (!selectedLesson) {
+                    setError('Please select a valid lesson.');
+                    return;
+                  }
 
                   if (checked) {
                     // Uncheck "Not Completed" if it's checked (mutually exclusive)
@@ -2351,12 +2442,12 @@ export default function QR() {
                     // Clear homework degree in database
                     updateHomeworkDegreeMutation.mutate({
                       id: student.id,
-                      homeworkDegreeData: { hwDegree: null, week: weekNumber }
+                      homeworkDegreeData: { homework_degree: null, lesson: selectedLesson }
                     });
                     // ✅ Save "No Homework" to DB
                     updateHomeworkMutation.mutate({
                       id: student.id,
-                      homeworkData: { hwDone: "No Homework", week: weekNumber },
+                      homeworkData: { hwDone: "No Homework", lesson: selectedLesson },
                     }, {
                       onSuccess: async () => {
                         setHwSuccess('✅ No Homework status set');
@@ -2373,12 +2464,12 @@ export default function QR() {
                     // Clear homework degree in database
                     updateHomeworkDegreeMutation.mutate({
                       id: student.id,
-                      homeworkDegreeData: { hwDegree: null, week: weekNumber }
+                      homeworkDegreeData: { homework_degree: null, lesson: selectedLesson }
                     });
                     // ✅ Reset to false when unchecked
                     updateHomeworkMutation.mutate({
                       id: student.id,
-                      homeworkData: { hwDone: false, week: weekNumber },
+                      homeworkData: { hwDone: false, lesson: selectedLesson },
                     }, {
                       onSuccess: () => {
                         setHwSuccess('✅ Homework status reset');
@@ -2391,14 +2482,16 @@ export default function QR() {
                 <span>NO HOMEWORK</span>
               </label>
             </div>
+
+            {/* Mark as H.W Done button */}
             {!noHomework && !notCompleted && (
               <button
                 className="toggle-btn"
                 onClick={toggleHwDone}
-                disabled={!attendanceCenter || !selectedWeek || !(optimisticAttended !== null ? optimisticAttended : student.attended_the_session) || rawStudent?.account_state === 'Deactivated'}
+                disabled={!attendanceCenter || !selectedLesson || !(optimisticAttended !== null ? optimisticAttended : student.attended_the_session) || rawStudent?.account_state === 'Deactivated'}
                 style={{
                   width: '100%',
-                  background: (!attendanceCenter || !selectedWeek)
+                  background: (!attendanceCenter || !selectedLesson)
                     ? 'linear-gradient(135deg, #28a745 0%, #20c997 100%)'
                     : !(optimisticAttended !== null ? optimisticAttended : student.attended_the_session)
                         ? ((optimisticHwDone !== null ? optimisticHwDone : student.hwDone) === true
@@ -2413,13 +2506,13 @@ export default function QR() {
                   fontWeight: 600,
                   fontSize: '1.1rem',
                   padding: '14px 0',
-                  cursor: (!attendanceCenter || !selectedWeek || !(optimisticAttended !== null ? optimisticAttended : student.attended_the_session)) ? 'not-allowed' : 'pointer',
-                  opacity: (!attendanceCenter || !selectedWeek || !(optimisticAttended !== null ? optimisticAttended : student.attended_the_session)) ? 0.5 : 1,
+                  cursor: (!attendanceCenter || !selectedLesson || !(optimisticAttended !== null ? optimisticAttended : student.attended_the_session)) ? 'not-allowed' : 'pointer',
+                  opacity: (!attendanceCenter || !selectedLesson || !(optimisticAttended !== null ? optimisticAttended : student.attended_the_session)) ? 0.5 : 1,
                   transition: 'all 0.3s ease'
                 }}
               >
                 {(() => {
-                  if (!attendanceCenter || !selectedWeek) {
+                  if (!attendanceCenter || !selectedLesson) {
                     return '✅ Mark as H.W Done';
                   }
                   const currentAttended = optimisticAttended !== null ? optimisticAttended : (student?.attended_the_session ?? false);
@@ -2481,16 +2574,16 @@ export default function QR() {
                     min="0"
                     className="manual-input quiz-input"
                     placeholder={
-                      (!selectedWeek || !attendanceCenter) ? "Select week and center first..." 
+                      (!selectedLesson || !attendanceCenter) ? "Select lesson and center first..." 
                       : !(optimisticAttended !== null ? optimisticAttended : student.attended_the_session) ? "Must attend first..."
                       : "degree ..."
                     }
                     value={homeworkDegree}
                     onChange={e => setHomeworkDegree(e.target.value)}
-                    disabled={updateHomeworkDegreeMutation.isPending || !selectedWeek || !attendanceCenter || !(optimisticAttended !== null ? optimisticAttended : student.attended_the_session) || rawStudent?.account_state === 'Deactivated'}
+                    disabled={updateHomeworkDegreeMutation.isPending || !selectedLesson || !attendanceCenter || !(optimisticAttended !== null ? optimisticAttended : student.attended_the_session) || rawStudent?.account_state === 'Deactivated'}
                     style={{
-                      opacity: (!selectedWeek || !attendanceCenter || !(optimisticAttended !== null ? optimisticAttended : student.attended_the_session)) ? 0.5 : 1,
-                      cursor: (!selectedWeek || !attendanceCenter || !(optimisticAttended !== null ? optimisticAttended : student.attended_the_session)) ? 'not-allowed' : 'text'
+                      opacity: (!selectedLesson || !attendanceCenter || !(optimisticAttended !== null ? optimisticAttended : student.attended_the_session)) ? 0.5 : 1,
+                      cursor: (!selectedLesson || !attendanceCenter || !(optimisticAttended !== null ? optimisticAttended : student.attended_the_session)) ? 'not-allowed' : 'text'
                     }}
                   />
                   <input
@@ -2499,7 +2592,7 @@ export default function QR() {
                     min="0"
                     className="manual-input quiz-input"
                     placeholder={
-                      (!selectedWeek || !attendanceCenter) ? "Select week and center first..." 
+                      (!selectedLesson || !attendanceCenter) ? "Select lesson and center first..." 
                       : !(optimisticAttended !== null ? optimisticAttended : student.attended_the_session) ? "Must attend first..."
                       : "out of ..."
                     }
@@ -2516,24 +2609,24 @@ export default function QR() {
                         console.log('Homework out of removed from session storage');
                       }
                     }}
-                    disabled={updateHomeworkDegreeMutation.isPending || !selectedWeek || !attendanceCenter || !(optimisticAttended !== null ? optimisticAttended : student.attended_the_session) || rawStudent?.account_state === 'Deactivated'}
+                    disabled={updateHomeworkDegreeMutation.isPending || !selectedLesson || !attendanceCenter || !(optimisticAttended !== null ? optimisticAttended : student.attended_the_session) || rawStudent?.account_state === 'Deactivated'}
                     style={{
-                      opacity: (!selectedWeek || !attendanceCenter || !(optimisticAttended !== null ? optimisticAttended : student.attended_the_session)) ? 0.5 : 1,
-                      cursor: (!selectedWeek || !attendanceCenter || !(optimisticAttended !== null ? optimisticAttended : student.attended_the_session)) ? 'not-allowed' : 'text'
+                      opacity: (!selectedLesson || !attendanceCenter || !(optimisticAttended !== null ? optimisticAttended : student.attended_the_session)) ? 0.5 : 1,
+                      cursor: (!selectedLesson || !attendanceCenter || !(optimisticAttended !== null ? optimisticAttended : student.attended_the_session)) ? 'not-allowed' : 'text'
                     }}
                   />
                 </div>
                 <button
                   type="submit"
                   className="fetch-btn quiz-btn"
-                  disabled={updateHomeworkDegreeMutation.isPending || (!selectedWeek || !attendanceCenter || !(optimisticAttended !== null ? optimisticAttended : student.attended_the_session) || rawStudent?.account_state === 'Deactivated') || ((homeworkDegree === "" && homeworkDegreeOutOf !== "") || (homeworkDegree !== "" && homeworkDegreeOutOf === ""))}
+                  disabled={updateHomeworkDegreeMutation.isPending || (!selectedLesson || !attendanceCenter || !(optimisticAttended !== null ? optimisticAttended : student.attended_the_session) || rawStudent?.account_state === 'Deactivated') || ((homeworkDegree === "" && homeworkDegreeOutOf !== "") || (homeworkDegree !== "" && homeworkDegreeOutOf === ""))}
                   style={{
-                    opacity: (!selectedWeek || !attendanceCenter || !(optimisticAttended !== null ? optimisticAttended : student.attended_the_session) || ((homeworkDegree === "" && homeworkDegreeOutOf !== "") || (homeworkDegree !== "" && homeworkDegreeOutOf === ""))) ? 0.5 : 1,
-                    cursor: (!selectedWeek || !attendanceCenter || !(optimisticAttended !== null ? optimisticAttended : student.attended_the_session) || ((homeworkDegree === "" && homeworkDegreeOutOf !== "") || (homeworkDegree !== "" && homeworkDegreeOutOf === ""))) ? 'not-allowed' : 'pointer',
+                    opacity: (!selectedLesson || !attendanceCenter || !(optimisticAttended !== null ? optimisticAttended : student.attended_the_session) || ((homeworkDegree === "" && homeworkDegreeOutOf !== "") || (homeworkDegree !== "" && homeworkDegreeOutOf === ""))) ? 0.5 : 1,
+                    cursor: (!selectedLesson || !attendanceCenter || !(optimisticAttended !== null ? optimisticAttended : student.attended_the_session) || ((homeworkDegree === "" && homeworkDegreeOutOf !== "") || (homeworkDegree !== "" && homeworkDegreeOutOf === ""))) ? 'not-allowed' : 'pointer',
                     transition: 'all 0.3s ease'
                   }}
                   title={
-                    !selectedWeek ? 'Please select a week first' 
+                    !selectedLesson ? 'Please select a lesson first' 
                     : !attendanceCenter ? 'Please select an attendance center first' 
                     : !(optimisticAttended !== null ? optimisticAttended : student.attended_the_session) ? 'Student must attend first'
                     : ((homeworkDegree === "" && homeworkDegreeOutOf !== "") || (homeworkDegree !== "" && homeworkDegreeOutOf === "")) ? 'Please fill both fields or leave both empty' 
@@ -2580,8 +2673,8 @@ export default function QR() {
                   }
                   if (checked) {
                     // Validate prerequisites
-                    if (!student || !selectedWeek || !attendanceCenter) {
-                      setError('Please select student, week and center first.');
+                    if (!student || !selectedLesson || !attendanceCenter) {
+                      setError('Please select student, lesson and center first.');
                       setNotQuized(false);
                       return;
                     }
@@ -2598,11 +2691,14 @@ export default function QR() {
                       return;
                     }
                     // Submit "didn't attend the quiz"
-                    const weekNumber = getWeekNumber(selectedWeek);
+                    if (!selectedLesson) {
+                    setError('Please select a valid lesson.');
+                    return;
+                  }
                     updateQuizGradeMutation.mutate(
                       {
                         id: student.id,
-                        quizData: { quizDegree: "Didn't Attend The Quiz", week: weekNumber }
+                        quizData: { quizDegree: "Didn't Attend The Quiz", lesson: selectedLesson }
                       },
                       {
                         onSuccess: async () => {
@@ -2632,7 +2728,12 @@ export default function QR() {
                             await apiClient.post('/api/scoring/calculate', {
                               studentId: student.id,
                               type: 'quiz',
-                              week: weekNumber,
+                              lesson: selectedLesson,
+                              source: {
+                                kind: 'classroom_quiz_degree',
+                                id: selectedLesson,
+                                label: selectedLesson,
+                              },
                               data: { percentage: 0, previousPercentage }
                             });
                             // Refetch student data to update score
@@ -2648,8 +2749,8 @@ export default function QR() {
                   } else {
                     // Unchecked: reset quiz degree to null and reverse the "Didn't Attend The Quiz" points
                     // Validate prerequisites
-                    if (!student || !selectedWeek || !attendanceCenter) {
-                      setError('Please select student, week and center first.');
+                    if (!student || !selectedLesson || !attendanceCenter) {
+                      setError('Please select student, lesson and center first.');
                       return;
                     }
                     const currentAttended = optimisticAttended !== null ? optimisticAttended : student.attended_the_session;
@@ -2657,7 +2758,10 @@ export default function QR() {
                       setError('Student must be marked as attended before quiz degree can be updated.');
                       return;
                     }
-                    const weekNumber = getWeekNumber(selectedWeek);
+                    if (!selectedLesson) {
+                    setError('Please select a valid lesson.');
+                    return;
+                  }
                     
                     // Get previous state from history
                     let previousPercentage = 0; // Default to 0% for "Didn't Attend The Quiz"
@@ -2666,7 +2770,7 @@ export default function QR() {
                       const historyResponse = await apiClient.post('/api/scoring/get-last-history', {
                         studentId: student.id,
                         type: 'quiz',
-                        week: weekNumber
+                        lesson: selectedLesson
                       });
                       
                       if (historyResponse.data.found && historyResponse.data.history) {
@@ -2695,7 +2799,7 @@ export default function QR() {
                     updateQuizGradeMutation.mutate(
                       {
                         id: student.id,
-                        quizData: { quizDegree: null, week: weekNumber }
+                        quizData: { quizDegree: null, lesson: selectedLesson }
                       },
                       {
                         onSuccess: async () => {
@@ -2707,7 +2811,12 @@ export default function QR() {
                               await apiClient.post('/api/scoring/calculate', {
                                 studentId: student.id,
                                 type: 'quiz',
-                                week: weekNumber,
+                                lesson: selectedLesson,
+                                source: {
+                                  kind: 'classroom_quiz_degree',
+                                  id: selectedLesson,
+                                  label: selectedLesson,
+                                },
                                 data: { 
                                   percentage: 0,
                                   previousPercentage: previousPercentage,
@@ -2743,8 +2852,8 @@ export default function QR() {
                   }
                   if (checked) {
                     // Validate prerequisites
-                    if (!student || !selectedWeek || !attendanceCenter) {
-                      setError('Please select student, week and center first.');
+                    if (!student || !selectedLesson || !attendanceCenter) {
+                      setError('Please select student, lesson and center first.');
                       setNoQuiz(false);
                       return;
                     }
@@ -2760,11 +2869,14 @@ export default function QR() {
                       setNoQuiz(false);
                       return;
                     }
-                    const weekNumber = getWeekNumber(selectedWeek);
+                    if (!selectedLesson) {
+                    setError('Please select a valid lesson.');
+                    return;
+                  }
                     updateQuizGradeMutation.mutate(
                       {
                         id: student.id,
-                        quizData: { quizDegree: 'No Quiz', week: weekNumber }
+                        quizData: { quizDegree: 'No Quiz', lesson: selectedLesson }
                       },
                       {
                         onSuccess: async () => {
@@ -2778,8 +2890,8 @@ export default function QR() {
                     );
                   } else {
                     // Unchecked: reset to null
-                    if (!student || !selectedWeek || !attendanceCenter) {
-                      setError('Please select student, week and center first.');
+                    if (!student || !selectedLesson || !attendanceCenter) {
+                      setError('Please select student, lesson and center first.');
                       return;
                     }
                     const currentAttended = optimisticAttended !== null ? optimisticAttended : student.attended_the_session;
@@ -2787,11 +2899,14 @@ export default function QR() {
                       setError('Student must be marked as attended before quiz degree can be updated.');
                       return;
                     }
-                    const weekNumber = getWeekNumber(selectedWeek);
+                    if (!selectedLesson) {
+                    setError('Please select a valid lesson.');
+                    return;
+                  }
                     updateQuizGradeMutation.mutate(
                       {
                         id: student.id,
-                        quizData: { quizDegree: null, week: weekNumber }
+                        quizData: { quizDegree: null, lesson: selectedLesson }
                       },
                       {
                         onSuccess: () => {
@@ -2814,16 +2929,16 @@ export default function QR() {
               min="0"
               className="manual-input quiz-input"
               placeholder={
-                (!selectedWeek || !attendanceCenter) ? "Select week and center first..." 
+                (!selectedLesson || !attendanceCenter) ? "Select lesson and center first..." 
                 : !(optimisticAttended !== null ? optimisticAttended : student.attended_the_session) ? "Must attend first..."
                 : "degree ..."
               }
               value={quizDegreeInput}
               onChange={e => setQuizDegreeInput(e.target.value)}
-              disabled={updateQuizGradeMutation.isPending || !selectedWeek || !attendanceCenter || !(optimisticAttended !== null ? optimisticAttended : student.attended_the_session) || rawStudent?.account_state === 'Deactivated'}
+              disabled={updateQuizGradeMutation.isPending || !selectedLesson || !attendanceCenter || !(optimisticAttended !== null ? optimisticAttended : student.attended_the_session) || rawStudent?.account_state === 'Deactivated'}
               style={{
-                opacity: (!selectedWeek || !attendanceCenter || !(optimisticAttended !== null ? optimisticAttended : student.attended_the_session)) ? 0.5 : 1,
-                cursor: (!selectedWeek || !attendanceCenter || !(optimisticAttended !== null ? optimisticAttended : student.attended_the_session)) ? 'not-allowed' : 'text'
+                opacity: (!selectedLesson || !attendanceCenter || !(optimisticAttended !== null ? optimisticAttended : student.attended_the_session)) ? 0.5 : 1,
+                cursor: (!selectedLesson || !attendanceCenter || !(optimisticAttended !== null ? optimisticAttended : student.attended_the_session)) ? 'not-allowed' : 'text'
               }}
             />
             <input
@@ -2832,7 +2947,7 @@ export default function QR() {
               min="0"
               className="manual-input quiz-input"
               placeholder={
-                (!selectedWeek || !attendanceCenter) ? "Select week and center first..." 
+                (!selectedLesson || !attendanceCenter) ? "Select lesson and center first..." 
                 : !(optimisticAttended !== null ? optimisticAttended : student.attended_the_session) ? "Must attend first..."
                 : "out of ..."
               }
@@ -2849,24 +2964,24 @@ export default function QR() {
                   console.log('Quiz out of removed from session storage');
                 }
               }}
-              disabled={updateQuizGradeMutation.isPending || !selectedWeek || !attendanceCenter || !(optimisticAttended !== null ? optimisticAttended : student.attended_the_session) || rawStudent?.account_state === 'Deactivated'}
+              disabled={updateQuizGradeMutation.isPending || !selectedLesson || !attendanceCenter || !(optimisticAttended !== null ? optimisticAttended : student.attended_the_session) || rawStudent?.account_state === 'Deactivated'}
               style={{
-                opacity: (!selectedWeek || !attendanceCenter || !(optimisticAttended !== null ? optimisticAttended : student.attended_the_session)) ? 0.5 : 1,
-                cursor: (!selectedWeek || !attendanceCenter || !(optimisticAttended !== null ? optimisticAttended : student.attended_the_session)) ? 'not-allowed' : 'text'
+                opacity: (!selectedLesson || !attendanceCenter || !(optimisticAttended !== null ? optimisticAttended : student.attended_the_session)) ? 0.5 : 1,
+                cursor: (!selectedLesson || !attendanceCenter || !(optimisticAttended !== null ? optimisticAttended : student.attended_the_session)) ? 'not-allowed' : 'text'
               }}
             />
             </div>
             <button
               type="submit"
               className="fetch-btn quiz-btn"
-              disabled={updateQuizGradeMutation.isPending || quizDegreeInput === "" || quizDegreeOutOf === "" || !selectedWeek || !attendanceCenter || !(optimisticAttended !== null ? optimisticAttended : student.attended_the_session) || rawStudent?.account_state === 'Deactivated'}
+              disabled={updateQuizGradeMutation.isPending || quizDegreeInput === "" || quizDegreeOutOf === "" || !selectedLesson || !attendanceCenter || !(optimisticAttended !== null ? optimisticAttended : student.attended_the_session) || rawStudent?.account_state === 'Deactivated'}
               style={{
-                opacity: (!selectedWeek || !attendanceCenter || quizDegreeInput === "" || quizDegreeOutOf === "" || !(optimisticAttended !== null ? optimisticAttended : student.attended_the_session)) ? 0.5 : 1,
-                cursor: (!selectedWeek || !attendanceCenter || quizDegreeInput === "" || quizDegreeOutOf === "" || !(optimisticAttended !== null ? optimisticAttended : student.attended_the_session)) ? 'not-allowed' : 'pointer',
+                opacity: (!selectedLesson || !attendanceCenter || quizDegreeInput === "" || quizDegreeOutOf === "" || !(optimisticAttended !== null ? optimisticAttended : student.attended_the_session)) ? 0.5 : 1,
+                cursor: (!selectedLesson || !attendanceCenter || quizDegreeInput === "" || quizDegreeOutOf === "" || !(optimisticAttended !== null ? optimisticAttended : student.attended_the_session)) ? 'not-allowed' : 'pointer',
                 transition: 'all 0.3s ease'
               }}
               title={
-                !selectedWeek ? 'Please select a week first' 
+                !selectedLesson ? 'Please select a lesson first' 
                 : !attendanceCenter ? 'Please select an attendance center first' 
                 : !(optimisticAttended !== null ? optimisticAttended : student.attended_the_session) ? 'Student must attend first'
                 : (quizDegreeInput === "" || quizDegreeOutOf === "") ? 'Please fill both fields' 
@@ -2879,29 +2994,28 @@ export default function QR() {
           )}
           {/* quiz success shown below the student card */}
 
-          {/* Weekly Comment */}
+          {/* Parent Comment */}
           <div className="info-label" style={{ marginBottom: 6, marginTop: 10, textAlign: 'start', fontWeight: 600 }}>
-            Comment (optional)
+            Parent Comment (optional)
           </div>
           <div className="quiz-row" style={{ alignItems: 'stretch' }}>
             <textarea
               className="manual-input"
-              placeholder={(!selectedWeek || !attendanceCenter) ? "Select week and center first..." : "Write a comment for this student"}
-              value={weekComment}
-              onChange={(e) => setWeekComment(e.target.value)}
-              disabled={!selectedWeek || !attendanceCenter}
+              placeholder={(!selectedLesson || !attendanceCenter) ? "Select lesson and center first..." : "Write a comment for this student"}
+              value={lessonComment}
+              onChange={(e) => setLessonComment(e.target.value)}
+              disabled={!selectedLesson || !attendanceCenter}
               rows={3}
-              style={{ width: '100%', resize: 'vertical', opacity: (!selectedWeek || !attendanceCenter) ? 0.5 : 1, cursor: (!selectedWeek || !attendanceCenter) ? 'not-allowed' : 'text' }}
+              style={{ width: '100%', resize: 'vertical', opacity: (!selectedLesson || !attendanceCenter) ? 0.5 : 1, cursor: (!selectedLesson || !attendanceCenter) ? 'not-allowed' : 'text' }}
             />
           </div>
           <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 8 }}>
             <button
               className="fetch-btn"
               onClick={() => {
-                if (!student || !selectedWeek || !attendanceCenter) return;
-                const weekNumber = getWeekNumber(selectedWeek);
+                if (!student || !selectedLesson || !attendanceCenter) return;
                 updateWeekCommentMutation.mutate(
-                  { id: student.id, comment: weekComment, week: weekNumber },
+                  { id: student.id, comment: lessonComment, lesson: selectedLesson },
                   {
                     onSuccess: () => {
                       setCommentSuccess('✅ Comment set successfully');
@@ -2909,8 +3023,8 @@ export default function QR() {
                   }
                 );
               }}
-              disabled={!student || !selectedWeek || !attendanceCenter || updateWeekCommentMutation.isPending || rawStudent?.account_state === 'Deactivated'}
-              style={{ opacity: (!student || !selectedWeek || !attendanceCenter) ? 0.5 : 1 }}
+              disabled={!student || !selectedLesson || !attendanceCenter || updateWeekCommentMutation.isPending || rawStudent?.account_state === 'Deactivated'}
+              style={{ opacity: (!student || !selectedLesson || !attendanceCenter) ? 0.5 : 1 }}
             >
               {updateWeekCommentMutation.isPending ? 'Saving...' : 'Save Comment'}
             </button>
@@ -2953,7 +3067,7 @@ export default function QR() {
 
 
       {/* Success messages displayed right after the student card */}
-      {student && selectedWeek && attendanceCenter && (quizSuccess || commentSuccess || hwSuccess || attendanceSuccess || homeworkDegreeSuccess) && (
+      {student && selectedLesson && attendanceCenter && (quizSuccess || commentSuccess || hwSuccess || attendanceSuccess || homeworkDegreeSuccess) && (
         <div style={{ maxWidth: 600, margin: '12px auto 0 auto' }}>
           {quizSuccess && (
             <div className="success-message">

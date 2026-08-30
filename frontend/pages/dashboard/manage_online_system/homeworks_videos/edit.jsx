@@ -1,9 +1,10 @@
+import { useNationalSystem, getCourseFieldLabels } from '../../../../lib/api/system';
 import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/router";
 import Title from '../../../../components/Title';
-import AttendanceWeekSelect from '../../../../components/AttendanceWeekSelect';
-import GradeSelect from '../../../../components/GradeSelect';
-import OnlineSessionPaymentStateSelect from '../../../../components/OnlineSessionPaymentStateSelect';
+import AttendanceLessonSelect from '../../../../components/AttendancelessonSelect';
+import CourseSelect from '../../../../components/CourseSelect';
+import CourseTypeSelect from '../../../../components/CourseTypeSelect';
 import VideoInput from '../../../../components/VideoInput';
 import AccountStateSelect from '../../../../components/AccountStateSelect';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
@@ -16,6 +17,18 @@ function extractYouTubeId(url) {
     /(?:youtu\.be\/|youtube\.com\/(?:watch\?v=|embed\/))([a-zA-Z0-9_-]{11})/
   );
   return match ? match[1] : null;
+}
+
+function extractZoomMeetingId(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  const noSpaces = raw.replace(/\s+/g, '');
+  if (/^[0-9]+$/.test(noSpaces)) return noSpaces;
+  const downloadMatch = noSpaces.match(/\/rec\/download\/([^/?#]+)/i);
+  if (downloadMatch?.[1]) return decodeURIComponent(downloadMatch[1]);
+  const match = noSpaces.match(/zoom\.us\/(?:j|wc\/j(?:oin)?)\/([0-9]+)/i);
+  if (match?.[1]) return match[1];
+  return noSpaces;
 }
 
 // Extract week number from week string (e.g., "week 01" -> 1)
@@ -32,6 +45,8 @@ function weekNumberToString(weekNumber) {
 }
 
 export default function EditHomeworkVideo() {
+  const isNational = useNationalSystem();
+  const courseLabels = getCourseFieldLabels(isNational);
   const router = useRouter();
   const { id } = router.query;
   const queryClient = useQueryClient();
@@ -43,29 +58,38 @@ export default function EditHomeworkVideo() {
       youtube_url: '',
       video_source: 'youtube',
       r2_key: '',
+      zoom_meeting_id: '',
+      google_meet_id: '',
       upload_file_name: '',
       upload_progress: 0,
-      upload_status: ''
+      upload_status: 'idle',
     }]
   });
-  const [selectedGrade, setSelectedGrade] = useState('');
-  const [gradeDropdownOpen, setGradeDropdownOpen] = useState(false);
-  const [selectedWeek, setSelectedWeek] = useState('');
-  const [weekDropdownOpen, setWeekDropdownOpen] = useState(false);
+  const [selectedCourse, setSelectedCourse] = useState('');
+  const [courseDropdownOpen, setCourseDropdownOpen] = useState(false);
+  const [selectedCourseType, setSelectedCourseType] = useState('');
+  const [courseTypeDropdownOpen, setCourseTypeDropdownOpen] = useState(false);
+  const [selectedLesson, setSelectedLesson] = useState('');
+  const [lessonDropdownOpen, setLessonDropdownOpen] = useState(false);
   const [paymentState, setPaymentState] = useState('paid');
   const [accountState, setAccountState] = useState('Activated');
   const [errors, setErrors] = useState({});
   const [isLoadingSession, setIsLoadingSession] = useState(true);
   const errorTimeoutRef = useRef(null);
 
-  // Fetch system config
+  // Fetch system config to check if R2 is enabled
   const { data: systemConfig } = useQuery({
     queryKey: ['system-config'],
     queryFn: async () => {
       const response = await apiClient.get('/api/system/config');
       return response.data;
     },
+    staleTime: Infinity,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+    refetchOnMount: false,
   });
+
   const showUploadTab = systemConfig?.cloudflare_r2 === true;
 
   // Fetch session data
@@ -75,6 +99,10 @@ export default function EditHomeworkVideo() {
       const response = await apiClient.get('/api/homeworks_videos');
       return response.data;
     },
+    staleTime: Infinity,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+    refetchOnMount: false,
   });
 
   const sessions = sessionsData?.sessions || [];
@@ -94,11 +122,37 @@ export default function EditHomeworkVideo() {
           videos.push({
             video_name: selectedSession[`video_name_${videoIndex}`] || '',
             youtube_url: '',
-            video_source: 'upload',
+            video_source: 'r2',
             r2_key: videoId,
-            upload_file_name: videoId.split('/').pop() || '',
+            zoom_meeting_id: '',
+            google_meet_id: '',
+            upload_file_name: selectedSession[`video_name_${videoIndex}`] || 'Uploaded video',
             upload_progress: 100,
-            upload_status: 'complete'
+            upload_status: 'done',
+          });
+        } else if (videoType === 'zoom') {
+          videos.push({
+            video_name: selectedSession[`video_name_${videoIndex}`] || '',
+            youtube_url: '',
+            video_source: 'zoom',
+            r2_key: '',
+            zoom_meeting_id: videoId,
+            google_meet_id: '',
+            upload_file_name: '',
+            upload_progress: 0,
+            upload_status: 'idle',
+          });
+        } else if (videoType === 'google_meet') {
+          videos.push({
+            video_name: selectedSession[`video_name_${videoIndex}`] || '',
+            youtube_url: '',
+            video_source: 'google_meet',
+            r2_key: '',
+            zoom_meeting_id: '',
+            google_meet_id: videoId,
+            upload_file_name: '',
+            upload_progress: 0,
+            upload_status: 'idle',
           });
         } else {
           videos.push({
@@ -106,9 +160,11 @@ export default function EditHomeworkVideo() {
             youtube_url: `https://www.youtube.com/watch?v=${videoId}`,
             video_source: 'youtube',
             r2_key: '',
+            zoom_meeting_id: '',
+            google_meet_id: '',
             upload_file_name: '',
             upload_progress: 0,
-            upload_status: ''
+            upload_status: 'idle',
           });
         }
         videoIndex++;
@@ -122,14 +178,17 @@ export default function EditHomeworkVideo() {
           youtube_url: '',
           video_source: 'youtube',
           r2_key: '',
+          zoom_meeting_id: '',
+          google_meet_id: '',
           upload_file_name: '',
           upload_progress: 0,
-          upload_status: ''
+          upload_status: 'idle',
         }]
       });
-      setSelectedWeek(selectedSession.week ? weekNumberToString(selectedSession.week) : '');
-      setSelectedGrade(selectedSession.grade || '');
-      setPaymentState(selectedSession.payment_state || 'paid');
+      setSelectedCourse(selectedSession.course || '');
+      setSelectedCourseType(selectedSession.courseType || '');
+      setSelectedLesson(selectedSession.lesson || '');
+      setPaymentState(selectedSession.payment_state || 'free_if_homework_done');
       setAccountState(selectedSession.state || selectedSession.account_state || 'Activated');
       setIsLoadingSession(false);
     }
@@ -177,9 +236,11 @@ export default function EditHomeworkVideo() {
         youtube_url: '',
         video_source: 'youtube',
         r2_key: '',
+        zoom_meeting_id: '',
+        google_meet_id: '',
         upload_file_name: '',
         upload_progress: 0,
-        upload_status: ''
+        upload_status: 'idle',
       }]
     }));
   };
@@ -188,17 +249,16 @@ export default function EditHomeworkVideo() {
   const removeVideo = (index) => {
     setFormData(prev => {
       if (prev.videos.length <= 1) return prev;
-      return { ...prev, videos: prev.videos.filter((_, i) => i !== index) };
+      const newVideos = prev.videos.filter((_, i) => i !== index);
+      return { ...prev, videos: newVideos };
     });
-    setErrors(prev => {
-      const newErrors = { ...prev };
-      Object.keys(newErrors).forEach(key => {
-        if (key.startsWith(`video_${index}_`)) {
-          delete newErrors[key];
-        }
-      });
-      return newErrors;
+    const newErrors = { ...errors };
+    Object.keys(newErrors).forEach(key => {
+      if (key.startsWith(`video_${index}_`)) {
+        delete newErrors[key];
+      }
     });
+    setErrors(newErrors);
   };
 
   // Handle video name change
@@ -214,16 +274,31 @@ export default function EditHomeworkVideo() {
   const handleYouTubeUrlChange = (index, url) => {
     setFormData(prev => {
       const newVideos = [...prev.videos];
-      newVideos[index] = { ...newVideos[index], youtube_url: url };
+      newVideos[index] = {
+        ...newVideos[index],
+        youtube_url: url,
+        video_source: 'youtube',
+        r2_key: '',
+        google_meet_id: '',
+        upload_file_name: '',
+        upload_progress: 0,
+        upload_status: 'idle',
+      };
       return { ...prev, videos: newVideos };
     });
     if (errors[`video_${index}_youtube_url`]) {
-      setErrors(prev => {
-        const newErrors = { ...prev };
-        delete newErrors[`video_${index}_youtube_url`];
-        return newErrors;
-      });
+      const newErrors = { ...errors };
+      delete newErrors[`video_${index}_youtube_url`];
+      setErrors(newErrors);
     }
+  };
+
+  const handleClearYouTubeUrl = (index) => {
+    setFormData(prev => {
+      const newVideos = [...prev.videos];
+      newVideos[index] = { ...newVideos[index], youtube_url: '' };
+      return { ...prev, videos: newVideos };
+    });
   };
 
   // Handle R2 upload complete
@@ -234,23 +309,115 @@ export default function EditHomeworkVideo() {
         ...newVideos[index],
         r2_key: r2Key,
         upload_file_name: fileName,
-        upload_progress: 100,
-        upload_status: 'complete',
-        video_source: 'upload'
+        video_source: r2Key ? 'r2' : 'youtube',
+        ...(r2Key ? {
+          youtube_url: '',
+          zoom_meeting_id: '',
+          google_meet_id: '',
+          upload_status: 'done',
+          upload_progress: 100,
+        } : {
+          upload_status: 'idle',
+          upload_progress: 0,
+        }),
       };
       return { ...prev, videos: newVideos };
     });
-    setErrors(prev => {
-      const newErrors = { ...prev };
-      delete newErrors[`video_${index}_youtube_url`];
-      return newErrors;
+    if (errors[`video_${index}_upload`]) {
+      const newErrors = { ...errors };
+      delete newErrors[`video_${index}_upload`];
+      setErrors(newErrors);
+    }
+  };
+
+  const handleClearR2Upload = (index) => {
+    setFormData(prev => {
+      const newVideos = [...prev.videos];
+      newVideos[index] = {
+        ...newVideos[index],
+        r2_key: '',
+        upload_file_name: '',
+        upload_progress: 0,
+        upload_status: 'idle',
+      };
+      return { ...prev, videos: newVideos };
+    });
+  };
+
+  const handleZoomMeetingIdChange = (index, meetingId) => {
+    setFormData(prev => {
+      const newVideos = [...prev.videos];
+      newVideos[index] = {
+        ...newVideos[index],
+        zoom_meeting_id: meetingId,
+        video_source: 'zoom',
+        youtube_url: '',
+        r2_key: '',
+        google_meet_id: '',
+        upload_file_name: '',
+        upload_progress: 0,
+        upload_status: 'idle',
+      };
+      return { ...prev, videos: newVideos };
+    });
+    if (errors[`video_${index}_zoom_meeting_id`]) {
+      const newErrors = { ...errors };
+      delete newErrors[`video_${index}_zoom_meeting_id`];
+      setErrors(newErrors);
+    }
+  };
+
+  const handleClearZoomMeetingId = (index) => {
+    setFormData(prev => {
+      const newVideos = [...prev.videos];
+      newVideos[index] = { ...newVideos[index], zoom_meeting_id: '', google_meet_id: '' };
+      return { ...prev, videos: newVideos };
+    });
+  };
+
+  const handleGoogleMeetIdChange = (index, meetId) => {
+    setFormData(prev => {
+      const newVideos = [...prev.videos];
+      newVideos[index] = {
+        ...newVideos[index],
+        google_meet_id: meetId,
+        video_source: 'google_meet',
+        youtube_url: '',
+        r2_key: '',
+        zoom_meeting_id: '',
+        upload_file_name: '',
+        upload_progress: 0,
+        upload_status: 'idle',
+      };
+      return { ...prev, videos: newVideos };
+    });
+    if (errors[`video_${index}_google_meet_id`]) {
+      const newErrors = { ...errors };
+      delete newErrors[`video_${index}_google_meet_id`];
+      setErrors(newErrors);
+    }
+  };
+
+  const handleClearGoogleMeetId = (index) => {
+    setFormData(prev => {
+      const newVideos = [...prev.videos];
+      newVideos[index] = { ...newVideos[index], google_meet_id: '' };
+      return { ...prev, videos: newVideos };
+    });
+  };
+
+  const handleVideoSourceChange = (index, source) => {
+    setFormData(prev => {
+      const newVideos = [...prev.videos];
+      newVideos[index] = { ...newVideos[index], video_source: source };
+      return { ...prev, videos: newVideos };
     });
   };
 
   // Handle form input change
   const handleInputChange = (e) => {
     const { name, value } = e.target;
-    setFormData({ ...formData, [name]: value });
+    setFormData(prev => ({ ...prev, [name]: value }));
     if (errors[name]) {
       setErrors({ ...errors, [name]: '' });
     }
@@ -264,15 +431,16 @@ export default function EditHomeworkVideo() {
     e.preventDefault();
     const newErrors = {};
 
-    if (!selectedGrade || selectedGrade.trim() === '') {
-      newErrors.grade = '❌ Grade is required';
+    if (!selectedCourse || selectedCourse.trim() === '') {
+      newErrors.course = `❌ ${courseLabels.course} is required`;
     }
 
-    if (!selectedWeek || selectedWeek.trim() === '') {
-      newErrors.week = '❌ Attendance week is required';
+    if (!selectedLesson || selectedLesson.trim() === '') {
+      newErrors.lesson = '❌ Lesson is required';
     }
 
-    if (!paymentState || (paymentState !== 'paid' && paymentState !== 'free' && paymentState !== 'free_if_attended')) {
+    const allowedPaymentEdit = ['paid', 'free', 'free_if_homework_done', 'free_if_attended'];
+    if (!paymentState || !allowedPaymentEdit.includes(paymentState)) {
       newErrors.paymentState = '❌ Video Payment State is required';
     }
 
@@ -285,8 +453,14 @@ export default function EditHomeworkVideo() {
       newErrors.accountState = '❌ Account State is required';
     }
 
+    // Validate videos - at least one must have either youtube_url or r2_key
     const validVideos = formData.videos.filter(video => {
-      return (video.r2_key && video.r2_key.trim()) || (video.youtube_url && video.youtube_url.trim());
+      return (
+        (video.youtube_url && video.youtube_url.trim()) ||
+        (video.r2_key && video.r2_key.trim()) ||
+        (video.zoom_meeting_id && video.zoom_meeting_id.trim()) ||
+        (video.google_meet_id && video.google_meet_id.trim())
+      );
     });
 
     if (validVideos.length === 0) {
@@ -296,15 +470,26 @@ export default function EditHomeworkVideo() {
     // Validate each video
     for (let index = 0; index < formData.videos.length; index++) {
       const video = formData.videos[index];
-      if (video.r2_key && video.r2_key.trim()) {
-        // R2 video is valid, no further check needed
-      } else if (video.youtube_url && video.youtube_url.trim()) {
+      const hasYoutube = video.youtube_url && video.youtube_url.trim();
+      const hasR2 = video.r2_key && video.r2_key.trim();
+      const hasZoom = video.zoom_meeting_id && video.zoom_meeting_id.trim();
+      const hasGoogleMeet = video.google_meet_id && video.google_meet_id.trim();
+
+      if (hasYoutube) {
         const videoId = extractYouTubeId(video.youtube_url.trim());
         if (!videoId) {
           newErrors[`video_${index}_youtube_url`] = '❌ Invalid YouTube URL';
         }
-      } else if (validVideos.length === 0 || formData.videos.some((v, i) => i !== index && ((v.r2_key && v.r2_key.trim()) || (v.youtube_url && v.youtube_url.trim())))) {
-        newErrors[`video_${index}_youtube_url`] = '❌ Video URL or upload is required';
+      } else if (hasZoom) {
+        if (!extractZoomMeetingId(video.zoom_meeting_id).trim()) {
+          newErrors[`video_${index}_zoom_meeting_id`] = '❌ Invalid Zoom meeting value';
+        }
+      } else if (hasGoogleMeet) {
+        if (!video.google_meet_id.trim()) {
+          newErrors[`video_${index}_google_meet_id`] = '❌ Google Meet ID is required';
+        }
+      } else if (!hasR2 && validVideos.length === 0) {
+        newErrors[`video_${index}_youtube_url`] = '❌ YouTube URL is required';
       }
     }
 
@@ -313,19 +498,18 @@ export default function EditHomeworkVideo() {
       return;
     }
 
-    const weekNumber = extractWeekNumber(selectedWeek);
-    if (!weekNumber) {
-      newErrors.week = '❌ Invalid week selection';
-      setErrors(newErrors);
-      return;
-    }
-
-    // Check for duplicate grade and week combination (exclude current session)
+    // Check for duplicate course, courseType, and lesson combination (exclude current session)
     const duplicateSession = sessions.find(
-      session => session._id !== id && session.grade === selectedGrade.trim() && session.week === weekNumber
+      session => {
+        if (session._id === id) return false;
+        const courseMatch = session.course === selectedCourse.trim();
+        const courseTypeMatch = (session.courseType || '').toLowerCase() === (selectedCourseType || '').toLowerCase();
+        const lessonMatch = session.lesson === selectedLesson.trim();
+        return courseMatch && courseTypeMatch && lessonMatch;
+      }
     );
     if (duplicateSession) {
-      newErrors.general = '❌ A session with this grade and week already exists';
+      newErrors.general = '❌ A session with this course, course type, and lesson already exists';
       setErrors(newErrors);
       return;
     }
@@ -351,19 +535,42 @@ export default function EditHomeworkVideo() {
             video_name: video.video_name && video.video_name.trim() ? video.video_name.trim() : null,
           });
         }
+      } else if (video.zoom_meeting_id && video.zoom_meeting_id.trim()) {
+        const meetingId = extractZoomMeetingId(video.zoom_meeting_id);
+        if (!meetingId) {
+          continue;
+        }
+        finalVideoData.push({
+          video_type: 'zoom',
+          video_id: meetingId,
+          video_name: video.video_name && video.video_name.trim() ? video.video_name.trim() : null,
+        });
+      } else if (video.google_meet_id && video.google_meet_id.trim()) {
+        finalVideoData.push({
+          video_type: 'google_meet',
+          video_id: video.google_meet_id.trim(),
+          video_name: video.video_name && video.video_name.trim() ? video.video_name.trim() : null,
+        });
       }
     }
 
-    // Submit form
-    updateSessionMutation.mutate({
+    // Prepare payload
+    const payload = {
       name: formData.name.trim(),
-      grade: selectedGrade.trim(),
-      week: weekNumber,
+      course: selectedCourse.trim(),
+      courseType: selectedCourseType.trim() || null,
+      lesson: selectedLesson.trim(),
       videos: finalVideoData,
       description: formData.description.trim() || null,
-      payment_state: paymentState,
-      state: accountState && accountState !== '' ? accountState : 'Activated',
-    });
+      payment_state: paymentState
+    };
+
+    if (accountState) {
+      payload.state = accountState;
+    }
+
+    // Submit form
+    updateSessionMutation.mutate(payload);
   };
 
   if (isLoadingSession || !selectedSession) {
@@ -402,56 +609,98 @@ export default function EditHomeworkVideo() {
           marginTop: '24px'
         }}>
           <form onSubmit={handleSubmit}>
-            {/* Video Grade */}
+            {/* Video {courseLabels.course} */}
             <div style={{ marginBottom: '20px' }}>
               <label style={{ display: 'block', marginBottom: '8px', color: '#333', fontWeight: '500' }}>
-                Video Grade <span style={{ color: 'red' }}>*</span>
+                Video {courseLabels.course} <span style={{ color: 'red' }}>*</span>
               </label>
-              <GradeSelect
-                selectedGrade={selectedGrade}
-                onGradeChange={(grade) => {
-                  setSelectedGrade(grade);
-                  if (errors.grade) {
-                    setErrors({ ...errors, grade: '' });
+              <CourseSelect
+                selectedGrade={selectedCourse}
+                onGradeChange={(course) => {
+                  setSelectedCourse(course);
+                  if (errors.course) {
+                    setErrors({ ...errors, course: '' });
                   }
                 }}
-                isOpen={gradeDropdownOpen}
-                onToggle={() => setGradeDropdownOpen(!gradeDropdownOpen)}
-                onClose={() => setGradeDropdownOpen(false)}
+                isOpen={courseDropdownOpen}
+                onToggle={() => setCourseDropdownOpen(!courseDropdownOpen)}
+                onClose={() => setCourseDropdownOpen(false)}
                 required={true}
+                showAllOption={true}
               />
-              {errors.grade && (
+              {errors.course && (
                 <div style={{ color: '#dc3545', fontSize: '0.875rem', marginTop: '4px' }}>
-                  {errors.grade}
+                  {errors.course}
                 </div>
               )}
             </div>
 
-            {/* Video Week */}
-            <div style={{ marginBottom: '20px' }}>
+            {/* Video Course Type */}
+            {courseLabels.showCourseType && (
+<div style={{ marginBottom: '20px' }}>
               <label style={{ display: 'block', marginBottom: '8px', color: '#333', fontWeight: '500' }}>
-                Video Week <span style={{ color: 'red' }}>*</span>
+                Video Course Type
               </label>
-              <AttendanceWeekSelect
-                selectedWeek={selectedWeek}
-                onWeekChange={(week) => {
-                  setSelectedWeek(week);
-                  if (errors.week) {
-                    setErrors({ ...errors, week: '' });
+              <CourseTypeSelect
+                selectedCourseType={selectedCourseType}
+                onCourseTypeChange={(courseType) => {
+                  setSelectedCourseType(courseType);
+                  if (errors.courseType) {
+                    setErrors({ ...errors, courseType: '' });
                   }
                 }}
-                isOpen={weekDropdownOpen}
-                onToggle={() => setWeekDropdownOpen(!weekDropdownOpen)}
-                onClose={() => setWeekDropdownOpen(false)}
-                required={true}
-                placeholder="Select Video Week"
+                isOpen={courseTypeDropdownOpen}
+                onToggle={() => setCourseTypeDropdownOpen(!courseTypeDropdownOpen)}
+                onClose={() => setCourseTypeDropdownOpen(false)}
               />
-              {errors.week && (
+              {errors.courseType && (
                 <div style={{ color: '#dc3545', fontSize: '0.875rem', marginTop: '4px' }}>
-                  {errors.week}
+                  {errors.courseType}
                 </div>
               )}
             </div>
+)}
+
+            {/* Video Lesson */}
+            <div style={{ marginBottom: '20px' }}>
+              <label style={{ display: 'block', marginBottom: '8px', color: '#333', fontWeight: '500' }}>
+                Video Lesson <span style={{ color: 'red' }}>*</span>
+              </label>
+              <AttendanceLessonSelect
+                selectedLesson={selectedLesson}
+                onLessonChange={(lesson) => {
+                  setSelectedLesson(lesson);
+                  if (errors.lesson) {
+                    setErrors({ ...errors, lesson: '' });
+                  }
+                }}
+                isOpen={lessonDropdownOpen}
+                onToggle={() => setLessonDropdownOpen(!lessonDropdownOpen)}
+                onClose={() => setLessonDropdownOpen(false)}
+                required={true}
+                placeholder="Select Video Lesson"
+              />
+              {errors.lesson && (
+                <div style={{ color: '#dc3545', fontSize: '0.875rem', marginTop: '4px' }}>
+                  {errors.lesson}
+                </div>
+              )}
+            </div>
+
+            {/* Video State */}
+            <AccountStateSelect
+              value={accountState}
+              onChange={setAccountState}
+              label="Video State"
+              placeholder="Select Video State"
+              required={true}
+              error={errors.accountState}
+            />
+            {errors.accountState && (
+              <div style={{ color: '#dc3545', fontSize: '0.875rem', marginTop: '4px' }}>
+                {errors.accountState}
+              </div>
+            )}
 
             {/* Video Payment State Radio */}
             <div style={{ marginBottom: '20px' }}>
@@ -490,6 +739,22 @@ export default function EditHomeworkVideo() {
                     style={{ marginRight: '10px', width: '18px', height: '18px', cursor: 'pointer' }}
                   />
                   <span style={{ fontWeight: '500' }}>Free</span>
+                </label>
+                <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer', padding: '10px', borderRadius: '8px', border: paymentState === 'free_if_homework_done' ? '2px solid #1FA8DC' : '2px solid #e9ecef', backgroundColor: paymentState === 'free_if_homework_done' ? '#f0f8ff' : 'white' }}>
+                  <input
+                    type="radio"
+                    name="payment_state"
+                    value="free_if_homework_done"
+                    checked={paymentState === 'free_if_homework_done'}
+                    onChange={(e) => {
+                      setPaymentState(e.target.value);
+                      if (errors.paymentState) {
+                        setErrors({ ...errors, paymentState: '' });
+                      }
+                    }}
+                    style={{ marginRight: '10px', width: '18px', height: '18px', cursor: 'pointer' }}
+                  />
+                  <span style={{ fontWeight: '500' }}>Free if submitted this lesson homework</span>
                 </label>
                 <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer', padding: '10px', borderRadius: '8px', border: paymentState === 'free_if_attended' ? '2px solid #1FA8DC' : '2px solid #e9ecef', backgroundColor: paymentState === 'free_if_attended' ? '#f0f8ff' : 'white' }}>
                   <input
@@ -555,7 +820,14 @@ export default function EditHomeworkVideo() {
                   video={video}
                   onVideoNameChange={handleVideoNameChange}
                   onYouTubeUrlChange={handleYouTubeUrlChange}
+                  onZoomMeetingIdChange={handleZoomMeetingIdChange}
+                  onClearYouTubeUrl={handleClearYouTubeUrl}
+                  onClearZoomMeetingId={handleClearZoomMeetingId}
+                  onGoogleMeetIdChange={handleGoogleMeetIdChange}
+                  onClearGoogleMeetId={handleClearGoogleMeetId}
                   onR2Upload={handleR2Upload}
+                  onClearR2Upload={handleClearR2Upload}
+                  onVideoSourceChange={handleVideoSourceChange}
                   onRemove={removeVideo}
                   canRemove={formData.videos.length > 1}
                   errors={errors}
@@ -741,4 +1013,3 @@ export default function EditHomeworkVideo() {
     </div>
   );
 }
-

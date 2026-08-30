@@ -1,13 +1,16 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import { useRouter } from "next/router";
 import Title from '../../../../components/Title';
-import QuizPerformanceChart from '../../../../components/QuizPerformanceChart';
+import QuizChart from '../../../../components/QuizChart';
 import { useStudents, useStudent } from '../../../../lib/api/students';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import apiClient from '../../../../lib/axios';
 import Image from 'next/image';
+import { useNationalSystem, getCourseFieldLabels } from '../../../../lib/api/system';
 
 export default function PreviewStudentQuizzes() {
+  const isNational = useNationalSystem();
+  const courseLabels = getCourseFieldLabels(isNational);
   const router = useRouter();
   const queryClient = useQueryClient();
   const [studentId, setStudentId] = useState("");
@@ -34,36 +37,7 @@ export default function PreviewStudentQuizzes() {
     enabled: !!searchId && !!student,
   });
 
-  // Fetch all quizzes to check state for filtering
-  const { data: allQuizzesData } = useQuery({
-    queryKey: ['all-quizzes'],
-    queryFn: async () => {
-      const response = await apiClient.get('/api/quizzes');
-      return response.data;
-    },
-    staleTime: Infinity,
-    refetchOnWindowFocus: false,
-    refetchOnReconnect: false,
-    refetchOnMount: false,
-  });
-
-  const allQuizzes = allQuizzesData?.quizzes || [];
-
-  // Get active weeks from Activated quizzes
-  const activeWeeks = useMemo(() => {
-    const weekSet = new Set();
-    allQuizzes.forEach(quiz => {
-      const itemState = quiz.state || quiz.account_state || 'Activated';
-      if (itemState === 'Activated') {
-        if (quiz.week !== undefined && quiz.week !== null) {
-          weekSet.add(quiz.week.toString());
-        }
-      }
-    });
-    return weekSet;
-  }, [allQuizzes]);
-
-  // Fetch quiz performance chart data using API endpoint
+  // Same chart source as Student Info: performance API + lessons.quizDegree fallback
   const { data: performanceData, isLoading: isChartLoading } = useQuery({
     queryKey: ['quiz-performance', searchId],
     queryFn: async () => {
@@ -84,21 +58,15 @@ export default function PreviewStudentQuizzes() {
     retry: 1,
   });
 
-  const rawChartData = performanceData?.chartData || [];
-
-  // Filter chart data to only include Activated weeks
-  const chartData = useMemo(() => {
-    if (!Array.isArray(rawChartData) || rawChartData.length === 0) return [];
-    if (activeWeeks.size === 0) return rawChartData; // If no active weeks, show all
-    
-    return rawChartData.filter(item => {
-      const label = (item.week || item.weekNumber || '').toString().toLowerCase();
-      if (!label) return false;
-      return Array.from(activeWeeks).some(week =>
-        label.includes(String(week).toLowerCase())
-      );
-    });
-  }, [rawChartData, activeWeeks]);
+  const chartData = performanceData?.chartData ?? [];
+  const quizLessons = useMemo(() => {
+    const lessons = student?.lessons;
+    if (!lessons) return [];
+    return Object.keys(lessons).map((key) => ({
+      lesson: key,
+      ...(lessons[key] || {}),
+    }));
+  }, [student?.lessons]);
 
   const resetQuizMutation = useMutation({
     mutationFn: async ({ studentId, quizId }) => {
@@ -109,8 +77,10 @@ export default function PreviewStudentQuizzes() {
     },
     onSuccess: () => {
       refetchQuizzes();
-      // Invalidate and refetch chart data
       queryClient.invalidateQueries({ queryKey: ['quiz-performance', searchId] });
+      queryClient.invalidateQueries({ queryKey: ['students'] });
+      queryClient.invalidateQueries({ queryKey: ['student-with-rankings'] });
+      queryClient.invalidateQueries({ queryKey: ['scoring-history'] });
       setResettingId(null);
     },
     onError: (err) => {
@@ -566,7 +536,7 @@ export default function PreviewStudentQuizzes() {
                     {s.name} (ID: {s.id})
                   </div>
                   <div style={{ fontSize: "0.9rem", color: "#6c757d" }}>
-                    {s.grade} • {s.main_center}
+                    {[s.course, !isNational && s.courseType, s.main_center].filter(Boolean).join(' • ')}
                   </div>
                 </button>
               ))}
@@ -588,17 +558,29 @@ export default function PreviewStudentQuizzes() {
                   <div className="detail-label">Full Name</div>
                   <div className="detail-value">{student.name}</div>
                 </div>
+                {courseLabels.showGradeField && (
                 <div className="detail-item">
                   <div className="detail-label">Grade</div>
                   <div className="detail-value">{student.grade}</div>
                 </div>
+                )}
+                <div className="detail-item">
+                  <div className="detail-label">{courseLabels.course}</div>
+                  <div className="detail-value">{student.course || 'N/A'}</div>
+                </div>
+                {courseLabels.showCourseType && student.courseType && (
+                  <div className="detail-item">
+                    <div className="detail-label">Course Type</div>
+                    <div className="detail-value" style={{ textTransform: 'capitalize' }}>{student.courseType}</div>
+                  </div>
+                )}
                 <div className="detail-item">
                   <div className="detail-label">Student Phone</div>
-                  <div className="detail-value" style={{ fontFamily: 'monospace' }}>{student.phone}</div>
+                  <div className="detail-value">{student.phone || 'N/A'}</div>
                 </div>
                 <div className="detail-item">
-                  <div className="detail-label">Parent's Phone</div>
-                  <div className="detail-value" style={{ fontFamily: 'monospace' }}>{student.parents_phone}</div>
+                  <div className="detail-label">Parent Phone</div>
+                  <div className="detail-value">{student.parents_phone || student.parentsPhone || 'N/A'}</div>
                 </div>
               </div>
             </div>
@@ -607,7 +589,7 @@ export default function PreviewStudentQuizzes() {
             {!isLoading && student && (
               <div className="quizzes-container" style={{ marginBottom: '20px' }}>
                 <h3 style={{ marginBottom: '24px', fontSize: '1.3rem', fontWeight: '600', color: '#212529' }}>
-                  Quiz Performance by Week
+                  Quiz Performance by Lesson
                 </h3>
                 {isChartLoading ? (
                   <div style={{
@@ -620,7 +602,11 @@ export default function PreviewStudentQuizzes() {
                     Loading chart data...
                   </div>
                 ) : (
-                  <QuizPerformanceChart chartData={chartData} height={400} />
+                  <QuizChart
+                    lessons={quizLessons}
+                    chartData={chartData}
+                    chartLoading={isChartLoading}
+                  />
                 )}
               </div>
             )}
@@ -674,7 +660,7 @@ export default function PreviewStudentQuizzes() {
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '16px' }}>
                           <div style={{ flex: 1, minWidth: '200px' }}>
                             <div style={{ fontSize: '1.2rem', fontWeight: '600', marginBottom: '8px' }}>
-                              {quizResult.week !== undefined && quizResult.week !== null ? `Week ${quizResult.week} • ` : ''}{quiz.lesson_name}
+                              {quiz.lesson ? `${quiz.lesson} • ` : ''}{quiz.lesson_name}
                             </div>
                             <div style={{ color: '#6c757d', fontSize: '0.95rem', marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
                               <span>{quiz.questions || 0} Question{quiz.questions !== 1 ? 's' : ''}</span>

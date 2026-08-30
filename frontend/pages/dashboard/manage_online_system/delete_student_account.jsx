@@ -5,8 +5,11 @@ import Title from '../../../components/Title';
 import { useStudents, useStudent } from '../../../lib/api/students';
 import apiClient from '../../../lib/axios';
 import { useMutation, useQueryClient, useQuery } from '@tanstack/react-query';
+import { useNationalSystem, getCourseFieldLabels } from '../../../lib/api/system';
 
 export default function DeleteStudentAccount() {
+  const isNational = useNationalSystem();
+  const courseLabels = getCourseFieldLabels(isNational);
   const router = useRouter();
   const queryClient = useQueryClient();
   const [studentId, setStudentId] = useState("");
@@ -500,7 +503,7 @@ export default function DeleteStudentAccount() {
                       {student.name} (ID: {student.id})
                     </div>
                     <div style={{ fontSize: "0.9rem", color: "#6c757d" }}>
-                      {student.grade} • {student.main_center}
+                      {[student.course, !isNational && student.courseType, student.main_center].filter(Boolean).join(' • ')}
                     </div>
                   </button>
                 ))}
@@ -516,8 +519,14 @@ export default function DeleteStudentAccount() {
                 <h3>Student Found:</h3>
                 <p><strong>Name:</strong> {student.name}</p>
                 {student.age && <p><strong>Age:</strong> {student.age}</p>}
-                <p><strong>Grade:</strong> {student.grade}</p>
-                <p><strong>School:</strong> {student.school}</p>
+                {courseLabels.showGradeField && (
+                  <p><strong>Grade:</strong> {student.grade}</p>
+                )}
+                <p><strong>{courseLabels.course}:</strong> {student.course || 'N/A'}</p>
+                {courseLabels.showCourseType && student.courseType && (
+                  <p><strong>Course Type:</strong> {student.courseType}</p>
+                )}
+                <p><strong>School:</strong> {student.school || 'No School'}</p>
                 <p><strong>Phone:</strong> {student.phone}</p>
                 <p><strong>Email:</strong> {userAccount?.email || "No Email"}</p>
                 <p><strong>Parent's Phone:</strong> {student.parents_phone || student.parentsPhone}</p>
@@ -566,7 +575,7 @@ export default function DeleteStudentAccount() {
         )}
         {deleted && (
           <div className="success-message" style={{ textAlign: "center", padding: "40px 20px" }}>
-            <div style={{ fontSize: "4rem", marginBottom: "20px" }}>✅</div>
+            <div style={{ fontSize: "4rem" }}><Image src="/success-mark3.svg" alt="Success" width={80} height={80} /></div>
             <h2 style={{ color: "#28a745", marginBottom: "16px" }}>Student Account Deleted Successfully!</h2>
             <p style={{ color: "#6c757d", marginBottom: "24px" }}>
               Student account for ID <strong>{studentId}</strong> has been deleted from the users collection and a new VAC code has been regenerated.

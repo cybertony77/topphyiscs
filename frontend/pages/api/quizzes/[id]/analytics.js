@@ -2,6 +2,7 @@ import { MongoClient, ObjectId } from 'mongodb';
 import fs from 'fs';
 import path from 'path';
 import { authMiddleware } from '../../../../lib/authMiddleware';
+import { buildAnalyticsStudentRow } from '../../../../lib/onlineAnalytics';
 
 function loadEnvConfig() {
   try {
@@ -63,9 +64,12 @@ export default async function handler(req, res) {
       return res.status(404).json({ error: 'Quiz not found' });
     }
 
-    // Get quiz grade
-    const quizGrade = quiz.grade;
-    if (!quizGrade) {
+    // Get quiz course, courseType, and lesson
+    const quizCourse = quiz.course;
+    const quizCourseType = quiz.courseType;
+    const quizLesson = quiz.lesson;
+    
+    if (!quizCourse || !quizLesson) {
       return res.json({
         success: true,
         analytics: {
@@ -73,23 +77,41 @@ export default async function handler(req, res) {
           lessThan50: 0,
           between50And100: 0,
           exactly100: 0,
-          totalStudents: 0
+          totalStudents: 0,
+          students: [],
+          notAnsweredIds: [],
+          lessThan50Ids: [],
+          between50And100Ids: [],
+          exactly100Ids: []
         }
       });
     }
 
-    // Normalize grade for comparison
-    const normalizedQuizGrade = quizGrade.toLowerCase().replace(/\./g, '').trim();
+    const quizCourseTrimmed = (quizCourse || '').trim();
+    const quizCourseTypeTrimmed = (quizCourseType || '').trim();
+    const quizLessonTrimmed = (quizLesson || '').trim();
 
-    // Get all students with this grade
+    // Get all students and filter by course and courseType
     const allStudents = await db.collection('students').find({}).toArray();
-    const studentsInGrade = allStudents.filter(student => {
-      if (!student.grade) return false;
-      const normalizedStudentGrade = student.grade.toLowerCase().replace(/\./g, '').trim();
-      return normalizedStudentGrade === normalizedQuizGrade;
+    const studentsInCourse = allStudents.filter(student => {
+      if (!student.course) return false;
+      const studentCourse = (student.course || '').trim();
+      const studentCourseType = (student.courseType || '').trim();
+      
+      // Course match: if quiz course is "All", it matches any student course
+      const courseMatch = quizCourseTrimmed.toLowerCase() === 'all' || 
+                         quizCourseTrimmed.toLowerCase() === studentCourse.toLowerCase();
+      
+      // CourseType match: if quiz has no courseType, it matches any student courseType
+      // If quiz has courseType, it must match student's courseType (case-insensitive)
+      const courseTypeMatch = !quizCourseTypeTrimmed || 
+                             !studentCourseType ||
+                             quizCourseTypeTrimmed.toLowerCase() === studentCourseType.toLowerCase();
+      
+      return courseMatch && courseTypeMatch;
     });
 
-    const totalStudents = studentsInGrade.length;
+    const totalStudents = studentsInCourse.length;
     const quizIdStr = quiz._id.toString();
 
     // Initialize counters and ID arrays
@@ -101,9 +123,11 @@ export default async function handler(req, res) {
     const lessThan50Ids = [];
     const between50And100Ids = [];
     const exactly100Ids = [];
+    const students = [];
+    const questions = quiz.questions || [];
 
     // Check each student's result for this quiz
-    studentsInGrade.forEach(student => {
+    studentsInCourse.forEach(student => {
       const studentId = student.id || student._id?.toString() || null;
       const onlineQuizzes = student.online_quizzes || [];
       const quizResult = onlineQuizzes.find(qz => {
@@ -113,21 +137,27 @@ export default async function handler(req, res) {
 
       let percentage = 0;
       let hasResult = false;
+      let degree = null;
+      let studentAnswers = null;
+      let shuffleMapping = null;
 
       // First, try to get result from online_quizzes
       if (quizResult) {
         const percentageStr = quizResult.percentage?.toString().replace('%', '') || '0';
         percentage = parseInt(percentageStr, 10);
         hasResult = true;
+        degree = quizResult.result || null;
+        studentAnswers = quizResult.student_answers || null;
+        shuffleMapping = quizResult.shuffle_mapping || null;
       } else {
-        // If no result in online_quizzes, check weeks array
-        // Find the week that matches this quiz's week
-        const weeks = student.weeks || [];
-        const weekData = weeks.find(w => w.week === quiz.week);
+        // If no result in online_quizzes, check lessons object
+        // Find the lesson that matches this quiz's lesson
+        const lessons = student.lessons || {};
+        const lessonData = lessons[quizLessonTrimmed];
         
-        if (weekData && weekData.quizDegree) {
+        if (lessonData && lessonData.quizDegree) {
           // Parse quizDegree format like "50 / 100"
-          const quizDegreeStr = String(weekData.quizDegree).trim();
+          const quizDegreeStr = String(lessonData.quizDegree).trim();
           const match = quizDegreeStr.match(/^(\d+(?:\.\d+)?)\s*\/\s*(\d+(?:\.\d+)?)$/);
           
           if (match) {
@@ -135,22 +165,33 @@ export default async function handler(req, res) {
             const total = parseFloat(match[2]);
             percentage = total > 0 ? Math.round((obtained / total) * 100) : 0;
             hasResult = true;
+            degree = quizDegreeStr;
           }
         }
       }
 
+      const studentRow = buildAnalyticsStudentRow({
+        student,
+        hasResult,
+        percentage,
+        degree,
+        questions,
+        studentAnswers,
+        shuffleMapping,
+      });
+      students.push(studentRow);
+
       // Categorize based on percentage
-      if (!hasResult || percentage === 0) {
-        // Student didn't answer
+      if (studentRow.category === 'notAnswered') {
         notAnswered++;
         if (studentId) notAnsweredIds.push(studentId);
-      } else if (percentage === 100) {
+      } else if (studentRow.category === 'exactly100') {
         exactly100++;
         if (studentId) exactly100Ids.push(studentId);
-      } else if (percentage >= 50 && percentage < 100) {
+      } else if (studentRow.category === 'between50And100') {
         between50And100++;
         if (studentId) between50And100Ids.push(studentId);
-      } else if (percentage > 0 && percentage < 50) {
+      } else if (studentRow.category === 'lessThan50') {
         lessThan50++;
         if (studentId) lessThan50Ids.push(studentId);
       }
@@ -164,6 +205,7 @@ export default async function handler(req, res) {
         between50And100,
         exactly100,
         totalStudents,
+        students,
         notAnsweredIds,
         lessThan50Ids,
         between50And100Ids,

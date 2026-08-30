@@ -1,8 +1,10 @@
 import "@/styles/globals.css";
 import '@mantine/core/styles.css';
+import '@mantine/carousel/styles.css';
 import { MantineProvider } from '@mantine/core';
+import NextJsApp from 'next/app';
 import { useRouter } from "next/router";
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useLayoutEffect, useState, useMemo } from "react";
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ReactQueryDevtools } from '@tanstack/react-query-devtools';
 import Header from "../components/Header";
@@ -11,7 +13,36 @@ import { getApiBaseUrl } from "../config";
 import apiClient from "../lib/axios";
 import Image from "next/image";
 import ErrorBoundary from "../components/ErrorBoundary";
-import CustomHeader from "../components/publicHeader";
+import {
+  DEFAULT_SYSTEM_BACKGROUND,
+  loadSystemBackgroundFromEnv,
+} from "../lib/systemColors";
+
+const SYSTEM_BG_STORAGE_KEY = 'system-page-bg';
+
+function readCachedSystemBackground() {
+  if (typeof window === 'undefined') return null;
+  try {
+    return window.sessionStorage.getItem(SYSTEM_BG_STORAGE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function cacheSystemBackground(value) {
+  if (typeof window === 'undefined' || !value) return;
+  try {
+    window.sessionStorage.setItem(SYSTEM_BG_STORAGE_KEY, value);
+  } catch {
+    /* ignore */
+  }
+}
+
+function applySystemBackground(value) {
+  if (typeof document === 'undefined' || !value) return;
+  document.documentElement.style.setProperty('--system-page-bg', value);
+  cacheSystemBackground(value);
+}
 
 // PWA Service Worker Registration handled by next-pwa
 
@@ -46,11 +77,18 @@ function DevToolsProtection({ userRole, devtoolsBlockEnabled }) {
     '/sign-up',
     '/contact_developer',
     '/contact_assistants',
+    '/welcome',
+    '/leave-a-review',
     '/forgot_password',
     '/404',
-    '/student_not_found'
+    '/student_not_found',
+    '/student_info'
   ];
-  const isPublicPage = publicPagesList.includes(currentPath);
+  const isPublicPage =
+    publicPagesList.includes(currentPath) ||
+    currentPath.startsWith('/leave-a-review') ||
+    currentPath.startsWith('/api/youtube/') ||
+    currentPath.startsWith('/youtube-player/');
 
   // Check if user is developer
   const isDeveloper = userRole === 'developer';
@@ -126,66 +164,71 @@ function DevToolsProtection({ userRole, devtoolsBlockEnabled }) {
       }
     };
 
-    // Improved DevTools detection - uses requestAnimationFrame for efficient continuous checking
-    // This catches devtools opened via menu (3 dots > More tools > Developer tools)
+    // DevTools detection via outer/inner size delta from a learned baseline.
+    // Absolute thresholds (e.g. heightDiff > 160) false-trigger from normal browser
+    // chrome (tabs, address bar, bookmarks). Console timing / getter tricks are also flaky.
     let rafId = null;
     let lastCheck = 0;
-    const CHECK_INTERVAL = 500; // Check every 500ms (not every frame to reduce overhead)
+    const CHECK_INTERVAL = 600;
     let detectionCount = 0;
-    const REQUIRED_DETECTIONS = 2; // Require 2 consecutive detections (reduced for faster detection)
+    const REQUIRED_DETECTIONS = 3;
+    const OPEN_DELTA = 140; // docked DevTools usually adds well above this
+    const CLOSE_DELTA = 80;
+    let baselineWidthGap = null;
+    let baselineHeightGap = null;
+    let baselineSamples = 0;
+    const BASELINE_SAMPLES_NEEDED = 4;
+    let clearCount = 0;
+
+    const readGaps = () => ({
+      widthGap: Math.max(0, window.outerWidth - window.innerWidth),
+      heightGap: Math.max(0, window.outerHeight - window.innerHeight),
+    });
 
     const detectDevTools = () => {
-      // Method 1: Check window size difference
-      const widthDiff = window.outerWidth - window.innerWidth;
-      const heightDiff = window.outerHeight - window.innerHeight;
-      
-      // Method 2: Check console timing
-      const consoleStart = performance.now();
-      console.log('%c', '');
-      const consoleEnd = performance.now();
-      const consoleTiming = consoleEnd - consoleStart;
-      
-      // Method 3: Use devtools detection via toString
-      let devtoolsOpen = false;
-      try {
-        const element = new window.Image();
-        Object.defineProperty(element, 'id', {
-          get: function() {
-            devtoolsOpen = true;
-          }
-        });
-        // This triggers the getter if console is open
-        requestAnimationFrame(() => {
-          console.log(element);
-          console.clear();
-        });
-      } catch (e) {
-        // Ignore
+      const { widthGap, heightGap } = readGaps();
+
+      // Learn normal browser chrome while DevTools is assumed closed
+      if (baselineWidthGap === null || baselineSamples < BASELINE_SAMPLES_NEEDED) {
+        baselineWidthGap =
+          baselineWidthGap === null ? widthGap : Math.min(baselineWidthGap, widthGap);
+        baselineHeightGap =
+          baselineHeightGap === null ? heightGap : Math.min(baselineHeightGap, heightGap);
+        baselineSamples += 1;
+        detectionCount = 0;
+        clearCount = 0;
+        setDevToolsDetected(false);
+        return;
       }
-      
-      // Check multiple conditions - any one can indicate devtools
-      // Lower thresholds to catch menu-opened devtools faster
-      const hasDimensionDiff = widthDiff > 160 || heightDiff > 160;
-      const hasSlowConsole = consoleTiming > 1.5; // Slightly lower threshold
-      const hasDevtoolsGetter = devtoolsOpen;
-      
-      // If any method detects devtools, increment counter
-      if (hasDimensionDiff || hasSlowConsole || hasDevtoolsGetter) {
-        detectionCount++;
+
+      const widthIncrease = widthGap - baselineWidthGap;
+      const heightIncrease = heightGap - baselineHeightGap;
+      const looksOpen = widthIncrease > OPEN_DELTA || heightIncrease > OPEN_DELTA;
+      const looksClosed = widthIncrease < CLOSE_DELTA && heightIncrease < CLOSE_DELTA;
+
+      if (looksOpen) {
+        clearCount = 0;
+        detectionCount += 1;
         if (detectionCount >= REQUIRED_DETECTIONS) {
           setDevToolsDetected(true);
-          detectionCount = REQUIRED_DETECTIONS; // Keep at max to maintain detection
+          detectionCount = REQUIRED_DETECTIONS;
         }
-      } else {
-        // Reset counter if all methods fail
-        if (detectionCount > 0) {
-          detectionCount = 0;
+        return;
+      }
+
+      if (looksClosed) {
+        detectionCount = 0;
+        clearCount += 1;
+        // Require a few clear samples before unlocking (avoids flicker)
+        if (clearCount >= 2) {
+          setDevToolsDetected(false);
+          // Gently refresh baseline so UI chrome changes (bookmarks bar, zoom) don't stick
+          baselineWidthGap = Math.min(baselineWidthGap, widthGap);
+          baselineHeightGap = Math.min(baselineHeightGap, heightGap);
         }
-        setDevToolsDetected(false);
       }
     };
 
-    // Continuous detection using requestAnimationFrame (more efficient than setInterval)
     const continuousCheck = (timestamp) => {
       if (timestamp - lastCheck >= CHECK_INTERVAL) {
         detectDevTools();
@@ -193,48 +236,33 @@ function DevToolsProtection({ userRole, devtoolsBlockEnabled }) {
       }
       rafId = requestAnimationFrame(continuousCheck);
     };
-    
-    // Start continuous checking
+
     rafId = requestAnimationFrame(continuousCheck);
 
-    // Add event listeners with capture phase
     document.addEventListener('contextmenu', handleContextMenu, true);
     document.addEventListener('keydown', handleKeyDown, true);
     window.addEventListener('contextmenu', handleContextMenu, true);
     window.addEventListener('keydown', handleKeyDown, true);
 
-    // Listen for window resize (immediate check)
     const handleResize = () => {
       detectDevTools();
     };
     window.addEventListener('resize', handleResize);
 
-    // Detect when keyboard shortcuts are attempted
     const handleKeyDownDetection = (e) => {
-      if (e.key === 'F12' || e.keyCode === 123 ||
-          (e.ctrlKey && e.shiftKey && (e.key === 'I' || e.key === 'i' || e.keyCode === 73)) ||
-          (e.ctrlKey && e.shiftKey && (e.key === 'J' || e.key === 'j' || e.keyCode === 74)) ||
-          (e.ctrlKey && e.shiftKey && (e.key === 'C' || e.key === 'c' || e.keyCode === 67))) {
-        // Check immediately and after delay
+      if (
+        e.key === 'F12' ||
+        e.keyCode === 123 ||
+        (e.ctrlKey && e.shiftKey && (e.key === 'I' || e.key === 'i' || e.keyCode === 73)) ||
+        (e.ctrlKey && e.shiftKey && (e.key === 'J' || e.key === 'j' || e.keyCode === 74)) ||
+        (e.ctrlKey && e.shiftKey && (e.key === 'C' || e.key === 'c' || e.keyCode === 67))
+      ) {
         detectDevTools();
-        setTimeout(() => {
-          detectDevTools();
-        }, 300);
+        setTimeout(() => detectDevTools(), 400);
       }
     };
     window.addEventListener('keydown', handleKeyDownDetection);
 
-    // Also check on focus/blur (devtools might affect window focus)
-    const handleFocus = () => {
-      setTimeout(() => detectDevTools(), 100);
-    };
-    const handleBlur = () => {
-      setTimeout(() => detectDevTools(), 100);
-    };
-    window.addEventListener('focus', handleFocus);
-    window.addEventListener('blur', handleBlur);
-
-    // Cleanup
     return () => {
       if (rafId) {
         cancelAnimationFrame(rafId);
@@ -245,8 +273,6 @@ function DevToolsProtection({ userRole, devtoolsBlockEnabled }) {
       window.removeEventListener('keydown', handleKeyDown, true);
       window.removeEventListener('resize', handleResize);
       window.removeEventListener('keydown', handleKeyDownDetection);
-      window.removeEventListener('focus', handleFocus);
-      window.removeEventListener('blur', handleBlur);
     };
   }, [isDeveloper, devtoolsBlockEnabled, isMobile]);
 
@@ -274,11 +300,14 @@ function DevToolsProtection({ userRole, devtoolsBlockEnabled }) {
       '/sign-up',
       '/contact_developer',
       '/contact_assistants',
+      '/welcome',
+      '/leave-a-review',
       '/forgot_password',
       '/404',
       '/student_not_found'
     ];
-    const isPublicPage = publicPagesList.includes(currentPath);
+    const isPublicPage =
+      publicPagesList.includes(currentPath) || currentPath.startsWith('/leave-a-review');
     
     // On public pages (without token), show message but don't redirect
     if (isPublicPage && devToolsDetected) {
@@ -449,11 +478,14 @@ function DevToolsProtection({ userRole, devtoolsBlockEnabled }) {
       '/sign-up',
       '/contact_developer',
       '/contact_assistants',
+      '/welcome',
+      '/leave-a-review',
       '/forgot_password',
       '/404',
       '/student_not_found'
     ];
-    const isPublicPage = publicPagesList.includes(currentPath);
+    const isPublicPage =
+      publicPagesList.includes(currentPath) || currentPath.startsWith('/leave-a-review');
     
     return (
       <>
@@ -667,7 +699,8 @@ function DevToolsProtection({ userRole, devtoolsBlockEnabled }) {
 }
 
 // Preloader Component
-function Preloader() {
+function Preloader({ background }) {
+  const bg = background || DEFAULT_SYSTEM_BACKGROUND;
   return (
     <div style={{
       position: 'fixed',
@@ -675,7 +708,7 @@ function Preloader() {
       left: 0,
       width: '100%',
       height: '100%',
-      background: 'linear-gradient(380deg, #1FA8DC 0%, #FEB954 100%)',
+      background: bg,
       display: 'flex',
       alignItems: 'center',
       justifyContent: 'center',
@@ -694,13 +727,13 @@ function Preloader() {
         }}>
           <Image 
             src="/logo.png" 
-            alt="Demo Attendance System Logo" 
+            alt="American Diploma Academy Logo" 
             width={150}
             height={150}
             style={{
-              objectFit: 'cover',
+              borderRadius: '50%',
               background: 'transparent',
-              borderRadius: '50%'
+              
             }}
           />
         </div>
@@ -844,19 +877,65 @@ const isStudentDashboardRoute = (path) => {
   return path.startsWith('/student_dashboard');
 };
 
-export default function App({ Component, pageProps }) {
+export default function App({ Component, pageProps, systemBackground }) {
+  const isYtEmbed = Boolean(Component?.isYoutubeEmbedShell);
+  const initialBg = isYtEmbed ? "#000" : systemBackground || DEFAULT_SYSTEM_BACKGROUND;
+  const [pageBg, setPageBg] = useState(initialBg);
+
+  // Sync when getInitialProps provides a new value (SSR / client navigation)
+  useLayoutEffect(() => {
+    if (Component?.isYoutubeEmbedShell) {
+      if (typeof document !== "undefined") {
+        document.documentElement.style.background = "#000";
+        document.body.style.background = "#000";
+        document.body.style.backgroundImage = "none";
+        document.documentElement.style.backgroundImage = "none";
+      }
+      return;
+    }
+    if (systemBackground && systemBackground !== pageBg) {
+      setPageBg(systemBackground);
+    }
+    applySystemBackground(systemBackground || pageBg);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [systemBackground, Component]);
+
+  // Always confirm against env via API so we never stick on the hardcoded default
+  useEffect(() => {
+    if (Component?.isYoutubeEmbedShell) return undefined;
+    let cancelled = false;
+    const ensureEnvBackground = async () => {
+      try {
+        const res = await fetch('/api/system/config');
+        if (!res.ok) return;
+        const data = await res.json();
+        const nextBg = data?.page_background;
+        if (!cancelled && nextBg) {
+          setPageBg(nextBg);
+          applySystemBackground(nextBg);
+        }
+      } catch {
+        /* ignore */
+      }
+    };
+    ensureEnvBackground();
+    return () => {
+      cancelled = true;
+    };
+  }, [Component]);
+
   // Create a new QueryClient instance
   const [queryClient] = useState(() => new QueryClient({
     defaultOptions: {
       queries: {
-        staleTime: 15 * 60 * 1000, // 15 minutes
+        staleTime: Infinity,
         gcTime: 20 * 60 * 1000, // 20 minutes
         retry: 3,
         retryDelay: attemptIndex => Math.min(1000 * 2 ** attemptIndex, 30000),
-        refetchOnWindowFocus: true,
-        refetchOnReconnect: true,
-        refetchOnMount: true,
-        refetchInterval: false, // No auto-refresh - only manual refresh
+        refetchOnWindowFocus: false,
+        refetchOnReconnect: false,
+        refetchOnMount: false,
+        refetchInterval: false,
         refetchIntervalInBackground: false,
       },
       mutations: {
@@ -868,7 +947,7 @@ export default function App({ Component, pageProps }) {
 
   const router = useRouter();
   const [isAuthenticated, setIsAuthenticated] = useState(false);
-  const [isLoading, setIsLoading] = useState(true);
+  const [isLoading, setIsLoading] = useState(() => !isYtEmbed);
   const [showAccessDenied, setShowAccessDenied] = useState(false);
   const [isCheckingAdminAccess, setIsCheckingAdminAccess] = useState(false);
   const [isRouteChanging, setIsRouteChanging] = useState(false);
@@ -876,12 +955,18 @@ export default function App({ Component, pageProps }) {
   const [showExpiryWarning, setShowExpiryWarning] = useState(false);
   const [userRole, setUserRole] = useState(null);
   const [devtoolsBlockEnabled, setDevtoolsBlockEnabled] = useState(true); // Default to true for security
+  const [subscription, setSubscription] = useState(null);
+  const [isLoadingSubscription, setIsLoadingSubscription] = useState(false);
+  const [timeRemaining, setTimeRemaining] = useState(null);
+  const [isSubscriptionEnabled, setIsSubscriptionEnabled] = useState(true); // Default to true
 
   // Define public pages using useMemo to prevent recreation on every render
-  const publicPages = useMemo(() => ["/", "/sign-up", "/contact_developer", "/contact_assistants", "/404", "/forgot_password", "/student_not_found", "/dashboard/student_info"], []);
+  const publicPages = useMemo(() => ["/", "/sign-up", "/contact_developer", "/contact_assistants", "/welcome", "/leave-a-review", "/404", "/forgot_password", "/student_not_found", "/dashboard/student_info"], []);
+
+  const isYoutubeEmbedShell = router.pathname.startsWith("/youtube-player");
   
   // Define pages that should never show header/footer (even if authenticated)
-  const noHeaderFooterPages = useMemo(() => ["/", "/sign-up", "/student_dashboard/my_homeworks/start", "/student_dashboard/my_quizzes/start"], []);
+  const noHeaderFooterPages = useMemo(() => ["/", "/sign-up", "/leave-a-review", "/student_dashboard/my_homeworks/start", "/student_dashboard/my_quizzes/start"], []);
   
   // Define admin-only pages
   const adminPages = useMemo(() => [
@@ -905,6 +990,7 @@ export default function App({ Component, pageProps }) {
 
   // Fetch DEVTOOLS_BLOCK configuration
   useEffect(() => {
+    if (Component?.isYoutubeEmbedShell) return undefined;
     const fetchConfig = async () => {
       try {
         const response = await fetch('/api/config');
@@ -920,9 +1006,31 @@ export default function App({ Component, pageProps }) {
       }
     };
     fetchConfig();
-  }, []);
+  }, [Component]);
+
+  // Fetch SYSTEM_SUBSCRIPTION configuration
+  useEffect(() => {
+    if (Component?.isYoutubeEmbedShell) return undefined;
+    const fetchSystemConfig = async () => {
+      try {
+        const response = await fetch('/api/system/config');
+        if (response.ok) {
+          const config = await response.json();
+          setIsSubscriptionEnabled(config.subscription === true);
+        }
+      } catch (error) {
+        console.error('Failed to fetch system config for subscription:', error);
+        setIsSubscriptionEnabled(true); // Default to true if config can't be loaded
+      }
+    };
+    fetchSystemConfig();
+  }, [Component]);
 
   useEffect(() => {
+    if (Component?.isYoutubeEmbedShell) {
+      setIsLoading(false);
+      return undefined;
+    }
     const checkAuth = async () => {
       try {
         // Check authentication with server (cookies are sent automatically)
@@ -986,7 +1094,7 @@ export default function App({ Component, pageProps }) {
       } catch (error) {
         // Token invalid or expired - only set to false if we're not on a public page
         // This prevents redirect loops when the API call fails temporarily
-        if (!publicPages.includes(router.pathname)) {
+        if (!publicPages.includes(router.pathname) && !router.pathname.startsWith("/youtube-player")) {
           setIsAuthenticated(false);
           setUserRole(null);
         }
@@ -996,7 +1104,7 @@ export default function App({ Component, pageProps }) {
     };
 
     checkAuth();
-  }, [router.pathname, adminPages, developerPages, publicPages, router]);
+  }, [router.pathname, adminPages, developerPages, publicPages, router, Component]);
 
   // Handle route changes for main preloader
   useEffect(() => {
@@ -1025,7 +1133,7 @@ export default function App({ Component, pageProps }) {
 
   // Redirect to login if not authenticated and trying to access protected page
   useEffect(() => {
-    if (!isLoading && !isAuthenticated && !publicPages.includes(router.pathname)) {
+    if (!isLoading && !isAuthenticated && !publicPages.includes(router.pathname) && !isYoutubeEmbedShell) {
       // Show redirect to login preloader before redirect
       setShowRedirectToLogin(true);
       
@@ -1041,7 +1149,7 @@ export default function App({ Component, pageProps }) {
         router.push("/");
       }, 1000); // Show preloader for 1 second
     }
-  }, [isLoading, isAuthenticated, router.pathname, publicPages, router]);
+  }, [isLoading, isAuthenticated, router.pathname, publicPages, router, isYoutubeEmbedShell]);
 
   // Check admin access for current route
   useEffect(() => {
@@ -1170,13 +1278,290 @@ export default function App({ Component, pageProps }) {
     }
   }, [isAuthenticated]);
 
+  // Fetch subscription data when authenticated (only if subscription system is enabled)
+  useEffect(() => {
+    // Routes where subscription polling should be disabled (but still allow initial fetch)
+    const skipSubscriptionPollingRoutes = [
+      '/dashboard/manage_online_system/online_sessions',
+      '/dashboard/manage_online_system/homeworks',
+      '/dashboard/manage_online_system/quizzes'
+    ];
+    
+    // Check if current route should skip subscription polling
+    const shouldSkipPolling = router.pathname.startsWith('/student_dashboard') || 
+                             router.pathname.startsWith('/dashboard/manage_online_system/online_mock_exams') ||
+                             skipSubscriptionPollingRoutes.includes(router.pathname);
+    
+    // Students don't need subscription data at all, so skip entirely on student_dashboard
+    const shouldSkipEntirely = router.pathname.startsWith('/student_dashboard');
+    
+    let isInitialLoad = true; // Track if this is the first load
+    
+    const fetchSubscription = async (isBackgroundPoll = false) => {
+      if (!isSubscriptionEnabled || !isAuthenticated || publicPages.includes(router.pathname)) {
+        setSubscription(null);
+        return;
+      }
+
+      try {
+        // Only show loading spinner on initial load, not during background polling
+        if (!isBackgroundPoll) {
+          setIsLoadingSubscription(true);
+        }
+        const response = await apiClient.get('/api/subscription');
+        setSubscription(response.data);
+      } catch (error) {
+        const status = error.response?.status;
+        const details = String(
+          error.response?.data?.message ||
+            error.response?.data?.error ||
+            error.response?.data?.details ||
+            error.message ||
+            ''
+        ).toLowerCase();
+        const isAuthFailure =
+          status === 401 ||
+          status === 403 ||
+          details.includes('token') ||
+          details.includes('unauthorized') ||
+          details.includes('jwt');
+
+        setSubscription(null);
+
+        if (isAuthFailure) {
+          // Expired/invalid session — clear auth quietly (axios interceptor redirects on 401)
+          if (status === 401) {
+            setIsAuthenticated(false);
+            setUserRole(null);
+          }
+        } else {
+          console.warn('Subscription fetch failed:', status || error.message);
+        }
+      } finally {
+        // Only clear loading spinner if it was set (not during background polling)
+        if (!isBackgroundPoll) {
+          setIsLoadingSubscription(false);
+        }
+      }
+    };
+
+    // Skip subscription entirely on student_dashboard (students don't need it)
+    if (shouldSkipEntirely) {
+      setSubscription(null);
+      setIsLoadingSubscription(false);
+      return;
+    }
+
+    // On routes that should skip polling, only do initial fetch (no 30-minute interval)
+    if (shouldSkipPolling) {
+      // Initial fetch only (no polling)
+      fetchSubscription(false);
+      return;
+    }
+
+    // Normal behavior: initial fetch + 30-minute polling
+    // Initial fetch (with loading spinner)
+    fetchSubscription(false);
+    isInitialLoad = false;
+    
+    // Manual control: Refetch subscription every 30 minutes (reduced frequency)
+    // Pass true to indicate this is a background poll (no loading spinner)
+    const interval = setInterval(() => fetchSubscription(true), 30 * 60 * 1000);
+    
+    return () => clearInterval(interval);
+  }, [isAuthenticated, router.pathname, publicPages, isSubscriptionEnabled]);
+
+  // Subscription countdown timer calculation
+  useEffect(() => {
+    // Only calculate timer if authenticated and subscription exists
+    // Exclude only students, allow assistant, admin, and developer to see timer
+    if (!isAuthenticated || !subscription || userRole === 'student') {
+      setTimeRemaining(null);
+      return;
+    }
+
+    // Simple logic: if active = false AND date_of_expiration = null, don't show timer
+    if (subscription.active === false && !subscription.date_of_expiration) {
+      setTimeRemaining(null);
+      return;
+    }
+
+    // If date_of_expiration doesn't exist, don't show timer
+    if (!subscription.date_of_expiration) {
+      setTimeRemaining(null);
+      return;
+    }
+
+    const updateTimer = () => {
+      const now = new Date();
+      const expiration = new Date(subscription.date_of_expiration);
+      const diff = expiration - now;
+
+      // Calculate time components (use Math.max to ensure non-negative)
+      let days = Math.max(0, Math.floor(diff / (1000 * 60 * 60 * 24)));
+      let hours = Math.max(0, Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60)));
+      let minutes = Math.max(0, Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60)));
+      let seconds = Math.max(0, Math.floor((diff % (1000 * 60)) / 1000));
+
+      // Redistribute time: if hours is 00 and days > 0, borrow 1 day to fill hours
+      if (hours === 0 && days > 0) {
+        days -= 1;
+        hours = 24;
+      }
+      // If minutes is 00 and hours > 0, borrow 1 hour to fill minutes
+      if (minutes === 0 && hours > 0) {
+        hours -= 1;
+        minutes = 60;
+      }
+      // If seconds is 00 and minutes > 0, borrow 1 minute to fill seconds
+      if (seconds === 0 && minutes > 0) {
+        minutes -= 1;
+        seconds = 60;
+      }
+
+      // Update timer with calculated values (always set, even if zero)
+      setTimeRemaining({ days, hours, minutes, seconds });
+    };
+
+    // Calculate timer immediately
+    updateTimer();
+    const interval = setInterval(updateTimer, 1000);
+
+    return () => {
+      clearInterval(interval);
+    };
+  }, [subscription, userRole, isAuthenticated]);
+
+  // Check if we should show subscription warning
+  const shouldShowSubscriptionWarning = () => {
+    // Don't show if subscription system is disabled
+    if (!isSubscriptionEnabled) {
+      return false;
+    }
+
+    // Don't show if not authenticated
+    if (!isAuthenticated) {
+      return false;
+    }
+
+    // Only hide for student role - show for assistant, admin, and developer
+    if (userRole === 'student') {
+      return false;
+    }
+
+    // Don't show on student_dashboard routes
+    if (isStudentDashboardRoute(router.pathname)) {
+      return false;
+    }
+
+    // Don't show if no subscription data
+    if (!subscription) {
+      return false;
+    }
+
+    // If subscription is expired (active = false and no date_of_expiration)
+    if (subscription.active === false && !subscription.date_of_expiration) {
+      return true;
+    }
+
+    // If subscription is active but expiring within 3 days
+    if (subscription.active === true && subscription.date_of_expiration) {
+      const now = new Date();
+      const expiration = new Date(subscription.date_of_expiration);
+      const fiveDaysBeforeExpiration = new Date(expiration);
+      fiveDaysBeforeExpiration.setDate(fiveDaysBeforeExpiration.getDate() - 3);
+      
+      return now >= fiveDaysBeforeExpiration;
+    }
+
+    return false;
+  };
+
+  // Format remaining time for display
+  const formatRemainingTime = () => {
+    if (!timeRemaining) return '';
+    const { days, hours, minutes, seconds } = timeRemaining;
+    return `${String(days || 0).padStart(2, '0')} days : ${String(hours || 0).padStart(2, '0')} hours : ${String(minutes || 0).padStart(2, '0')} min : ${String(seconds || 0).padStart(2, '0')} sec`;
+  };
+
+  // Check subscription expiration and redirect non-developers/non-students to login (only if subscription system is enabled)
+  useEffect(() => {
+    // Skip if subscription system is disabled
+    if (!isSubscriptionEnabled) return;
+
+    // Only check if authenticated, not on public pages, and subscription data is loaded
+    if (!isAuthenticated || publicPages.includes(router.pathname) || isLoadingSubscription || !subscription) {
+      return;
+    }
+
+    // Allow developers and students to access regardless of subscription status
+    if (userRole === 'developer' || userRole === 'student') {
+      return;
+    }
+
+    // Check if subscription is inactive
+    if (!subscription.active) {
+      console.log('⏰ Subscription is inactive, redirecting to login...');
+      setShowRedirectToLogin(true);
+      setTimeout(() => {
+        setShowRedirectToLogin(false);
+        router.push("/");
+      }, 1000);
+      return;
+    }
+
+    // Check if subscription has expired (remaining time is 00:00:00:00)
+    if (subscription.active && subscription.date_of_expiration) {
+      const now = new Date();
+      const expiration = new Date(subscription.date_of_expiration);
+      const diff = expiration - now;
+
+      if (diff <= 0) {
+        // Subscription has expired
+        console.log('⏰ Subscription has expired, redirecting to login...');
+        setShowRedirectToLogin(true);
+        setTimeout(() => {
+          setShowRedirectToLogin(false);
+          router.push("/");
+        }, 1000);
+        return;
+      }
+
+      // Calculate remaining time
+      const days = Math.floor(diff / (1000 * 60 * 60 * 24));
+      const hours = Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+      const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
+      const seconds = Math.floor((diff % (1000 * 60)) / 1000);
+
+      // Check if all time components are zero
+      if (days === 0 && hours === 0 && minutes === 0 && seconds === 0) {
+        console.log('⏰ Subscription remaining time is 00:00:00:00, redirecting to login...');
+        setShowRedirectToLogin(true);
+        setTimeout(() => {
+          setShowRedirectToLogin(false);
+          router.push("/");
+        }, 1000);
+      }
+    }
+  }, [isAuthenticated, subscription, isLoadingSubscription, router.pathname, publicPages, userRole, router, isSubscriptionEnabled]);
 
   // Note: Token expiry checking removed since we now use HTTP-only cookies
   // The server will handle token validation and expiry
 
-  // Show loading while checking authentication or during route changes
-  if (isLoading || isRouteChanging) {
-    return <Preloader />;
+  // Bare YouTube embed shell — detect via page flag (SSR-safe; never show system preloader)
+  if (isYtEmbed || Component?.isYoutubeEmbedShell) {
+    return (
+      <QueryClientProvider client={queryClient}>
+        <ErrorBoundary>
+          <Component {...pageProps} />
+        </ErrorBoundary>
+      </QueryClientProvider>
+    );
+  }
+
+  // Show loading while checking authentication, subscription, or during route changes
+  if (isLoading || (isSubscriptionEnabled && isAuthenticated && isLoadingSubscription && !publicPages.includes(router.pathname)) || isRouteChanging) {
+    return <Preloader background={pageBg} />;
   }
 
   // Show redirect to login preloader if redirecting due to unauthorized access
@@ -1191,7 +1576,7 @@ export default function App({ Component, pageProps }) {
 
   // For unauthorized users on protected pages, show loading (will redirect)
   if (!isAuthenticated && !publicPages.includes(router.pathname)) {
-    return <Preloader />;
+    return <Preloader background={pageBg} />;
   }
 
   // Only show Header/Footer if user is authenticated
@@ -1199,7 +1584,7 @@ export default function App({ Component, pageProps }) {
     return (
       <QueryClientProvider client={queryClient}>
         <ErrorBoundary>
-          <MantineProvider>
+          <MantineProvider forceColorScheme="light">
             <DevToolsProtection userRole={userRole} devtoolsBlockEnabled={devtoolsBlockEnabled} />
             {router.pathname === "/dashboard/student_info" ? (
               <div
@@ -1209,11 +1594,20 @@ export default function App({ Component, pageProps }) {
                   minHeight: "100vh",
                 }}
               >
-                <CustomHeader />
                 <div style={{ flex: 1 }}>
                   <Component {...pageProps} />
                 </div>
-                <Footer />
+              </div>
+            ) : router.pathname === "/welcome" || router.pathname === "/leave-a-review" ? (
+              <div
+                style={{
+                  display: "flex",
+                  flexDirection: "column",
+                  minHeight: "100vh",
+                }}
+              >
+                <Component {...pageProps} />
+                {router.pathname === "/welcome" ? <Footer /> : null}
               </div>
             ) : (
               <Component {...pageProps} />
@@ -1233,7 +1627,7 @@ export default function App({ Component, pageProps }) {
     return (
       <QueryClientProvider client={queryClient}>
         <ErrorBoundary>
-          <MantineProvider>
+          <MantineProvider forceColorScheme="light">
             <DevToolsProtection userRole={userRole} devtoolsBlockEnabled={devtoolsBlockEnabled} />
             <Component {...pageProps} />
             <ReactQueryDevtools initialIsOpen={false} />
@@ -1246,7 +1640,7 @@ export default function App({ Component, pageProps }) {
   return (
     <QueryClientProvider client={queryClient}>
       <ErrorBoundary>
-        <MantineProvider>
+        <MantineProvider forceColorScheme="light">
           <DevToolsProtection userRole={userRole} devtoolsBlockEnabled={devtoolsBlockEnabled} />
           <div className="page-container" style={{ 
             display: 'flex', 
@@ -1254,6 +1648,103 @@ export default function App({ Component, pageProps }) {
             minHeight: '100vh' 
           }}>
             <Header />
+            
+            {/* Subscription Warning - Show for assistant/admin/developer, not on student_dashboard */}
+            {shouldShowSubscriptionWarning() && (
+              <div className="subscription-warning" style={{
+                background: 'linear-gradient(135deg, #dc3545 0%, #ff6b6b 100%)',
+                borderRadius: '10px',
+                padding: '16px 20px',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: '12px',
+                boxShadow: '0 4px 16px rgba(220, 53, 69, 0.3)',
+                color: '#ffffff',
+                fontSize: '15px',
+                fontWeight: 600,
+                lineHeight: 1.5,
+                maxWidth: '100%',
+                margin: '10px 10px 0 10px'
+              }}>
+                <Image src="/alert-triangle.svg" alt="Warning" width={24} height={24} style={{ flexShrink: 0 }} />
+                <div style={{ textAlign: 'center' }}>
+                  {subscription.active === false && !subscription.date_of_expiration ? (
+                    <span>
+                      Subscription Expired, to renew contact{' '}
+                      <a 
+                        href="/contact_developer" 
+                        onClick={(e) => {
+                          e.preventDefault();
+                          router.push('/contact_developer');
+                        }}
+                        style={{
+                          color: '#ffffff',
+                          textDecoration: 'underline',
+                          fontWeight: 700,
+                          cursor: 'pointer'
+                        }}
+                      >
+                        Tony Joseph (developer)
+                      </a>
+                    </span>
+                  ) : (
+                    <span>
+                      Subscription will expire after {formatRemainingTime()}, to renew contact{' '}
+                      <a 
+                        href="/contact_developer" 
+                        onClick={(e) => {
+                          e.preventDefault();
+                          router.push('/contact_developer');
+                        }}
+                        style={{
+                          color: '#ffffff',
+                          textDecoration: 'underline',
+                          fontWeight: 700,
+                          cursor: 'pointer'
+                        }}
+                      >
+                        Tony Joseph (developer)
+                      </a>
+                    </span>
+                  )}
+                </div>
+              </div>
+            )}
+            
+            <style jsx>{`
+              .subscription-warning {
+                margin: 10px 10px 0 10px;
+              }
+              
+              @media (max-width: 768px) {
+                .subscription-warning {
+                  margin: 10px 10px 0 10px;
+                  padding: 12px 16px;
+                  font-size: 14px;
+                  gap: 10px;
+                }
+                .subscription-warning img {
+                  width: 20px !important;
+                  height: 20px !important;
+                }
+              }
+              
+              @media (max-width: 480px) {
+                .subscription-warning {
+                  margin: 10px 10px 0 10px;
+                  padding: 10px 14px;
+                  font-size: 13px;
+                  gap: 8px;
+                  flex-direction: column;
+                  align-items: center;
+                }
+                .subscription-warning img {
+                  width: 18px !important;
+                  height: 18px !important;
+                }
+              }
+            `}</style>
             
             {/* Session Expiry Warning */}
             {showExpiryWarning && (
@@ -1284,3 +1775,50 @@ export default function App({ Component, pageProps }) {
     </QueryClientProvider>
   );
 }
+
+// Ensures Custom App runs with the Pages Router context during `next build`
+// static generation. Without this, `useRouter()` in this file can throw
+// "NextRouter was not mounted" while prerendering pages.
+App.getInitialProps = async (appContext) => {
+  const appProps = await NextJsApp.getInitialProps(appContext);
+  const path = String(appContext.ctx?.asPath || appContext.ctx?.pathname || "");
+  const isYoutubeEmbed =
+    path.includes("/api/youtube/") ||
+    path.includes("/youtube-player/") ||
+    appContext.Component?.isYoutubeEmbedShell;
+
+  if (isYoutubeEmbed) {
+    return { ...appProps, systemBackground: "#000" };
+  }
+
+  let systemBackground = DEFAULT_SYSTEM_BACKGROUND;
+
+  if (typeof window === 'undefined') {
+    try {
+      systemBackground = loadSystemBackgroundFromEnv();
+    } catch {
+      /* keep default */
+    }
+  } else {
+    // Client navigations cannot read env.config — use cache or API (never wipe SSR color with hardcoded default)
+    const cached = readCachedSystemBackground();
+    if (cached) {
+      systemBackground = cached;
+    } else {
+      try {
+        const res = await fetch('/api/system/config');
+        if (res.ok) {
+          const data = await res.json();
+          if (data?.page_background) {
+            systemBackground = data.page_background;
+            cacheSystemBackground(systemBackground);
+          }
+        }
+      } catch {
+        /* keep default only as last resort */
+      }
+    }
+  }
+
+  return { ...appProps, systemBackground };
+};

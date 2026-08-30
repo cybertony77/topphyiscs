@@ -2,6 +2,8 @@ import { MongoClient } from 'mongodb';
 import fs from 'fs';
 import path from 'path';
 import { authMiddleware } from '../../../lib/authMiddleware';
+import { itemCenterMatchesStudentMainCenter } from '../../../lib/studentCenterMatch';
+import { sanitizeQuestionForStudent } from '../../../lib/onlineQuestionApiNormalize';
 
 function loadEnvConfig() {
   try {
@@ -32,6 +34,7 @@ function loadEnvConfig() {
 const envConfig = loadEnvConfig();
 const MONGO_URI = envConfig.MONGO_URI || process.env.MONGO_URI || 'mongodb://localhost:27017/topphysics';
 const DB_NAME = envConfig.DB_NAME || process.env.DB_NAME || 'mr-george-magdy';
+const NATIONAL_SYSTEM = envConfig.NATIONAL_SYSTEM === 'true' || process.env.NATIONAL_SYSTEM === 'true';
 
 export default async function handler(req, res) {
   let client;
@@ -48,59 +51,72 @@ export default async function handler(req, res) {
     const db = client.db(DB_NAME);
 
     if (req.method === 'GET') {
-      // Get student's grade from students collection
-      let studentGrade = null;
+      // Get student's course and courseType from students collection
+      let studentCourse = null;
+      let studentCourseType = null;
+      let studentMainCenter = null;
       if (user.role === 'student') {
         // JWT contains assistant_id, use that to find student
         const studentId = user.assistant_id || user.id;
         console.log('🔍 Student API - User from JWT:', { role: user.role, assistant_id: user.assistant_id, id: user.id, studentId });
         if (studentId) {
           const student = await db.collection('students').findOne({ id: studentId });
-          console.log('🔍 Student found:', student ? { id: student.id, grade: student.grade } : 'NOT FOUND');
-          if (student && student.grade) {
-            studentGrade = student.grade;
-            console.log('✅ Using student grade:', studentGrade);
+          console.log('🔍 Student found:', student ? { id: student.id, course: student.course, courseType: student.courseType } : 'NOT FOUND');
+          if (student) {
+            studentCourse = student.course;
+            studentCourseType = student.courseType;
+            studentMainCenter = student.main_center;
+            console.log('✅ Using student course:', studentCourse, 'courseType:', studentCourseType);
           }
         }
       }
 
-      // Build query filter - ALWAYS filter by grade for students
-      if (studentGrade) {
-        // Normalize student grade: lowercase, remove periods, trim
-        const normalizedStudentGrade = studentGrade.toLowerCase().replace(/\./g, '').trim();
+      // Build query filter - filter by course and courseType for students
+      if (studentCourse) {
+        const studentCourseTrimmed = (studentCourse || '').trim();
+        const studentCourseTypeTrimmed = (studentCourseType || '').trim();
         
-        // Get all homeworks and filter by normalized grade in JavaScript
-        // This handles case differences: "2nd secondary" matches "2nd Secondary"
+        // Get all homeworks and filter by course, courseType and activation state
         const allHomeworks = await db.collection('homeworks').find({}).toArray();
         
-        // Filter homeworks by normalized grade
-        console.log('🔍 Filtering homeworks. Student normalized grade:', normalizedStudentGrade);
+        // Filter homeworks by course, courseType and activation state
+        console.log('🔍 Filtering homeworks. Student course:', studentCourseTrimmed, 'courseType:', studentCourseTypeTrimmed);
         console.log('🔍 Total homeworks before filter:', allHomeworks.length);
         const filteredHomeworks = allHomeworks.filter(hw => {
-          if (!hw.grade) {
-            console.log('⚠️ Homework has no grade:', hw._id);
+          if (!hw.course) {
+            console.log('⚠️ Homework has no course:', hw._id);
             return false;
           }
-          const normalizedHwGrade = hw.grade.toLowerCase().replace(/\./g, '').trim();
-          const matches = normalizedHwGrade === normalizedStudentGrade;
-          console.log(`🔍 Homework grade: "${hw.grade}" → normalized: "${normalizedHwGrade}" | Matches: ${matches}`);
+          const hwCourse = (hw.course || '').trim();
+          const hwCourseType = (hw.courseType || '').trim();
+          const hwState = (hw.state || hw.account_state || 'Activated');
+          
+          // Course match: if homework course is "All", it matches any student course
+          const courseMatch = hwCourse.toLowerCase() === 'all' || 
+                            hwCourse.toLowerCase() === studentCourseTrimmed.toLowerCase();
+          
+          // CourseType match: skip when national system
+          const courseTypeMatch = NATIONAL_SYSTEM ||
+                                 !hwCourseType || 
+                                 !studentCourseTypeTrimmed ||
+                                 hwCourseType.toLowerCase() === studentCourseTypeTrimmed.toLowerCase();
+          // Activation state: hide deactivated homeworks from students
+          const isActivated = hwState !== 'Deactivated';
+
+          const centerMatch = itemCenterMatchesStudentMainCenter(hw.center, studentMainCenter);
+          
+          const matches = courseMatch && courseTypeMatch && isActivated && centerMatch;
+          console.log(`🔍 Homework course: "${hwCourse}" courseType: "${hwCourseType}" | Matches: ${matches}`);
           return matches;
         });
         console.log('✅ Filtered homeworks count:', filteredHomeworks.length);
         
-        // Sort by week number (ascending), with null weeks at the end
+        // Sort by lesson (ascending), then by date (descending)
         const sortedHomeworks = filteredHomeworks.sort((a, b) => {
-          if (a.week === null || a.week === undefined) {
-            if (b.week === null || b.week === undefined) {
-              return b._id.toString().localeCompare(a._id.toString());
-            }
-            return 1;
-          }
-          if (b.week === null || b.week === undefined) {
-            return -1;
-          }
-          if (a.week !== b.week) {
-            return a.week - b.week;
+          const aLesson = (a.lesson || '').trim();
+          const bLesson = (b.lesson || '').trim();
+          if (aLesson !== bLesson) {
+            return aLesson.localeCompare(bLesson);
           }
           return b._id.toString().localeCompare(a._id.toString());
         });
@@ -109,16 +125,25 @@ export default async function handler(req, res) {
         const sanitizedHomeworks = sortedHomeworks.map(hw => {
           const sanitized = {
             _id: hw._id,
-            grade: hw.grade || null,
+            course: hw.course || null,
+            courseType: hw.courseType || null,
+            center: hw.center || null,
+            lesson: hw.lesson || null,
             lesson_name: hw.lesson_name,
-            week: hw.week || null,
+            // Expose normalized activation state so frontend can safely filter
+            state: hw.state || hw.account_state || 'Activated',
             homework_type: hw.homework_type || 'questions',
             deadline_type: hw.deadline_type || 'no_deadline',
             deadline_date: hw.deadline_date || null,
+            deadline_time: hw.deadline_time ?? null,
             timer: hw.timer || null,
             shuffle_questions_and_answers: hw.shuffle_questions_and_answers || false,
             show_details_after_submitting: hw.show_details_after_submitting || false
           };
+
+          if (hw.comment) {
+            sanitized.comment = hw.comment;
+          }
 
           // Add pages_from_book fields if applicable
           if (hw.homework_type === 'pages_from_book') {
@@ -127,15 +152,16 @@ export default async function handler(req, res) {
             sanitized.to_page = hw.to_page || null;
           }
 
+          // Add PDF fields if applicable
+          if (hw.homework_type === 'pdf') {
+            sanitized.pdf_file_name = hw.pdf_file_name || '';
+            sanitized.pdf_url = hw.pdf_url || '';
+            sanitized.allow_downloading = hw.allow_downloading !== false && hw.allow_downloading !== 'false';
+          }
+
           // Add questions if applicable (only for questions type)
           if (hw.homework_type === 'questions' && hw.questions && Array.isArray(hw.questions)) {
-            sanitized.questions = hw.questions.map(q => ({
-              question_text: q.question_text || '',
-              question_picture: q.question_picture || null,
-              answers: q.answers || [],
-              answer_texts: q.answer_texts || []
-              // Note: correct_answer is intentionally excluded for students
-            }));
+            sanitized.questions = hw.questions.map(q => sanitizeQuestionForStudent(q));
           } else {
             sanitized.questions = [];
           }
@@ -145,7 +171,7 @@ export default async function handler(req, res) {
         
         return res.status(200).json({ success: true, homeworks: sanitizedHomeworks });
       } else {
-        // If student has no grade, return empty array (don't show any homeworks)
+        // If student has no course, return empty array (don't show any homeworks)
         return res.status(200).json({ success: true, homeworks: [] });
       }
     }

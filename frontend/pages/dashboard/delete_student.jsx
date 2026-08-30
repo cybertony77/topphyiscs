@@ -6,9 +6,12 @@ import Title from '../../components/Title';
 import { useStudents, useStudent, useDeleteStudent } from '../../lib/api/students';
 import apiClient from '../../lib/axios';
 import { useQuery } from '@tanstack/react-query';
+import { useNationalSystem, getCourseFieldLabels } from '../../lib/api/system';
 
 export default function DeleteStudent() {
   const router = useRouter();
+  const isNational = useNationalSystem();
+  const courseLabels = getCourseFieldLabels(isNational);
   const [studentId, setStudentId] = useState("");
   const [searchId, setSearchId] = useState(""); // Separate state for search
   const [deleted, setDeleted] = useState(false);
@@ -498,7 +501,7 @@ export default function DeleteStudent() {
                       {student.name} (ID: {student.id})
                     </div>
                     <div style={{ fontSize: "0.9rem", color: "#6c757d" }}>
-                      {student.grade} • {student.main_center}
+                      {[student.course, !isNational && student.courseType, student.main_center].filter(Boolean).join(' • ')}
                     </div>
                   </button>
                 ))}
@@ -513,15 +516,21 @@ export default function DeleteStudent() {
               <div className="student-info">
                 <h3>Student Found:</h3>
                 <p><strong>Name:</strong> {student.name}</p>
-                {student.age && <p><strong>Age:</strong> {student.age}</p>}
-                {student.gender && <p><strong>Gender:</strong> {student.gender}</p>}
-                <p><strong>Grade:</strong> {student.grade}</p>
-                <p><strong>School:</strong> {student.school}</p>
-                <p><strong>Phone:</strong> {student.phone}</p>
+                <p><strong>Age:</strong> {student.age || 'N/A'}</p>
+                <p><strong>Gender:</strong> {student.gender || 'N/A'}</p>
+                {courseLabels.showGradeField && (
+                  <p><strong>Grade:</strong> {student.grade || 'N/A'}</p>
+                )}
+                <p><strong>{courseLabels.course}:</strong> {student.course || ''}</p>
+                {courseLabels.showCourseType && (
+                  <p><strong>Course Type:</strong> {student.courseType || ''}</p>
+                )}
+                <p><strong>School:</strong> {student.school || 'No School'}</p>
+                <p><strong>Phone:</strong> {student.phone || 'N/A'}</p>
+                <p><strong>Parent's Phone:</strong> {student.parents_phone || student.parentsPhone || 'N/A'}</p>
                 <p><strong>Email:</strong> {userAccount?.email || student.email || 'No Email'}</p>
-                <p><strong>Parent's Phone:</strong> {student.parents_phone || student.parentsPhone}</p>
-                <p><strong>Main Center:</strong> {student.main_center}</p>
-                <p><strong>Main Comment:</strong> {student.main_comment ||"No Comment"}</p>
+                <p><strong>Main Center:</strong> {student.main_center || 'N/A'}</p>
+                <p><strong>Hidden Comment:</strong> {student.main_comment || 'No Comment'}</p>
                 
                 <div style={{ marginTop: "20px" }}>
                   <p style={{ color: "#dc3545", fontWeight: "bold", marginBottom: "16px" }}>

@@ -4,9 +4,11 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import Image from 'next/image';
 import apiClient from '../../lib/axios';
 import Title from '../../components/Title';
-import GradeSelect from '../../components/GradeSelect';
+import CourseSelect from '../../components/CourseSelect';
+import CourseTypeSelect from '../../components/CourseTypeSelect';
 import CenterSelect from '../../components/CenterSelect';
-import { useSystemConfig } from '../../lib/api/system';
+import AccountStateSelect from '../../components/AccountStateSelect';
+import { useSystemConfig , useNationalSystem, getCourseFieldLabels} from '../../lib/api/system';
 
 // API functions
 const whatsappGroupAPI = {
@@ -140,6 +142,8 @@ export default function JoinWhatsappGroup() {
   const router = useRouter();
   const queryClient = useQueryClient();
   const { data: systemConfig } = useSystemConfig();
+  const isNational = useNationalSystem();
+  const courseLabels = getCourseFieldLabels(isNational);
   const isWhatsAppJoinGroupEnabled = systemConfig?.whatsapp_join_group_btn === true || systemConfig?.whatsapp_join_group_btn === 'true';
   
   // Redirect if feature is disabled
@@ -151,21 +155,27 @@ export default function JoinWhatsappGroup() {
   
   const [showAddForm, setShowAddForm] = useState(false);
   const [newTitle, setNewTitle] = useState('');
-  const [newGrade, setNewGrade] = useState('');
+  const [newCourse, setNewCourse] = useState('');
+  const [newCourseType, setNewCourseType] = useState('');
   const [newCenter, setNewCenter] = useState('');
   const [newGender, setNewGender] = useState('');
+  const [newGroupState, setNewGroupState] = useState('Activated');
   const [newLink, setNewLink] = useState('');
-  const [newGradeOpen, setNewGradeOpen] = useState(false);
+  const [newCourseOpen, setNewCourseOpen] = useState(false);
+  const [newCourseTypeOpen, setNewCourseTypeOpen] = useState(false);
   const [newCenterOpen, setNewCenterOpen] = useState(false);
   const [newGenderOpen, setNewGenderOpen] = useState(false);
   
   const [editingGroup, setEditingGroup] = useState(null);
   const [editTitle, setEditTitle] = useState('');
-  const [editGrade, setEditGrade] = useState('');
+  const [editCourse, setEditCourse] = useState('');
+  const [editCourseType, setEditCourseType] = useState('');
   const [editCenter, setEditCenter] = useState('');
   const [editGender, setEditGender] = useState('');
+  const [editGroupState, setEditGroupState] = useState('Activated');
   const [editLink, setEditLink] = useState('');
-  const [editGradeOpen, setEditGradeOpen] = useState(false);
+  const [editCourseOpen, setEditCourseOpen] = useState(false);
+  const [editCourseTypeOpen, setEditCourseTypeOpen] = useState(false);
   const [editCenterOpen, setEditCenterOpen] = useState(false);
   const [editGenderOpen, setEditGenderOpen] = useState(false);
   
@@ -196,9 +206,11 @@ export default function JoinWhatsappGroup() {
       setTimeout(() => {
         setShowAddForm(false);
         setNewTitle('');
-        setNewGrade('');
+        setNewCourse('');
+        setNewCourseType('');
         setNewCenter('');
         setNewGender('');
+        setNewGroupState('Activated');
         setNewLink('');
         setShowAddSuccess(false);
       }, 2000);
@@ -218,9 +230,11 @@ export default function JoinWhatsappGroup() {
       setTimeout(() => {
         setEditingGroup(null);
         setEditTitle('');
-        setEditGrade('');
+        setEditCourse('');
+        setEditCourseType('');
         setEditCenter('');
         setEditGender('');
+        setEditGroupState('Activated');
         setEditLink('');
         setShowEditSuccess(false);
       }, 2000);
@@ -266,8 +280,8 @@ export default function JoinWhatsappGroup() {
   }, [showEditSuccess]);
 
   const handleAddGroup = () => {
-    if (!newTitle.trim() || !newGrade || !newGender || !newLink.trim()) {
-      setError('Title, Grade, Gender, and Link are required');
+    if (!newTitle.trim() || !newCourse || !newGender || !newLink.trim() || !newGroupState) {
+      setError(`Title, ${courseLabels.course}, Gender, Group State, and Link are required`);
       return;
     }
     
@@ -278,9 +292,11 @@ export default function JoinWhatsappGroup() {
     
     createMutation.mutate({
       title: newTitle.trim(),
-      grade: newGrade,
+      course: newCourse,
+      courseType: newCourseType || null,
       center: newCenter || '',
       gender: newGender,
+      group_state: newGroupState,
       link: newLink.trim()
     });
   };
@@ -288,16 +304,18 @@ export default function JoinWhatsappGroup() {
   const handleEditGroup = (group) => {
     setEditingGroup(group);
     setEditTitle(group.title || '');
-    setEditGrade(group.grade || '');
+    setEditCourse(group.course || group.grade || ''); // Support backward compatibility
+    setEditCourseType(group.courseType || '');
     setEditCenter(group.center || '');
     setEditGender(group.gender || '');
+    setEditGroupState(group.group_state || 'Activated');
     setEditLink(group.link || '');
     setError('');
   };
 
   const handleUpdateGroup = () => {
-    if (!editTitle.trim() || !editGrade || !editGender || !editLink.trim()) {
-      setError('Title, Grade, Gender, and Link are required');
+    if (!editTitle.trim() || !editCourse || !editGender || !editLink.trim() || !editGroupState) {
+      setError(`Title, ${courseLabels.course}, Gender, Group State, and Link are required`);
       return;
     }
     
@@ -310,9 +328,11 @@ export default function JoinWhatsappGroup() {
       id: editingGroup._id, 
       data: {
         title: editTitle.trim(),
-        grade: editGrade,
+        course: editCourse,
+        courseType: editCourseType || null,
         center: editCenter || '',
         gender: editGender,
+        group_state: editGroupState,
         link: editLink.trim()
       }
     });
@@ -339,9 +359,11 @@ export default function JoinWhatsappGroup() {
   const cancelEdit = () => {
     setEditingGroup(null);
     setEditTitle('');
-    setEditGrade('');
+    setEditCourse('');
+    setEditCourseType('');
     setEditCenter('');
     setEditGender('');
+    setEditGroupState('Activated');
     setEditLink('');
     setError('');
   };
@@ -349,9 +371,11 @@ export default function JoinWhatsappGroup() {
   const cancelAdd = () => {
     setShowAddForm(false);
     setNewTitle('');
-    setNewGrade('');
+    setNewCourse('');
+    setNewCourseType('');
     setNewCenter('');
     setNewGender('');
+    setNewGroupState('Activated');
     setNewLink('');
     setError('');
   };
@@ -525,8 +549,13 @@ export default function JoinWhatsappGroup() {
                   </h4>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', marginBottom: '8px' }}>
                     <span style={{ color: '#666', fontSize: '0.9rem' }}>
-                      <strong>Grade:</strong> {group.grade}
+                      <strong>{courseLabels.course}:</strong> {group.course || group.grade || 'N/A'}
                     </span>
+                    {courseLabels.showCourseType && group.courseType && (
+                      <span style={{ color: '#666', fontSize: '0.9rem' }}>
+                        <strong>Course Type:</strong> {group.courseType}
+                      </span>
+                    )}
                     {group.center && group.center.trim() !== '' && (
                       <span style={{ color: '#666', fontSize: '0.9rem' }}>
                         <strong>Center:</strong> {group.center}
@@ -534,6 +563,15 @@ export default function JoinWhatsappGroup() {
                     )}
                     <span style={{ color: '#666', fontSize: '0.9rem' }}>
                       <strong>Gender:</strong> {group.gender}
+                    </span>
+                    <span style={{ color: '#666', fontSize: '0.9rem' }}>
+                      <strong>Group State:</strong>{' '}
+                      <span style={{
+                        color: (group.group_state || 'Activated') === 'Deactivated' ? '#dc3545' : '#28a745',
+                        fontWeight: 700,
+                      }}>
+                        {group.group_state || 'Activated'}
+                      </span>
                     </span>
                   </div>
                   {group.link && (
@@ -555,17 +593,17 @@ export default function JoinWhatsappGroup() {
                         backgroundColor: 'transparent'
                       }}
                       onMouseEnter={(e) => {
-                        e.target.style.color = '#0d5a7a';
-                        e.target.style.backgroundColor = '#e9ecef';
-                        e.target.style.textDecoration = 'underline';
+                        e.currentTarget.style.color = '#0d5a7a';
+                        e.currentTarget.style.backgroundColor = '#e9ecef';
+                        e.currentTarget.style.textDecoration = 'underline';
                       }}
                       onMouseLeave={(e) => {
-                        e.target.style.color = '#1FA8DC';
-                        e.target.style.backgroundColor = 'transparent';
-                        e.target.style.textDecoration = 'none';
+                        e.currentTarget.style.color = '#1FA8DC';
+                        e.currentTarget.style.backgroundColor = 'transparent';
+                        e.currentTarget.style.textDecoration = 'none';
                       }}
                     >
-                      <Image src="/message.svg" alt="Link" width={18} height={18} />
+                      <Image src="/whatsapp2.svg" alt="WhatsApp" width={18} height={18} />
                       Join Group
                     </a>
                   )}
@@ -735,22 +773,45 @@ export default function JoinWhatsappGroup() {
               </div>
               
               <div className="form-field">
-                <label>Grade <span className="required-star">*</span></label>
-                <GradeSelect
-                  selectedGrade={newGrade}
-                  onGradeChange={(grade) => {
-                    setNewGrade(grade);
-                    setNewGradeOpen(false);
+                <label>{courseLabels.course} <span className="required-star">*</span></label>
+                <CourseSelect
+                  selectedGrade={newCourse}
+                  onGradeChange={(course) => {
+                    setNewCourse(course);
+                    setNewCourseOpen(false);
                   }}
-                  isOpen={newGradeOpen}
+                  isOpen={newCourseOpen}
                   onToggle={() => {
-                    setNewGradeOpen(!newGradeOpen);
+                    setNewCourseOpen(!newCourseOpen);
+                    setNewCourseTypeOpen(false);
                     setNewCenterOpen(false);
                     setNewGenderOpen(false);
                   }}
-                  onClose={() => setNewGradeOpen(false)}
+                  onClose={() => setNewCourseOpen(false)}
+                  showAllOption={true}
                 />
               </div>
+              
+              {courseLabels.showCourseType && (
+<div className="form-field">
+                <label>Course Type</label>
+                <CourseTypeSelect
+                  selectedCourseType={newCourseType}
+                  onCourseTypeChange={(courseType) => {
+                    setNewCourseType(courseType);
+                    setNewCourseTypeOpen(false);
+                  }}
+                  isOpen={newCourseTypeOpen}
+                  onToggle={() => {
+                    setNewCourseTypeOpen(!newCourseTypeOpen);
+                    setNewCourseOpen(false);
+                    setNewCenterOpen(false);
+                    setNewGenderOpen(false);
+                  }}
+                  onClose={() => setNewCourseTypeOpen(false)}
+                />
+              </div>
+)}
               
               <div className="form-field">
                 <label>Center</label>
@@ -763,7 +824,7 @@ export default function JoinWhatsappGroup() {
                   isOpen={newCenterOpen}
                   onToggle={() => {
                     setNewCenterOpen(!newCenterOpen);
-                    setNewGradeOpen(false);
+                    setNewCourseOpen(false);
                     setNewGenderOpen(false);
                   }}
                   onClose={() => setNewCenterOpen(false)}
@@ -781,10 +842,21 @@ export default function JoinWhatsappGroup() {
                   isOpen={newGenderOpen}
                   onToggle={() => {
                     setNewGenderOpen(!newGenderOpen);
-                    setNewGradeOpen(false);
+                    setNewCourseOpen(false);
                     setNewCenterOpen(false);
                   }}
                   onClose={() => setNewGenderOpen(false)}
+                />
+              </div>
+
+              <div className="form-field">
+                <AccountStateSelect
+                  label="Group State"
+                  value={newGroupState}
+                  onChange={(value) => setNewGroupState(value || '')}
+                  placeholder="Select Group State"
+                  required
+                  style={{ marginBottom: 0 }}
                 />
               </div>
               
@@ -874,22 +946,45 @@ export default function JoinWhatsappGroup() {
               </div>
               
               <div className="form-field">
-                <label>Grade <span className="required-star">*</span></label>
-                <GradeSelect
-                  selectedGrade={editGrade}
-                  onGradeChange={(grade) => {
-                    setEditGrade(grade);
-                    setEditGradeOpen(false);
+                <label>{courseLabels.course} <span className="required-star">*</span></label>
+                <CourseSelect
+                  selectedGrade={editCourse}
+                  onGradeChange={(course) => {
+                    setEditCourse(course);
+                    setEditCourseOpen(false);
                   }}
-                  isOpen={editGradeOpen}
+                  isOpen={editCourseOpen}
                   onToggle={() => {
-                    setEditGradeOpen(!editGradeOpen);
+                    setEditCourseOpen(!editCourseOpen);
+                    setEditCourseTypeOpen(false);
                     setEditCenterOpen(false);
                     setEditGenderOpen(false);
                   }}
-                  onClose={() => setEditGradeOpen(false)}
+                  onClose={() => setEditCourseOpen(false)}
+                  showAllOption={true}
                 />
               </div>
+              
+              {courseLabels.showCourseType && (
+<div className="form-field">
+                <label>Course Type</label>
+                <CourseTypeSelect
+                  selectedCourseType={editCourseType}
+                  onCourseTypeChange={(courseType) => {
+                    setEditCourseType(courseType);
+                    setEditCourseTypeOpen(false);
+                  }}
+                  isOpen={editCourseTypeOpen}
+                  onToggle={() => {
+                    setEditCourseTypeOpen(!editCourseTypeOpen);
+                    setEditCourseOpen(false);
+                    setEditCenterOpen(false);
+                    setEditGenderOpen(false);
+                  }}
+                  onClose={() => setEditCourseTypeOpen(false)}
+                />
+              </div>
+)}
               
               <div className="form-field">
                 <label>Center</label>
@@ -902,7 +997,7 @@ export default function JoinWhatsappGroup() {
                   isOpen={editCenterOpen}
                   onToggle={() => {
                     setEditCenterOpen(!editCenterOpen);
-                    setEditGradeOpen(false);
+                    setEditCourseOpen(false);
                     setEditGenderOpen(false);
                   }}
                   onClose={() => setEditCenterOpen(false)}
@@ -920,10 +1015,21 @@ export default function JoinWhatsappGroup() {
                   isOpen={editGenderOpen}
                   onToggle={() => {
                     setEditGenderOpen(!editGenderOpen);
-                    setEditGradeOpen(false);
+                    setEditCourseOpen(false);
                     setEditCenterOpen(false);
                   }}
                   onClose={() => setEditGenderOpen(false)}
+                />
+              </div>
+
+              <div className="form-field">
+                <AccountStateSelect
+                  label="Group State"
+                  value={editGroupState}
+                  onChange={(value) => setEditGroupState(value || '')}
+                  placeholder="Select Group State"
+                  required
+                  style={{ marginBottom: 0 }}
                 />
               </div>
               

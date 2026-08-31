@@ -11,7 +11,6 @@ import QRCodeModal from './QRCodeModal';
 import InstallApp from './InstallApp';
 import StudentLinksModal from './StudentLinksModal';
 import AppVideosModal from './AppVideosModal';
-import LegacyUserMenu from './LegacyUserMenu';
 import apiClient from '../lib/axios';
 import Image from 'next/image';
 import styles from '../styles/UserMenu.module.css';
@@ -261,51 +260,6 @@ export default function UserMenu() {
     setShowInstallApp(true);
   };
 
-  if (userData.role !== 'student') {
-    return (
-      <LegacyUserMenu
-        userData={userData}
-        studentData={studentData}
-        profilePictureUrl={profilePictureUrl}
-        courseLabels={courseLabels}
-        subscription={subscription}
-        timeRemaining={timeRemaining}
-        isScoringEnabled={isScoringEnabled}
-        isSubscriptionEnabled={isSubscriptionEnabled}
-        showMarketingPageMenu={showMarketingPageMenu}
-        isMarketingSystemEnabled={isMarketingSystemEnabled}
-        publicTestimonialsPending={publicTestimonialsPending}
-        isStaff={isStaff}
-        onLogout={handleLogout}
-        onManageAssistants={handleManageAssistants}
-        onEditProfile={handleEditProfile}
-        onPublicLinkGenerator={() => router.push('/dashboard/public_link_generator')}
-        onManageOnlineSystem={() => router.push('/dashboard/manage_online_system')}
-        onMarketingPage={() => router.push('/welcome')}
-        onStudentsReviews={() => router.push('/dashboard/students_reviews')}
-        onScoringSystem={() => router.push('/dashboard/manage_scoring_system')}
-        onContactAssistants={() => router.push('/contact_assistants')}
-        onContactDeveloper={handleContactDeveloper}
-        onSubscriptionDashboard={handleSubscriptionDashboard}
-        onChangePassword={handleChangePassword}
-        onOpenLinks={() => setShowLinksModal(true)}
-        onOpenQRCode={() => setShowQRModal(true)}
-        onOpenInstallApp={() => setShowInstallApp(true)}
-        onOpenAppVideos={() => setShowAppVideos(true)}
-      >
-        <QRCodeModal isOpen={showQRModal} onClose={() => setShowQRModal(false)} />
-        <InstallApp isOpen={showInstallApp} onClose={() => setShowInstallApp(false)} />
-        <StudentLinksModal isOpen={showLinksModal} onClose={() => setShowLinksModal(false)} />
-        <AppVideosModal
-          isOpen={showAppVideos}
-          onClose={() => setShowAppVideos(false)}
-          role={userData.role}
-        />
-      </LegacyUserMenu>
-    );
-  }
-
-
   return (
     <div className={styles.root}>
       <div className={`${styles.burgerWrap} ${opened ? styles.burgerWrapOpen : ''}`}>
@@ -322,7 +276,7 @@ export default function UserMenu() {
         opened={opened}
         onClose={close}
         position="right"
-        size="min(400px, 75vw)"
+        size="min(400px, 80vw)"
         padding="md"
         zIndex={10000}
         overlayProps={{
@@ -506,7 +460,7 @@ export default function UserMenu() {
                     }}
                     badge={publicTestimonialsPending > 99 ? '99+' : publicTestimonialsPending || undefined}
                   >
-                    Students Reviews
+                    Manage Students Reviews
                   </MenuItem>
                 )}
                 {isScoringEnabled && (

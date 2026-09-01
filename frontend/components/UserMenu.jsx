@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from 'react';
 import { useRouter } from 'next/router';
 import { useQuery } from '@tanstack/react-query';
 import { Burger, Drawer } from '@mantine/core';
-import { useDisclosure } from '@mantine/hooks';
+import { useDisclosure, useMediaQuery } from '@mantine/hooks';
 import { useProfile, useProfilePicture } from '../lib/api/auth';
 import { useSubscription } from '../lib/api/subscription';
 import { useStudent } from '../lib/api/students';
@@ -60,6 +60,7 @@ function MenuSection({ title, children }) {
 
 export default function UserMenu() {
   const [opened, { toggle, close }] = useDisclosure(false);
+  const isMobileMenu = useMediaQuery('(max-width: 768px)');
   const [showQRModal, setShowQRModal] = useState(false);
   const [showInstallApp, setShowInstallApp] = useState(false);
   const [showLinksModal, setShowLinksModal] = useState(false);
@@ -262,10 +263,10 @@ export default function UserMenu() {
 
   return (
     <div className={styles.root}>
-      <div className={`${styles.burgerWrap} ${opened ? styles.burgerWrapOpen : ''}`}>
+      <div className={`${styles.burgerWrap} ${opened ? styles.burgerWrapOpen : ''} ${isMobileMenu ? styles.burgerWrapMobile : ''}`}>
         <Burger
-          lineSize={2}
-          size="lg"
+          lineSize={isMobileMenu ? 1.75 : 2}
+          size={isMobileMenu ? 'md' : 'lg'}
           opened={opened}
           onClick={toggle}
           aria-label="Toggle navigation"
@@ -282,7 +283,7 @@ export default function UserMenu() {
         overlayProps={{
           backgroundOpacity: 0.34,
           blur: 4,
-          color: 'var(--system-primary, #0f0f10)',
+          color: '#26b5eb',
         }}
         transitionProps={{
           transition: 'slide-left',
